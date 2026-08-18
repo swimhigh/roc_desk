@@ -52,12 +52,16 @@ pub struct SearchFileResult {
     pub matches: Vec<SearchMatch>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchSummary {
-    pub files: Vec<SearchFileResult>,
-    /// 命中的文件数/总匹配数超过上限提前收手时置 true，前端据此提示"结果可能不全，
-    /// 请缩小搜索范围"，而不是让用户误以为这就是全部结果。
-    pub truncated: bool,
+/// 搜索文件名（只比对文件名，不读文件内容——目录树递归+字符串匹配，没有任何
+/// I/O 读文件内容的开销）还是搜索文件内容（当前实现，逐文件读进来跑正则）。
+/// 2026-08-18 用户反馈之一是"搜文件OR目录名还是搜索文本需要有个选项"——之前
+/// 只有内容搜索一种模式，用户想按文件名找文件（比如这次报告问题时搜的
+/// "kgms.xml" 本身就是个文件名）却被迫走内容搜索这条慢路径。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    Content,
+    FileName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,75 +177,6 @@ pub trait FileOps: Send + Sync {
         Ok(())
     }
 
-    /// 工作区全文搜索（左侧目录树的"搜索"功能，参考 VS Code 全局搜索面板，
-    /// 2026-08-18 需求）。trait 默认实现，本地/远程共用同一套"用 `list_dir` 递归
-    /// 遍历 + `read_file_raw` 逐文件读取再正则匹配"逻辑——和 `copy` 的默认实现是
-    /// 同一个思路：只需要 `list_dir`/`read_file_raw` 这两个已经有的基础原语，不用
-    /// 分别给本地/远程各写一套搜索。**已知取舍**：不是索引查询，每次搜索都要把
-    /// 未被排除的文件全部读一遍——本地走 `std::fs` 很快，远程每个文件是一次独立的
-    /// SFTP round trip，工作区文件数很大时会明显慢于 VS Code 的 ripgrep，但实现
-    /// 简单、和已有的 `copy`/`delete` 递归模式一致，MVP 阶段够用；真要优化远程场景
-    /// 可以换成对 SSH 侧跑 `grep -rn`（和日志模块的远程实时搜索是同一个思路），
-    /// 属于后续按需再做的优化，不在这版范围内。
-    async fn search_text(&self, root: &str, query: &str, options: &SearchOptions) -> Result<SearchSummary, AppError> {
-        let matcher = build_matcher(query, options)?;
-
-        let mut files = Vec::new();
-        let mut total_matches = 0usize;
-        let mut truncated = false;
-        let mut stack = vec![root.to_string()];
-
-        'walk: while let Some(dir) = stack.pop() {
-            let entries = match self.list_dir(&dir).await {
-                Ok(e) => e,
-                Err(_) => continue, // 单个子目录列不出来（权限等）不影响其它目录，跳过就好
-            };
-            for entry in entries {
-                if entry.is_dir {
-                    if !is_excluded_dir(&entry.name) {
-                        stack.push(entry.path.clone());
-                    }
-                    continue;
-                }
-                if is_binary_extension(&entry.name) {
-                    continue;
-                }
-                if let Some(size) = entry.size {
-                    if size > SEARCH_MAX_FILE_BYTES {
-                        continue;
-                    }
-                }
-                let Ok((bytes, _)) = self.read_file_raw(&entry.path).await else { continue };
-                if bytes.len() as u64 > SEARCH_MAX_FILE_BYTES || looks_binary(&bytes) {
-                    continue;
-                }
-                let (text, _) = decode_text_detect(&bytes);
-
-                let mut file_matches = Vec::new();
-                'lines: for (idx, line) in text.lines().enumerate() {
-                    for m in matcher.find_iter(line) {
-                        let match_start = line[..m.start()].chars().count();
-                        let match_end = line[..m.end()].chars().count();
-                        file_matches.push(SearchMatch { line_number: idx + 1, line_text: line.to_string(), match_start, match_end });
-                        total_matches += 1;
-                        if file_matches.len() >= SEARCH_MAX_MATCHES_PER_FILE || total_matches >= SEARCH_MAX_MATCHES {
-                            break 'lines;
-                        }
-                    }
-                }
-                if !file_matches.is_empty() {
-                    files.push(SearchFileResult { path: entry.path.clone(), matches: file_matches });
-                }
-                if files.len() >= SEARCH_MAX_FILES || total_matches >= SEARCH_MAX_MATCHES {
-                    truncated = true;
-                    break 'walk;
-                }
-            }
-        }
-
-        Ok(SearchSummary { files, truncated })
-    }
-
     /// 对指定的一批文件做"查找并替换全部"，直接写盘（没有类似 AI 编程助手那样的
     /// Diff 待确认流程——手动查找替换是用户自己敲的查询词，风险和"改一个文件后
     /// Ctrl+S"是同一量级，不需要额外的二次确认层；真出错了本来就该靠 Git/备份兜底，
@@ -281,6 +216,122 @@ pub trait FileOps: Send + Sync {
 
         Ok(ReplaceSummary { files_changed, occurrences_replaced })
     }
+}
+
+/// 工作区全文搜索（左侧目录树的"搜索"功能，参考 VS Code 全局搜索面板）。不是
+/// `FileOps` trait 方法——为了能一边遍历一边把结果推给调用方（`on_file` 回调），
+/// 用 trait 方法（尤其是要保持 object-safe）不好表达"边搜边报告进度"，索性写成
+/// 一个吃 `&dyn FileOps` 的自由函数，一样复用 `list_dir`/`read_file_raw` 这两个
+/// 基础原语，本地/远程共用同一套遍历逻辑（和 `copy`/`delete` 的默认实现是同一个
+/// "只依赖基础原语"的思路，只是这次不适合放在 trait 里）。
+///
+/// **2026-08-18 从"跑完整个工作区才一次性返回"改成流式**（用户原话："这个搜索功能
+/// 太慢了，半天转不出来，能否一个一个目录搜，搜到一部分先展示一部分"）：调用方在
+/// 每找到一个命中文件时立刻调 `on_file` 上报（命令层再转成 Tauri 事件推给前端），
+/// 不用等整棵树扫完；同时新增 `should_cancel` 钩子，每处理一个目录/文件都检查一次，
+/// 用户输入新的搜索词时命令层会让上一次搜索的这个钩子返回 true，尽快中止正在跑的
+/// 旧搜索，不会几个搜索并发着抢 CPU/IO。
+///
+/// **已知取舍**：不是索引查询，每次搜索都要把未被排除的文件全部读一遍——本地走
+/// `std::fs` 很快，远程每个文件是一次独立的 SFTP round trip，工作区文件数很大时
+/// 会明显慢于 VS Code 的 ripgrep；流式展示能缓解"感觉卡死"的体验问题，但不改变
+/// 总耗时。真要提速的路径有两条：一是本函数新增的 `SearchMode::FileName`（只比对
+/// 文件名，不读文件内容，同样的目录遍历几乎不产生额外 I/O，配合下面"限定子目录"
+/// 用法能覆盖大多数"我在找一个文件"的场景）；二是远程内容搜索换成对 SSH 侧跑
+/// `grep -rn`（和日志模块的远程实时搜索是同一个思路），属于后续按需再做的优化。
+pub async fn search_stream(
+    file_ops: &dyn FileOps,
+    root: &str,
+    query: &str,
+    options: &SearchOptions,
+    mode: SearchMode,
+    mut on_file: impl FnMut(SearchFileResult),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<bool, AppError> {
+    let matcher = build_matcher(query, options)?;
+
+    let mut files_found = 0usize;
+    let mut total_matches = 0usize;
+    let mut truncated = false;
+    let mut stack = vec![root.to_string()];
+
+    'walk: while let Some(dir) = stack.pop() {
+        if should_cancel() {
+            break;
+        }
+        let entries = match file_ops.list_dir(&dir).await {
+            Ok(e) => e,
+            Err(_) => continue, // 单个子目录列不出来（权限等）不影响其它目录，跳过就好
+        };
+        for entry in entries {
+            if should_cancel() {
+                break 'walk;
+            }
+            if entry.is_dir {
+                if !is_excluded_dir(&entry.name) {
+                    stack.push(entry.path.clone());
+                }
+                continue;
+            }
+
+            match mode {
+                SearchMode::FileName => {
+                    if let Some(m) = matcher.find(&entry.name) {
+                        let match_start = entry.name[..m.start()].chars().count();
+                        let match_end = entry.name[..m.end()].chars().count();
+                        files_found += 1;
+                        total_matches += 1;
+                        on_file(SearchFileResult {
+                            path: entry.path.clone(),
+                            matches: vec![SearchMatch {
+                                line_number: 1,
+                                line_text: entry.name.clone(),
+                                match_start,
+                                match_end,
+                            }],
+                        });
+                    }
+                }
+                SearchMode::Content => {
+                    if is_binary_extension(&entry.name) {
+                        continue;
+                    }
+                    if entry.size.map(|s| s > SEARCH_MAX_FILE_BYTES).unwrap_or(false) {
+                        continue;
+                    }
+                    let Ok((bytes, _)) = file_ops.read_file_raw(&entry.path).await else { continue };
+                    if bytes.len() as u64 > SEARCH_MAX_FILE_BYTES || looks_binary(&bytes) {
+                        continue;
+                    }
+                    let (text, _) = decode_text_detect(&bytes);
+
+                    let mut file_matches = Vec::new();
+                    'lines: for (idx, line) in text.lines().enumerate() {
+                        for m in matcher.find_iter(line) {
+                            let match_start = line[..m.start()].chars().count();
+                            let match_end = line[..m.end()].chars().count();
+                            file_matches.push(SearchMatch { line_number: idx + 1, line_text: line.to_string(), match_start, match_end });
+                            total_matches += 1;
+                            if file_matches.len() >= SEARCH_MAX_MATCHES_PER_FILE || total_matches >= SEARCH_MAX_MATCHES {
+                                break 'lines;
+                            }
+                        }
+                    }
+                    if !file_matches.is_empty() {
+                        files_found += 1;
+                        on_file(SearchFileResult { path: entry.path.clone(), matches: file_matches });
+                    }
+                }
+            }
+
+            if files_found >= SEARCH_MAX_FILES || total_matches >= SEARCH_MAX_MATCHES {
+                truncated = true;
+                break 'walk;
+            }
+        }
+    }
+
+    Ok(truncated)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

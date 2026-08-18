@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FileContent, FileEntry, ReplaceSummary, SearchOptions, SearchSummary, WriteOutcome } from "../types/bindings";
+import type { FileContent, FileEntry, ReplaceSummary, SearchMode, SearchOptions, WriteOutcome } from "../types/bindings";
 
 export const fsService = {
   listDir(workspaceId: string, path: string): Promise<FileEntry[]> {
@@ -57,9 +57,19 @@ export const fsService = {
     return invoke("fs_copy", { workspaceId, from, to, isDir });
   },
 
-  /** 左侧目录树的全文搜索（参考 VS Code 搜索面板，2026-08-18 需求）。 */
-  search(workspaceId: string, query: string, options: SearchOptions): Promise<SearchSummary> {
-    return invoke("fs_search", { workspaceId, query, options });
+  /** 左侧目录树的全文搜索（参考 VS Code 搜索面板）：不直接返回结果，结果通过
+   * `search:file-result`/`search:done`/`search:error` 事件流式推送（2026-08-18
+   * 需求："能否一个一个目录搜，搜到一部分先展示一部分"），这里只是触发一次搜索。
+   * `scopePath` 为空时搜整个工作区，传了就只搜这个子目录（右键"在此文件夹中搜索"）。*/
+  searchStream(
+    workspaceId: string,
+    requestId: string,
+    scopePath: string | null,
+    query: string,
+    mode: SearchMode,
+    options: SearchOptions,
+  ): Promise<void> {
+    return invoke("fs_search_stream", { workspaceId, requestId, scopePath, query, mode, options });
   },
 
   /** 查找并替换全部——paths 是搜索结果里的文件路径，不重新在后端搜一遍。 */

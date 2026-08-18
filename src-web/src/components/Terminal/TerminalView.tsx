@@ -41,7 +41,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
       fontSize: 14,
       lineHeight: 1.25,
       letterSpacing: 0.3,
-      theme: getTerminalTheme(useThemeStore.getState().theme),
+      theme: getTerminalTheme(useThemeStore.getState().theme, tab.kind),
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 2,
@@ -90,9 +90,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
   // 主题切换时更新配色但不重建整个终端实例，否则会丢掉当前的 scrollback 历史。
   useEffect(() => {
     return useThemeStore.subscribe((s) => {
-      if (termRef.current) termRef.current.options.theme = getTerminalTheme(s.theme);
+      if (termRef.current) termRef.current.options.theme = getTerminalTheme(s.theme, tab.kind);
     });
-  }, []);
+  }, [tab.kind]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>

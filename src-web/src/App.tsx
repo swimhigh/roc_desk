@@ -6,6 +6,7 @@ import { useTerminalStore } from "./stores/terminalStore";
 import { registerHostKeyPromptListener } from "./stores/connectionStore";
 import { registerAiChatListeners } from "./stores/aiChatStore";
 import { registerCodingListeners } from "./stores/codingStore";
+import { registerSearchListeners, useSearchStore } from "./stores/searchStore";
 import { WorkspacePicker } from "./components/Workspace/WorkspacePicker";
 import { ExplorerTree } from "./components/Explorer/ExplorerTree";
 import { CodeEditor } from "./components/Editor/CodeEditor";
@@ -69,6 +70,13 @@ function App() {
 
   useEffect(() => {
     const unlistenPromise = registerCodingListeners();
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromise = registerSearchListeners();
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
@@ -244,13 +252,17 @@ function App() {
                   if (opts?.pin) opened.then(() => pinFile(path));
                   setActiveView("editor");
                 }}
+                onSearchInFolder={(path, relativePath) => {
+                  useSearchStore.getState().setScope(path, relativePath || path);
+                  setSidebarMode("search");
+                }}
               />
             ) : (
               <SearchPanel
                 workspaceId={current.id}
-                onOpenResult={(path, line) => {
+                onOpenResult={(path, line, highlights) => {
                   openPreview(current.id, path).then(() => {
-                    useEditorStore.getState().revealLine(path, line);
+                    useEditorStore.getState().revealLine(path, line, highlights);
                   });
                   setActiveView("editor");
                 }}
@@ -276,6 +288,7 @@ function App() {
                 current.connection_id && (
                   <SftpBrowser
                     profileId={current.connection_id}
+                    workspaceId={current.id}
                     initialRemotePath={current.root_path}
                     onOpenFile={(entry) => setSftpViewingPath(entry.path)}
                   />

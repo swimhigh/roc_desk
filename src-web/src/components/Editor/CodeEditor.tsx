@@ -1,6 +1,6 @@
 import React from "react";
 import Editor from "@monaco-editor/react";
-import { KeyCode, KeyMod } from "monaco-editor";
+import { KeyCode, KeyMod, Range } from "monaco-editor";
 import { Save, Search, X, Eye, EyeOff } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { ConflictDialog } from "./ConflictDialog";
@@ -40,8 +40,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     clearReveal,
   } = useEditorStore();
   const push = useToastStore((s) => s.push);
-  const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "vs-dark" : "vs"));
+  // roc-dark/roc-light 是 monacoSetup.ts 里在 vs-dark/vs 基础上叠加的自定义主题
+  // （加了日志文件的 token 配色规则），其它语言的高亮规则原样继承，不受影响。
+  const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "roc-dark" : "roc-light"));
   const editorRef = React.useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
+  const highlightDecorationsRef = React.useRef<import("monaco-editor").editor.IEditorDecorationsCollection | null>(null);
   const [previewOpen, setPreviewOpen] = React.useState(false);
 
   const active = activePath ? buffers[activePath] : null;
@@ -61,9 +64,28 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   React.useEffect(() => {
     if (!pendingReveal || !editorRef.current) return;
     if (pendingReveal.path !== active?.path) return;
-    editorRef.current.revealLineInCenter(pendingReveal.line);
-    editorRef.current.setPosition({ lineNumber: pendingReveal.line, column: 1 });
-    editorRef.current.focus();
+    const editor = editorRef.current;
+    editor.revealLineInCenter(pendingReveal.line);
+    editor.setPosition({ lineNumber: pendingReveal.line, column: 1 });
+    editor.focus();
+
+    // 点亮这个文件命中的全部位置（不只是点击跳转到的那一行），用户原话："通过搜索
+    // 结果打开后的文本文件，需要点亮搜索到的内容"。字符级精确高亮（不是整行背景色），
+    // 复用后端 SearchMatch 已经算好的字符下标，Monaco 的列号是 1-based 所以要 +1。
+    if (pendingReveal.highlights && pendingReveal.highlights.length > 0) {
+      const decorations = pendingReveal.highlights.map((h) => ({
+        range: new Range(h.line, h.start + 1, h.line, h.end + 1),
+        options: { inlineClassName: "search-match-highlight" },
+      }));
+      if (highlightDecorationsRef.current) {
+        highlightDecorationsRef.current.set(decorations);
+      } else {
+        highlightDecorationsRef.current = editor.createDecorationsCollection(decorations);
+      }
+    } else {
+      highlightDecorationsRef.current?.clear();
+    }
+
     clearReveal();
   }, [pendingReveal, active?.path, clearReveal]);
 
@@ -203,6 +225,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
             onChange={(value) => updateContent(active.path, value ?? "")}
             onMount={(editor) => {
               editorRef.current = editor;
+              // 新文件挂载了一个全新的 Monaco 实例，旧的 decorations collection 对象
+              // 属于已经销毁的上一个实例，不能带过来复用。
+              highlightDecorationsRef.current = null;
               editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
                 handleSave();
               });

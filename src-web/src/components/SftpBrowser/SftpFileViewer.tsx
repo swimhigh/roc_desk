@@ -27,7 +27,8 @@ export const SftpFileViewer: React.FC<SftpFileViewerProps> = ({ profileId, path,
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<{ mtime: number; preview: string } | null>(null);
   const push = useToastStore((s) => s.push);
-  const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "vs-dark" : "vs"));
+  // roc-dark/roc-light：monacoSetup.ts 里注册的自定义主题，带 .log 文件的 token 配色。
+  const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "roc-dark" : "roc-light"));
 
   useEffect(() => {
     let cancelled = false;

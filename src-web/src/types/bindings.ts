@@ -238,6 +238,8 @@ export interface BrowserHistoryEntry {
   visited_at: string;
 }
 
+export type SearchMode = "content" | "file_name";
+
 export interface SearchOptions {
   case_sensitive: boolean;
   whole_word: boolean;
@@ -257,9 +259,21 @@ export interface SearchFileResult {
   matches: SearchMatch[];
 }
 
-export interface SearchSummary {
-  files: SearchFileResult[];
+/** `fs_search_stream` 命令本身不返回结果，结果通过下面这三个事件流式推送
+ * （2026-08-18 需求："能否一个一个目录搜，搜到一部分先展示一部分"）。 */
+export interface SearchFileResultEvent {
+  requestId: string;
+  file: SearchFileResult;
+}
+
+export interface SearchDoneEvent {
+  requestId: string;
   truncated: boolean;
+}
+
+export interface SearchErrorEvent {
+  requestId: string;
+  message: string;
 }
 
 export interface ReplaceSummary {

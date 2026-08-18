@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::fsops::encoding;
-use crate::fsops::{FileContent, FileEntry, ReplaceSummary, SearchOptions, SearchSummary, WriteOutcome};
+use crate::fsops::{search_stream, FileContent, FileEntry, ReplaceSummary, SearchMode, SearchOptions, WriteOutcome};
 use crate::state::AppState;
 use crate::workspace::{WorkspaceHandle, WorkspaceKind};
 
@@ -156,17 +156,60 @@ pub async fn fs_copy(state: State<'_, AppState>, workspace_id: Uuid, from: Strin
     handle.file_ops.copy(&from, &to, is_dir).await
 }
 
-/// 左侧目录树的"搜索"功能（参考 VS Code 全局搜索面板，2026-08-18 需求）：在整个
-/// 工作区根目录下全文搜索，见 `fsops::FileOps::search_text` 的取舍说明。
+/// 左侧目录树的"搜索"功能（参考 VS Code 全局搜索面板）：流式返回，见
+/// `fsops::search_stream` 的取舍说明。这个命令本身不返回搜索结果——结果通过
+/// `search:file-result` 事件一条条推给前端（`requestId` 用来在前端过滤出属于
+/// 这次搜索的事件，忽略被新搜索取代的旧搜索还没来得及吐出来的尾巴），跑完/出错/
+/// 被取代分别发 `search:done`/`search:error`。
+///
+/// **`scope_path`**（2026-08-18，用户右键某个子目录要求"需要支持对这个子目录的
+/// 搜索选项"）：不传就是整个工作区根目录，传了就只在这个子目录下搜——本地场景走
+/// `guard_local_path` 校验不能跑出工作区边界，和 Explorer 其它命令的边界语义一致。
+/// 这不只是个方便功能，也是缓解"搜索慢"的直接手段：把遍历范围从几万个文件的整个
+/// 项目收窄到几十个文件的一个子目录，本地是 I/O 量级的差别，远程更是 SFTP round
+/// trip 次数的差别。
 #[tauri::command]
-pub async fn fs_search(
+pub async fn fs_search_stream(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     workspace_id: Uuid,
+    request_id: Uuid,
+    scope_path: Option<String>,
     query: String,
+    mode: SearchMode,
     options: SearchOptions,
-) -> Result<SearchSummary, AppError> {
+) -> Result<(), AppError> {
     let handle = get_handle(&state, workspace_id).await?;
-    handle.file_ops.search_text(&handle.profile.root_path, &query, &options).await
+    let root = match &scope_path {
+        Some(p) => {
+            guard_local_path(&handle, p)?;
+            p.clone()
+        }
+        None => handle.profile.root_path.clone(),
+    };
+
+    *state.active_search.lock().unwrap() = Some(request_id);
+    let active_search = state.active_search.clone();
+    let should_cancel = move || *active_search.lock().unwrap() != Some(request_id);
+
+    let emit_handle = app_handle.clone();
+    let on_file = move |file| {
+        let _ = emit_handle.emit(
+            "search:file-result",
+            serde_json::json!({ "requestId": request_id, "file": file }),
+        );
+    };
+
+    let result = search_stream(handle.file_ops.as_ref(), &root, &query, &options, mode, on_file, should_cancel).await;
+    match result {
+        Ok(truncated) => {
+            let _ = app_handle.emit("search:done", serde_json::json!({ "requestId": request_id, "truncated": truncated }));
+        }
+        Err(e) => {
+            let _ = app_handle.emit("search:error", serde_json::json!({ "requestId": request_id, "message": e.to_string() }));
+        }
+    }
+    Ok(())
 }
 
 /// 查找并替换全部（参考 VS Code 搜索面板的 Replace）。`paths` 是前端已经拿到的

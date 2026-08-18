@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, Laptop, Server } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, Laptop, Pencil, Server } from "lucide-react";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
 import { sftpService } from "../../services/sftpService";
 import { localFsService } from "../../services/localFsService";
+import { logSearchService } from "../../services/logSearchService";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { formatError } from "../../utils/error";
@@ -37,29 +39,63 @@ const DRAG_MIME = "application/x-roc-desk-sftp-entry";
 
 interface SftpBrowserProps {
   profileId: string;
+  /** 用来记住"这个工作区上次 SFTP 浏览时本地一侧停在哪个目录"（2026-08-18 需求，
+   * 见下面 localStorage 那段注释），不是后端标识，纯前端记忆用的 key。*/
+  workspaceId: string;
   /** 默认远程目录，就是当前工作区根目录（DESIGN.md §3.3，用户要求"默认的远程目录为当前工作区目录"）。*/
   initialRemotePath: string;
   onOpenFile: (entry: FileEntry) => void;
 }
 
+function localPathStorageKey(workspaceId: string): string {
+  return `roc_desk-sftp-local-path-${workspaceId}`;
+}
+
 /**
  * SFTP 双栏浏览器（DESIGN.md §3.3）：左远程/右本地，互相拖拽即下载/上传，
- * 也可以右键单条操作。远程侧默认停在当前工作区目录，本地侧默认停在用户主目录——
- * 和大多数 SFTP 客户端（WinSCP/FileZilla）的双栏习惯一致。
+ * 也可以右键单条操作。远程侧默认停在当前工作区目录，本地侧默认停在这个工作区上次
+ * SFTP 浏览时停留的目录——和大多数 SFTP 客户端（WinSCP/FileZilla）的双栏习惯一致。
+ *
+ * **本地目录按工作区记忆**（2026-08-18，用户原话："工作区对应的本地目录要记住，
+ * 下次用户打开工作区的SFTP时保持这两个目录对应"）：之前本地侧每次都硬编码回到
+ * 用户主目录，重新打开同一个工作区的 SFTP 面板时，上次手动导航到的本地目录（比如
+ * 对应这个远程项目的本地检出目录）就丢了，得重新点几次。存 `localStorage`（key 带
+ * `workspaceId`），不是后端 SQLite——这是纯前端会话便利性状态，不是需要备份/跨机器
+ * 同步的业务数据，和侧边栏宽度记忆是同一类东西，犯不上为它加一次数据库迁移。
  */
-export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, initialRemotePath, onOpenFile }) => {
+export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, workspaceId, initialRemotePath, onOpenFile }) => {
   const remote = useSftpStore();
   const local = useLocalFsStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side; entry: FileEntry } | null>(null);
   const [dragOverSide, setDragOverSide] = useState<Side | null>(null);
   const [transfer, setTransfer] = useState<{ count: number; path: string } | null>(null);
+  const [editingSide, setEditingSide] = useState<Side | null>(null);
+  const [editValue, setEditValue] = useState("");
 
   useEffect(() => {
     remote.navigate(profileId, initialRemotePath);
-    localFsService.homeDir().then((home) => local.navigate(home));
+
+    (async () => {
+      const remembered = localStorage.getItem(localPathStorageKey(workspaceId));
+      if (remembered) {
+        await local.navigate(remembered);
+      }
+      // 记住的目录可能已经被删除/改名/挪盘符，或者这个工作区第一次用 SFTP 还没有
+      // 记忆——两种情况都退回主目录，不留在一个报错状态里死等用户手动处理。
+      if (!remembered || useLocalFsStore.getState().error) {
+        const home = await localFsService.homeDir();
+        await local.navigate(home);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, initialRemotePath]);
+  }, [profileId, initialRemotePath, workspaceId]);
+
+  // 本地一侧每次导航成功都存一下，下次打开这个工作区的 SFTP 面板直接回到这里。
+  useEffect(() => {
+    if (!local.cwd) return;
+    localStorage.setItem(localPathStorageKey(workspaceId), local.cwd);
+  }, [workspaceId, local.cwd]);
 
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;
@@ -89,11 +125,31 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, initialRemo
     }
   };
 
+  // 右键"导入到本地搜索引擎"（2026-08-18 需求，用户原话："右键选中.LOG等文本类型的
+  // 文件可以将他导入本地搜索引擎进行搜索"），SFTP 浏览器和 Explorer 各有一份是因为
+  // 两边浏览的目录范围不一样（Explorer 限定在工作区内，SFTP 可以到处看），复用的是
+  // 同一套 `logSearchService` 命令，不是重新实现。
+  const importToLogSearch = async (path: string, side: Side) => {
+    const current = useWorkspaceStore.getState().current;
+    const hostName = current?.display_name ?? "unknown";
+    try {
+      const count = side === "remote" ? await logSearchService.importFile(profileId, path, hostName) : await logSearchService.importLocalFile(path, hostName);
+      push("success", `已导入 ${count} 行到本地搜索引擎`);
+    } catch (e) {
+      push("error", `导入失败：${formatError(e)}`);
+    }
+  };
+
   const remoteMenuItems = (entry: FileEntry): ContextMenuItem[] => {
     const items: ContextMenuItem[] = [];
     if (!entry.is_dir) items.push({ label: "打开", onClick: () => onOpenFile(entry) });
     items.push(
       { label: "下载到本地", onClick: () => runTransfer({ side: "remote", path: entry.path, isDir: entry.is_dir, name: entry.name }, "local") },
+    );
+    if (!entry.is_dir) {
+      items.push({ label: "导入到本地搜索引擎", onClick: () => importToLogSearch(entry.path, "remote") });
+    }
+    items.push(
       { label: "复制路径", onClick: () => navigator.clipboard.writeText(entry.path), separatorBefore: true },
       {
         label: "删除",
@@ -112,10 +168,16 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, initialRemo
     return items;
   };
 
-  const localMenuItems = (entry: FileEntry): ContextMenuItem[] => [
-    { label: "上传到远程", onClick: () => runTransfer({ side: "local", path: entry.path, isDir: entry.is_dir, name: entry.name }, "remote") },
-    { label: "复制路径", onClick: () => navigator.clipboard.writeText(entry.path), separatorBefore: true },
-  ];
+  const localMenuItems = (entry: FileEntry): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      { label: "上传到远程", onClick: () => runTransfer({ side: "local", path: entry.path, isDir: entry.is_dir, name: entry.name }, "remote") },
+    ];
+    if (!entry.is_dir) {
+      items.push({ label: "导入到本地搜索引擎", onClick: () => importToLogSearch(entry.path, "local") });
+    }
+    items.push({ label: "复制路径", onClick: () => navigator.clipboard.writeText(entry.path), separatorBefore: true });
+    return items;
+  };
 
   const renderPane = (
     side: Side,
@@ -150,28 +212,61 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, initialRemo
         <div className="sftp-toolbar">
           {icon}
           <span style={{ fontWeight: 600, marginRight: 4 }}>{label}</span>
-          <div className="breadcrumb" style={{ overflow: "hidden" }}>
-            {isUnix && (
-              <span className="crumb" onClick={() => navigate("/")}>
-                /
-              </span>
-            )}
-            {segments.map((seg, i) => {
-              const path = isUnix ? "/" + segments.slice(0, i + 1).join("/") : segments.slice(0, i + 1).join("/") + "/";
-              const isLast = i === segments.length - 1;
-              return (
-                <span key={path}>
-                  <span className="sep">›</span>{" "}
-                  <span className={`crumb ${isLast ? "current" : ""}`} onClick={() => !isLast && navigate(path)}>
-                    {seg}
-                  </span>
+          {editingSide === side ? (
+            <input
+              className="form-input"
+              style={{ flex: 1, height: 22, fontSize: 12, fontFamily: "var(--font-mono)" }}
+              autoFocus
+              value={editValue}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const value = editValue.trim();
+                  if (value) navigate(value);
+                  setEditingSide(null);
+                } else if (e.key === "Escape") {
+                  setEditingSide(null);
+                }
+              }}
+              onBlur={() => setEditingSide(null)}
+            />
+          ) : (
+            <div className="breadcrumb" style={{ overflow: "hidden" }}>
+              {isUnix && (
+                <span className="crumb" onClick={() => navigate("/")}>
+                  /
                 </span>
-              );
-            })}
-          </div>
+              )}
+              {segments.map((seg, i) => {
+                const path = isUnix ? "/" + segments.slice(0, i + 1).join("/") : segments.slice(0, i + 1).join("/") + "/";
+                const isLast = i === segments.length - 1;
+                return (
+                  <span key={path}>
+                    <span className="sep">›</span>{" "}
+                    <span className={`crumb ${isLast ? "current" : ""}`} onClick={() => !isLast && navigate(path)}>
+                      {seg}
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {/* 直接编辑路径（可以粘贴一个目录路径进来），不只是逐段点面包屑——
+              2026-08-18 用户原话："目录要支持编辑或复制本地目录到编辑框"。 */}
           <button
             className="btn ghost sm"
+            title="编辑路径"
             style={{ marginLeft: "auto" }}
+            onClick={() => {
+              setEditingSide(side);
+              setEditValue(state.cwd);
+            }}
+          >
+            <Pencil style={{ width: 12, height: 12 }} />
+          </button>
+          <button
+            className="btn ghost sm"
             onClick={() => navigate(state.cwd.replace(/[/\\][^/\\]*[/\\]?$/, "") || (isUnix ? "/" : state.cwd))}
             disabled={state.cwd === "/" || segments.length === 0}
           >

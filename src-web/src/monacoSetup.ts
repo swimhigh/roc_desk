@@ -66,3 +66,90 @@ monaco.languages.setMonarchTokensProvider("makefile", {
     ],
   },
 });
+
+// 通用日志文件语法高亮（2026-08-18 用户原话："able .log等日志文件能否自动识别列信息，
+// 做更多的颜色展示"）——之前 `.log` 固定映射到 plaintext，理由是"结构化高亮属于日志
+// 搜索模块的职责"，但那是把"搜索"和"在编辑器里直接看一眼哪几行是 ERROR"混为一谈了，
+// 后者纯粹是编辑器可用性问题。不追求解析出某个特定系统的日志格式（不同项目/组件的
+// 日志字段千差万别），只识别几类几乎所有日志都有的通用元素：时间戳、日志级别关键字、
+// 方括号包起来的标签（PID/TID/模块名/来源文件位置）、引号字符串、key: value 里的 key、
+// 数字。级别关键字按语义分了四种颜色（错误/警告/信息/调试），和日志搜索面板里
+// `.log-level-tag` 徽标用的是同一套配色（见下面 registerLogTheme 里的十六进制值），
+// 保持"同一个概念在应用里到处都是同一个颜色"的一致性。
+monaco.languages.register({ id: "log", filenamePatterns: ["*.log"] });
+monaco.languages.setMonarchTokensProvider("log", {
+  tokenizer: {
+    root: [
+      // 时间戳（可能带或不带外层方括号）：2026-03-08 19:01:14.559280 / 2026-03-08T19:01:14Z
+      [/\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?\]?/, "log.timestamp"],
+      // syslog 风格：Aug 18 10:23:45
+      [/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\b/, "log.timestamp"],
+
+      // 方括号包着的级别（"[ WARN]" 这类，必须写在下面的通用方括号规则之前，否则会被
+      // 那条规则原样吃掉整个 "[ WARN]" 当成普通标签，级别颜色就套不上了）
+      [/\[\s*(FATAL|CRITICAL|PANIC)\s*\]/, "log.level.error"],
+      [/\[\s*ERRORS?\s*\]/, "log.level.error"],
+      [/\[\s*WARN(ING)?\s*\]/, "log.level.warn"],
+      [/\[\s*INFO\s*\]/, "log.level.info"],
+      [/\[\s*(DEBUG|TRACE)\s*\]/, "log.level.debug"],
+      // 不带方括号、独立出现的级别单词（"level=ERROR"/"ERROR:" 这类格式）
+      [/\b(FATAL|CRITICAL|PANIC)\b/, "log.level.error"],
+      [/\bERRORS?\b/, "log.level.error"],
+      [/\bWARN(ING)?\b/, "log.level.warn"],
+      [/\bINFO\b/, "log.level.info"],
+      [/\b(DEBUG|TRACE)\b/, "log.level.debug"],
+
+      [/"([^"\\]|\\.)*"/, "string"],
+      [/'([^'\\]|\\.)*'/, "string"],
+
+      // key: value / key=value 里的 key——粗粒度的"列"识别，不追求覆盖所有格式
+      [/[A-Za-z_][\w.-]*(?=\s*[:=])/, "attribute.name"],
+
+      [/\b\d+(\.\d+)?\b/, "number"],
+
+      // 剩下没被上面规则消费掉的方括号内容：PID#TID、模块名、来源文件:行号 等标签
+      [/\[[^\]\n]*\]/, "log.tag"],
+    ],
+  },
+});
+
+/** 深色/浅色两套自定义主题，在 Monaco 内置的 vs-dark/vs 基础上叠加日志 token 的
+ * 配色规则（`inherit: true` 保留其它语言原有的高亮不受影响）。颜色取自
+ * `styles/theme.css` 里 `--danger`/`--warning`/`--accent`/`--text-secondary` 的
+ * 十六进制值——Monaco 主题规则吃不了 CSS 变量，只能手抄一份字面量，两边如果以后
+ * 改了配色需要记得一起改（数量不多，没有做成自动同步的必要）。 */
+function registerLogTheme(
+  name: string,
+  base: "vs-dark" | "vs",
+  colors: { timestamp: string; error: string; warn: string; info: string; debug: string; tag: string },
+) {
+  monaco.editor.defineTheme(name, {
+    base,
+    inherit: true,
+    rules: [
+      { token: "log.timestamp", foreground: colors.timestamp },
+      { token: "log.level.error", foreground: colors.error, fontStyle: "bold" },
+      { token: "log.level.warn", foreground: colors.warn, fontStyle: "bold" },
+      { token: "log.level.info", foreground: colors.info },
+      { token: "log.level.debug", foreground: colors.debug },
+      { token: "log.tag", foreground: colors.tag },
+    ],
+    colors: {},
+  });
+}
+registerLogTheme("roc-dark", "vs-dark", {
+  timestamp: "9a9ca1",
+  error: "e5534b",
+  warn: "d9a441",
+  info: "58a6ff",
+  debug: "9a9ca1",
+  tag: "4f8cff",
+});
+registerLogTheme("roc-light", "vs", {
+  timestamp: "6b6d72",
+  error: "cc3b33",
+  warn: "b8860b",
+  info: "3568e0",
+  debug: "6b6d72",
+  tag: "3568e0",
+});

@@ -16,9 +16,20 @@ export interface SaveConflict {
   currentPreview: string;
 }
 
+export interface PendingHighlight {
+  /** 1-based 行号 */
+  line: number;
+  /** 字符下标（不是字节下标），和 fsops::SearchMatch 的 match_start/match_end 对应。 */
+  start: number;
+  end: number;
+}
+
 export interface PendingReveal {
   path: string;
   line: number;
+  /** 搜索面板打开文件时，把这个文件命中的所有位置一起点亮（2026-08-18 用户原话：
+   * "通过搜索结果打开后的文本文件，需要点亮搜索到的内容"），不只是跳到点击的那一行。 */
+  highlights?: PendingHighlight[];
 }
 
 interface EditorState {
@@ -42,7 +53,7 @@ interface EditorState {
     resolution: "overwrite" | "discard",
   ) => Promise<void>;
   close: (path: string) => void;
-  revealLine: (path: string, line: number) => void;
+  revealLine: (path: string, line: number, highlights?: PendingHighlight[]) => void;
   clearReveal: () => void;
   /** "Reopen with Encoding"（参考 VS Code）：丢弃当前内容，强制按指定编码重新读取。*/
   reopenWithEncoding: (workspaceId: string, path: string, encodingLabel: string) => Promise<void>;
@@ -181,7 +192,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  revealLine: (path, line) => set({ pendingReveal: { path, line } }),
+  revealLine: (path, line, highlights) => set({ pendingReveal: { path, line, highlights } }),
   clearReveal: () => set({ pendingReveal: null }),
 
   reset: () => set({ buffers: {}, order: [], activePath: null, conflict: null, pendingReveal: null }),

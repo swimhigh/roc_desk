@@ -108,6 +108,7 @@ pub fn run() {
                 audit_log,
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
+                active_search: Arc::new(std::sync::Mutex::new(None)),
             });
 
             Ok(())
@@ -127,7 +128,7 @@ pub fn run() {
             commands::fs::fs_delete,
             commands::fs::fs_rename,
             commands::fs::fs_copy,
-            commands::fs::fs_search,
+            commands::fs::fs_search_stream,
             commands::fs::fs_replace,
             commands::connection::connection_list,
             commands::connection::connection_create,
@@ -181,6 +182,7 @@ pub fn run() {
             commands::browser::browser_hide,
             commands::browser::browser_show,
             commands::browser::browser_close,
+            commands::browser::browser_close_all,
             commands::browser::browser_history_list,
             commands::browser::browser_history_remove,
             commands::browser::browser_history_clear,

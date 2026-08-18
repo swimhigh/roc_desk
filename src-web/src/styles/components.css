@@ -714,6 +714,31 @@
 .markdown-preview img { max-width: 100%; }
 .markdown-preview hr { border: none; border-top: 1px solid var(--border-default); margin: 1.4em 0; }
 
+/* === 日志实时搜索：目录自动提示 + 正则示例下拉（2026-08-18） === */
+.path-suggest-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 50;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  min-width: 200px;
+}
+.path-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.path-suggest-item:hover { background: var(--bg-hover); }
+
 /* === 全局搜索面板（左侧目录树"搜索"，参考 VS Code，2026-08-18） === */
 .spin { animation: spin 0.8s linear infinite; }
 .search-opt-btn {
@@ -737,6 +762,13 @@
   color: var(--bg-app);
   border-radius: 2px;
   padding: 0 1px;
+}
+/* 从搜索结果打开文件后，编辑器里对应的命中片段高亮（Monaco inline decoration，
+   参考浏览器 Ctrl+F 的高亮效果）。用固定的琥珀色而不是 --accent，避免和光标/
+   选区颜色混在一起分不清。 */
+.search-match-highlight {
+  background: rgba(255, 179, 0, 0.35);
+  border-radius: 2px;
 }
 
 /* === SFTP Browser（UI_DESIGN.md §六） === */

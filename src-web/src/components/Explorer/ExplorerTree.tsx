@@ -5,6 +5,7 @@ import { useEditorStore } from "../../stores/editorStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { fsService } from "../../services/fsService";
+import { logSearchService } from "../../services/logSearchService";
 import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
@@ -32,6 +33,8 @@ interface ExplorerTreeProps {
   workspaceId: string;
   rootPath: string;
   onOpenFile: (path: string, opts?: { pin?: boolean }) => void;
+  /** 右键目录 →"在此文件夹中搜索"（2026-08-18 需求），把搜索范围收窄到这个子目录。 */
+  onSearchInFolder: (path: string, relativePath: string) => void;
 }
 
 function parentOf(path: string): string {
@@ -46,9 +49,12 @@ function parentOf(path: string): string {
  * 还不存在而静默失效），这里不直接碰 editorStore，避免和 App.tsx 里的
  * openPreview 调用重复触发两次读盘/读远端。
  *
- * 右键菜单（参考 VS Code）：重命名/删除/复制路径/复制相对路径。
+ * 右键菜单（参考 VS Code）：重命名/删除/复制路径/复制相对路径；目录额外有"在此
+ * 文件夹中搜索"（2026-08-18 需求），把左侧搜索面板的范围收窄到这个子目录；文件
+ * 额外有"导入到本地搜索引擎"（同日需求），一步把这个文件送进日志搜索模块的 FTS5
+ * 索引，不用先切到日志搜索面板再找一遍文件。
  */
-export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPath, onOpenFile }) => {
+export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPath, onOpenFile, onSearchInFolder }) => {
   const { children, expanded, loadRoot, toggleDir, reloadDir, selectedPath, select, rootError } = useExplorerStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
@@ -120,6 +126,26 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     }
   };
 
+  /** 右键"导入到本地搜索引擎"（2026-08-18 需求，用户原话："右键选中.LOG等文本类型的
+   * 文件可以将他导入本地搜索引擎进行搜索"）——复用日志搜索模块已有的导入命令（`log_import_
+   * local_file`/`log_import_file`），之前只能从"日志搜索"面板里点"导入本地/远程文件"再
+   * 弹文件选择框去找，这里是从 Explorer 直接对着已经在看的文件走这条路径，少绕一圈。
+   * 不限制文件扩展名——导入命令本身就是按行读文本进 FTS5 索引，不是"专属 .log"的能力，
+   * 限制成只对 .log 显示反而人为缩小了这个入口的适用范围。 */
+  const importToLogSearch = async (entry: FileEntry) => {
+    const current = useWorkspaceStore.getState().current;
+    if (!current) return;
+    try {
+      const count =
+        current.kind === "remote" && current.connection_id
+          ? await logSearchService.importFile(current.connection_id, entry.path, current.display_name)
+          : await logSearchService.importLocalFile(entry.path, current.display_name);
+      push("success", `已导入 ${count} 行到本地搜索引擎`);
+    } catch (e) {
+      push("error", `导入失败：${formatError(e)}`);
+    }
+  };
+
   /** 剪切=记下来源+等粘贴时挪过去（复用 rename）；复制=复用 `FileOps::copy`
    * （文件/目录都支持，目录会在后端递归复制）。 */
   const pasteInto = async (targetDir: string) => {
@@ -147,9 +173,14 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     const items: ContextMenuItem[] = [];
     if (!entry.is_dir) {
       items.push({ label: "打开", onClick: () => onOpenFile(entry.path) });
+    } else {
+      items.push({ label: "在此文件夹中搜索", onClick: () => onSearchInFolder(entry.path, relativePath) });
     }
     if (runCommandFor(entry.path)) {
       items.push({ label: "运行脚本", onClick: () => runScript(entry) });
+    }
+    if (!entry.is_dir) {
+      items.push({ label: "导入到本地搜索引擎", onClick: () => importToLogSearch(entry) });
     }
     items.push(
       { label: "重命名", onClick: () => startRename(entry), separatorBefore: !entry.is_dir },

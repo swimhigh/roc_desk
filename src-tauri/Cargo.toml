@@ -1,6 +1,6 @@
 [package]
 name = "roc_desk"
-version = "0.1.0"
+version = "1.0.0"
 description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
 authors = ["you"]
 edition = "2021"

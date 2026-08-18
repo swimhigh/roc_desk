@@ -4,7 +4,7 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
   jsonc: "jsonc",
   md: "markdown",
   markdown: "markdown",
-  log: "plaintext", // Monaco 无内置 log 语言；结构化日志高亮属于 §3.4 日志搜索模块的职责，非通用编辑器
+  log: "log", // 自定义 Monarch 语言（monacoSetup.ts），识别时间戳/级别/标签等通用日志元素
   txt: "plaintext",
   yml: "yaml",
   yaml: "yaml",
