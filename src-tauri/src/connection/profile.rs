@@ -1,0 +1,62 @@
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// 连接档案（DESIGN.md §3.2.2）。敏感字段（密码/私钥口令）不在这个结构体里——
+/// `credential_ref` 只是系统密钥链条目的引用 key，实际机密经 `CredentialStore` 存取。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionProfile {
+    pub id: Uuid,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_method: AuthMethod,
+    /// keyring 条目引用，形如 `ssh:{id}:secret`；None 表示 Agent 认证，无需存密文
+    pub credential_ref: Option<String>,
+    pub group_id: Option<Uuid>,
+    pub tags: Vec<String>,
+    pub jump_host_id: Option<Uuid>,
+    pub last_connected_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethod {
+    Password,
+    Key,
+    Agent,
+}
+
+impl AuthMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthMethod::Password => "password",
+            AuthMethod::Key => "key",
+            AuthMethod::Agent => "agent",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "password" => AuthMethod::Password,
+            "agent" => AuthMethod::Agent,
+            _ => AuthMethod::Key,
+        }
+    }
+}
+
+/// 创建/编辑连接档案的输入（`secret` 是明文，只在这一次调用中经过内存，
+/// 立刻写入 keyring，不会随 `ConnectionProfile` 一起被序列化回前端或落库）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConnectionProfileInput {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_method: AuthMethod,
+    pub secret: Option<String>,
+    pub group_id: Option<Uuid>,
+    pub tags: Vec<String>,
+    pub jump_host_id: Option<Uuid>,
+}

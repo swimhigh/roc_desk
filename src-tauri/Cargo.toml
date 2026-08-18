@@ -1,0 +1,71 @@
+[package]
+name = "roc_desk"
+version = "0.1.0"
+description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "roc_desk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 错误处理
+thiserror = "2"
+anyhow = "1"
+
+# 异步
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "process"] }
+async-trait = "0.1"
+
+# 数据库（工作区档案持久化，CODE_DESIGN.md §五）
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# 其他
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# 凭据存储（系统密钥链，DESIGN.md §八-1）
+keyring = { version = "3", features = ["windows-native"] }
+
+# SSH / SFTP
+russh = "0.46"
+russh-keys = "0.46"
+russh-sftp = "2"
+
+# 本地终端 PTY（DESIGN.md §3.2，本地工作区的终端面板；Windows 上底层走 ConPTY）
+portable-pty = "0.8"
+
+# 日志行解析 / 高危命令黑名单匹配
+regex = "1"
+
+# 文本文件编码探测（Windows 上大量 .txt/.log 是 GBK 或带 BOM 的 UTF-16，
+# 不能假设全是 UTF-8，见 fsops::encoding）
+encoding_rs = "0.8"
+
+# AI 对话（OpenAI 兼容 API，SSE 流式，DESIGN.md §3.6）
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+
+# AI 编程助手：文件变更 Diff 生成（DESIGN.md §3.8.3）
+similar = "2"

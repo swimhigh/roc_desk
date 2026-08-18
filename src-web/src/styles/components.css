@@ -1,0 +1,776 @@
+/* 共享组件样式 — 与 docs/prototypes/devhub-dialogs.html 的类名/规则保持一致，
+ * 那份原型是这些组件的视觉真相源（UI_DESIGN.md §十一、§四.1、§九）。
+ */
+
+/* === Button === */
+.btn {
+  height: 32px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.btn.sm { height: 24px; padding: 0 var(--space-3); font-size: var(--text-xs); }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover { opacity: 0.9; }
+.btn.ghost { border: 1px solid var(--border-default); color: var(--text-secondary); }
+.btn.ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn.success { background: var(--success); color: #000; }
+.btn.danger { background: var(--danger); color: #fff; }
+.btn.danger-strong { background: var(--danger); color: #fff; font-weight: 500; }
+.btn.weak { color: var(--text-disabled); font-size: var(--text-xs); }
+
+/* === Dialog（ConfirmDialog 的基座，HostKeyDialog/CommandConfirmDialog/ConflictDialog 均基于它） === */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.dialog {
+  min-width: 380px;
+  max-width: 480px;
+  background: var(--bg-surface-raised);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.dialog-title-bar {
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.dialog-title-bar.info { color: var(--info); }
+.dialog-title-bar.warning { color: var(--warning); }
+.dialog-title-bar.danger { background: var(--danger); color: #fff; }
+.dialog-body {
+  padding: var(--space-2) var(--space-4) var(--space-4);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+.dialog-body .fingerprint-block {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-app);
+  border-radius: var(--radius-sm);
+  margin: var(--space-2) 0;
+  word-break: break-all;
+}
+.dialog-body .warning-text { color: var(--danger); font-weight: 500; }
+.dialog-actions {
+  padding: var(--space-2) var(--space-4) var(--space-4);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* === Toast === */
+.toast {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-shadow: var(--shadow);
+  max-width: 360px;
+}
+.toast.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--success); color: var(--success); }
+.toast.info { background: rgba(88, 166, 255, 0.15); border: 1px solid var(--info); color: var(--info); }
+.toast.error { background: rgba(229, 83, 75, 0.15); border: 1px solid var(--danger); color: var(--danger); }
+.toast-stack {
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 2000;
+}
+
+/* === Skeleton === */
+.skeleton-line {
+  height: 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-surface-raised) 50%, var(--bg-hover) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+.skeleton-line.short { width: 60%; }
+.skeleton-line.medium { width: 80%; }
+.skeleton-line.long { width: 100%; }
+.skeleton-line:last-child { margin-bottom: 0; }
+
+/* === EmptyState === */
+.empty-state { text-align: center; padding: var(--space-8); color: var(--text-secondary); }
+.empty-state .es-icon { font-size: 32px; margin-bottom: var(--space-3); opacity: 0.5; }
+.empty-state .es-text { font-size: var(--text-sm); margin-bottom: var(--space-4); }
+.empty-state .es-btn { color: var(--accent); font-size: var(--text-sm); cursor: pointer; background: none; border: none; }
+.empty-state .es-btn:hover { text-decoration: underline; }
+
+/* === StatusDot === */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  display: inline-block;
+}
+.status-dot.connected { background: var(--success); }
+.status-dot.connecting { background: var(--warning); animation: pulse 1.5s infinite; }
+.status-dot.disconnected { background: var(--text-disabled); }
+.status-dot.error { background: var(--danger); }
+
+/* === ToggleSwitch === */
+.toggle-switch {
+  width: 36px;
+  height: 20px;
+  background: var(--border-default);
+  border-radius: var(--radius-full);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--transition-duration);
+  flex-shrink: 0;
+  display: inline-block;
+}
+.toggle-switch.on { background: var(--accent); }
+.toggle-switch.disabled { opacity: 0.5; pointer-events: none; }
+.toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: var(--radius-full);
+  transition: transform var(--transition-duration) var(--transition-easing);
+}
+.toggle-switch.on::after { transform: translateX(16px); }
+
+/* === SegmentedControl === */
+.segmented {
+  display: flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.segmented .seg-btn {
+  flex: 1;
+  height: 26px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.segmented .seg-btn.active { background: var(--bg-selected); color: var(--accent); }
+
+/* === CommandConfirmDialog / cmd-confirm specific === */
+.cmd-confirm-host {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(217, 164, 65, 0.12);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--warning);
+  margin: var(--space-2) 0;
+}
+.cmd-confirm-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  margin: var(--space-2) 0;
+  color: var(--text-primary);
+}
+.blocked-cmd-msg {
+  padding: var(--space-2) var(--space-3);
+  background: var(--danger);
+  color: #fff;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* === FileChangeCard === */
+.fcc { border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; }
+.fcc.pending { border-color: var(--warning); }
+.fcc.applied { border-color: var(--success); }
+.fcc.rejected { border-color: var(--danger); }
+.fcc-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+.fcc-header.pending { background: rgba(217, 164, 65, 0.08); }
+.fcc-header.applied { background: rgba(63, 185, 80, 0.08); }
+.fcc-header.rejected { background: rgba(229, 83, 75, 0.08); }
+.fcc-header .fcc-path { font-family: var(--font-mono); flex: 1; }
+.fcc-badge { font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-full); }
+.fcc-badge.pending { background: var(--warning); color: #000; }
+.fcc-badge.applied { background: var(--success); color: #000; }
+.fcc-badge.rejected { background: var(--danger); color: #fff; }
+.fcc-actions { display: flex; gap: var(--space-1); }
+.fcc-btn { height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-xs); display: flex; align-items: center; gap: 4px; }
+.fcc-btn.outline { border: 1px solid var(--border-default); color: var(--text-secondary); }
+.fcc-btn.outline:hover { background: var(--bg-hover); color: var(--text-primary); }
+.fcc-btn.success { background: var(--success); color: #000; }
+.fcc-btn.danger { background: var(--danger); color: #fff; }
+.fcc-diff { max-height: 150px; overflow-y: auto; font-family: var(--font-mono); font-size: var(--text-xs); padding: var(--space-2) var(--space-3); background: var(--bg-app); }
+.fcc-diff .diff-line { display: flex; line-height: 1.5; }
+.fcc-diff .diff-line.added { background: var(--diff-added); color: var(--success); }
+.fcc-diff .diff-line.removed { background: var(--diff-removed); color: var(--danger); }
+.fcc-diff .diff-line .diff-sign { width: 20px; flex-shrink: 0; }
+.fcc-diff .diff-line .diff-content { white-space: pre; }
+
+/* === ConnectionForm === */
+.form { display: flex; flex-direction: column; gap: var(--space-3); }
+.form-row { display: flex; flex-direction: column; gap: 4px; }
+.form-row.split { flex-direction: row; gap: var(--space-2); }
+.form-row.split > * { flex: 1; }
+.form-label { font-size: var(--text-xs); color: var(--text-secondary); }
+.form-input, .form-select {
+  height: 30px;
+  padding: 0 var(--space-2);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  outline: none;
+}
+.form-input:focus, .form-select:focus { border-color: var(--accent); }
+.form-input-group { display: flex; gap: var(--space-1); }
+.form-input-group .form-input { flex: 1; }
+.form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* === Explorer 文件树（UI_DESIGN.md §3.3） === */
+.project-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-1) 0;
+  user-select: none;
+}
+.tree-item {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tree-item:hover { background: var(--bg-hover); }
+.tree-item.active { background: var(--bg-selected); }
+.tree-item .tree-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary); }
+.tree-item .tree-icon.is-dir { color: #dcb67a; } /* 文件夹用暖色区分，VS Code 惯例 */
+.tree-item .tree-name { overflow: hidden; text-overflow: ellipsis; }
+.tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-app);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: 0 2px;
+  height: 18px;
+}
+
+/* 所有可点击但不是原生 <button>/<a> 的元素都要显式声明手型光标，
+ * 否则默认是 cursor:auto（文本 I-beam 或箭头），这正是"鼠标图标显示不清楚"的成因。 */
+.wp-recent-item,
+.tree-item,
+.es-btn,
+.toggle-switch:not(.disabled),
+.seg-btn,
+.target-change-link {
+  cursor: pointer;
+}
+
+/* === Tab Bar（UI_DESIGN.md §3.2，DESIGN.md §3.1.2） === */
+.tab-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  padding-left: var(--space-2);
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.tab-bar .app-icon { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
+
+.workspace-name-btn {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-right: var(--space-2);
+  flex-shrink: 0;
+}
+.workspace-name-btn:hover { background: var(--bg-hover); }
+.workspace-name-btn .wp-chevron { font-size: 10px; color: var(--text-secondary); }
+
+.tab-item {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.tab-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tab-item.active { background: var(--bg-app); color: var(--text-primary); }
+.tab-item.active::after {
+  content: "";
+  position: absolute;
+  bottom: -1px; left: 0; right: 0;
+  height: 1px;
+  background: var(--accent);
+}
+.tab-item .tab-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.tab-item .tab-dot { width: 6px; height: 6px; border-radius: var(--radius-full); flex-shrink: 0; }
+
+.quick-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 var(--space-2); }
+.quick-tool-btn {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.quick-tool-btn svg { width: 16px; height: 16px; }
+.quick-tool-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.quick-tool-btn.active { background: var(--bg-selected); color: var(--accent); }
+.quick-tool-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.quick-tool-btn:disabled:hover { background: none; color: var(--text-secondary); }
+
+/* === Explorer Sidebar 头部（Activity Bar 简化版） === */
+.sidebar-nav {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.nav-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.nav-btn svg { width: 18px; height: 18px; }
+.nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-btn.active { background: var(--accent-dim); color: var(--accent); }
+
+/* === Editor Tab Strip（多标签编辑器，UI_DESIGN.md §3.3 单击预览/双击固定） === */
+.editor-tabs {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 6px 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border-subtle);
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  position: relative;
+}
+.editor-tab:hover { color: var(--text-primary); }
+.editor-tab.active {
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+.editor-tab.active::after {
+  content: "";
+  position: absolute;
+  top: -1px; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.editor-tab.preview .editor-tab-name { font-style: italic; }
+.editor-tab .dirty-dot {
+  width: 6px; height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--text-secondary);
+  flex-shrink: 0;
+}
+.editor-tab-close {
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  opacity: 0;
+}
+.editor-tab-close svg { width: 12px; height: 12px; }
+.editor-tab:hover .editor-tab-close,
+.editor-tab.active .editor-tab-close { opacity: 1; }
+.editor-tab-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* === Log Search（DESIGN.md §3.4） === */
+.log-level-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+.log-level-tag.error, .log-level-tag.fatal { background: rgba(229, 83, 75, 0.15); color: var(--danger); }
+.log-level-tag.warn, .log-level-tag.warning { background: rgba(217, 164, 65, 0.15); color: var(--warning); }
+.log-level-tag.info { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.log-level-tag.debug, .log-level-tag.trace { background: var(--bg-hover); color: var(--text-secondary); }
+.file-row.active { background: var(--bg-selected); }
+.file-row mark { background: rgba(217, 164, 65, 0.35); color: inherit; border-radius: 2px; }
+
+/* === AI Chat（DESIGN.md §3.6） === */
+.chat-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: chat-blink 1s step-start infinite;
+}
+@keyframes chat-blink { 50% { opacity: 0; } }
+.chat-code-block {
+  background: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+}
+
+/* === Terminal Panel（底部停靠面板，VS Code 风格：可折叠/可拖拽/多终端 Tab） === */
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-terminal, #0c0d0e);
+  flex-shrink: 0;
+  position: relative;
+  min-height: 140px;
+}
+.terminal-panel-resize-handle {
+  position: absolute;
+  top: -3px; left: 0; right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 1;
+}
+.terminal-panel-header {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.terminal-panel-tabs {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  height: 100%;
+}
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 6px 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border-subtle);
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.terminal-tab .tab-icon { width: 13px; height: 13px; flex-shrink: 0; }
+.terminal-tab:hover { color: var(--text-primary); }
+.terminal-tab.active { background: var(--bg-app); color: var(--text-primary); }
+.terminal-tab-close {
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  opacity: 0;
+}
+.terminal-tab-close svg { width: 12px; height: 12px; }
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab.active .terminal-tab-close { opacity: 1; }
+.terminal-tab-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.terminal-panel-add {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  margin-left: 2px;
+}
+.terminal-panel-add svg { width: 14px; height: 14px; }
+.terminal-panel-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+.terminal-panel-collapse {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  margin-right: var(--space-1);
+  border-radius: var(--radius-sm);
+}
+.terminal-panel-collapse svg { width: 14px; height: 14px; }
+.terminal-panel-collapse:hover { background: var(--bg-hover); color: var(--text-primary); }
+.terminal-panel-body { flex: 1; min-height: 0; position: relative; }
+.terminal-tab.disconnected { color: var(--text-disabled); }
+.terminal-tab-dot {
+  width: 6px; height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  flex-shrink: 0;
+}
+.terminal-disconnected-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 24px;
+  background: rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.terminal-disconnected-overlay .btn { pointer-events: auto; display: flex; align-items: center; gap: 6px; }
+
+/* === Explorer 侧边栏拖拽调宽 === */
+.sidebar-resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--border-default);
+  position: relative;
+}
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -2px; right: -2px;
+}
+.sidebar-resize-handle:hover, .sidebar-resize-handle:active { background: var(--accent); }
+
+/* === Context Menu（文件树右键菜单，参考 VS Code） === */
+.context-menu {
+  min-width: 180px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,0.3));
+  padding: 4px 0;
+  z-index: 100;
+  font-size: var(--text-sm);
+}
+.context-menu-item { padding: 5px 14px; cursor: pointer; color: var(--text-primary); }
+.context-menu-item:hover { background: var(--bg-hover); }
+.context-menu-item.danger { color: var(--danger); }
+.context-menu-item.danger:hover { background: rgba(229, 83, 75, 0.1); }
+.context-menu-sep { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+
+/* === Encoding Menu（编辑器状态栏编码选择，参考 VS Code） === */
+.encoding-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 140px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,0.3));
+  padding: 4px 0;
+  z-index: 50;
+  font-size: var(--text-sm);
+}
+.encoding-menu-group {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-disabled);
+  text-transform: uppercase;
+}
+.encoding-menu-item {
+  padding: 4px 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.encoding-menu-item:hover { background: var(--bg-hover); }
+
+/* === Editor breadcrumb + toolbar（UI_DESIGN.md §3.3/§六共用样式） === */
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+
+/* === SFTP Browser（UI_DESIGN.md §六） === */
+.sftp-toolbar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.breadcrumb { display: flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); color: var(--text-secondary); flex-wrap: wrap; }
+.breadcrumb .crumb { cursor: pointer; }
+.breadcrumb .crumb:hover { color: var(--accent); }
+.breadcrumb .crumb.current { color: var(--text-primary); }
+.breadcrumb .sep { color: var(--text-disabled); }
+
+.file-header, .file-row {
+  display: grid;
+  grid-template-columns: 2fr 100px 140px;
+  align-items: center;
+  height: var(--list-row-height);
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+}
+.file-header {
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-default);
+  font-weight: 500;
+  position: sticky;
+  top: 0;
+  background: var(--bg-app);
+}
+.file-row { color: var(--text-primary); cursor: pointer; }
+.file-row:hover { background: var(--bg-hover); }
+.file-row.selected { background: var(--bg-selected); }
+.file-row .file-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary); }
+.file-row .file-icon.is-dir { color: #dcb67a; }
+.file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-row .file-size, .file-row .file-time { color: var(--text-secondary); font-family: var(--font-mono); font-size: var(--text-xs); }
+
+.sftp-footer {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-3);
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* === Workspace Picker（DESIGN.md §3.1.1，UI_DESIGN.md §3.1） === */
+.workspace-picker-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-app);
+  gap: var(--space-8);
+  position: relative;
+}
+.wp-theme-toggle {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 32px;
+  height: 32px;
+}
+.wp-theme-toggle svg { width: 18px; height: 18px; }
+.wp-logo { display: flex; align-items: center; gap: var(--space-2); font-size: 22px; font-weight: 600; color: var(--text-primary); }
+.wp-logo svg { width: 28px; height: 28px; color: var(--accent); }
+.wp-entries { display: flex; gap: var(--space-4); }
+.wp-entry-btn {
+  width: 220px;
+  height: 88px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  transition: all var(--transition-duration) var(--transition-easing);
+}
+.wp-entry-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); }
+.wp-entry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wp-entry-btn svg { width: 24px; height: 24px; color: var(--accent); }
+.wp-recent { width: 640px; }
+.wp-recent-title { font-size: var(--text-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: var(--space-2); }
+.wp-recent-list { border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; }
+.wp-recent-item { display: flex; align-items: center; gap: var(--space-3); height: 40px; padding: 0 var(--space-4); cursor: pointer; border-bottom: 1px solid var(--border-subtle); }
+.wp-recent-item:last-child { border-bottom: none; }
+.wp-recent-item:hover { background: var(--bg-hover); }
+.wp-recent-item .wp-kind-icon { font-size: 16px; flex-shrink: 0; }
+.wp-recent-item .wp-name { font-size: var(--text-sm); color: var(--text-primary); flex-shrink: 0; width: 120px; }
+.wp-recent-item .wp-path { font-size: var(--text-xs); color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* === Target / Remote-capability badges（AI 编程助手，DESIGN.md §3.8.1/§3.8.7） === */
+.target-badge { font-size: var(--text-xs); padding: 2px var(--space-2); border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 4px; }
+.target-badge.remote { background: rgba(217, 164, 65, 0.1); color: var(--warning); }
+.target-badge.local { color: var(--text-secondary); }
+.target-change-link { font-size: var(--text-xs); color: var(--text-secondary); margin-left: 2px; background: none; border: none; cursor: pointer; }
+.target-change-link:hover { color: var(--accent); }
+.remote-capability-badge { font-size: var(--text-xs); color: var(--text-secondary); cursor: help; border-bottom: 1px dotted var(--text-secondary); }
+.dirty-dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--warning); }
+.tool-call-progress { font-size: var(--text-xs); color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+.tool-call-progress .spinner { width: 10px; height: 10px; border: 1.5px solid var(--border-default); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }

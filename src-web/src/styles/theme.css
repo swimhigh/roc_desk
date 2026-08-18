@@ -1,0 +1,106 @@
+/* src-web/src/styles/theme.css
+ * 与 UI_DESIGN.md §二「设计令牌」一一对应；数值直接取自
+ * docs/prototypes/devhub-main.html 和 devhub-dialogs.html 的 <style> 块，
+ * 三处必须保持一致（原型是视觉真相源，组件实现照抄，不要各自漂移）。
+ */
+
+:root {
+  --font-ui: "Inter", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", "Courier New", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-full: 9999px;
+
+  --list-row-height: 28px;
+
+  --transition-duration: 200ms;
+  --transition-easing: ease-out;
+}
+
+/* 深色主题（默认） */
+:root,
+[data-theme="dark"] {
+  --bg-app: #1e1f22;
+  --bg-surface: #26282c;
+  --bg-surface-raised: #2f3136;
+  --bg-hover: #33353a;
+  --bg-selected: #3a4a63;
+  --bg-terminal: #0c0d0e;
+  --border-default: #3a3c41;
+  --border-subtle: #2d2f33;
+  --text-primary: #e6e6e6;
+  --text-secondary: #9a9ca1;
+  --text-disabled: #5c5e63;
+  --accent: #4f8cff;
+  --accent-dim: rgba(79, 140, 255, 0.15);
+  --success: #3fb950;
+  --warning: #d9a441;
+  --danger: #e5534b;
+  --info: #58a6ff;
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --diff-added: rgba(63, 185, 80, 0.15);
+  --diff-removed: rgba(229, 83, 75, 0.15);
+}
+
+/* 浅色主题 */
+[data-theme="light"] {
+  --bg-app: #f5f5f7;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-hover: #eceef1;
+  --bg-selected: #dbe7fb;
+  --bg-terminal: #1e1e1e;
+  --border-default: #e2e4e8;
+  --border-subtle: #eeef1;
+  --text-primary: #1b1c1e;
+  --text-secondary: #6b6d72;
+  --text-disabled: #b0b2b6;
+  --accent: #3568e0;
+  --accent-dim: rgba(53, 104, 224, 0.12);
+  --success: #2a9d3f;
+  --warning: #b8860b;
+  --danger: #cc3b33;
+  --info: #3568e0;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --diff-added: rgba(42, 157, 63, 0.12);
+  --diff-removed: rgba(204, 59, 51, 0.12);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

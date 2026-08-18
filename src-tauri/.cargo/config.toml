@@ -1,0 +1,5 @@
+# 把 cargo/Tauri 的构建产物统一放到仓库根目录的 build/ 下，
+# 而不是默认的 src-tauri/target/，方便直接找可执行文件和安装包。
+# 路径相对于本文件所在的 .cargo/ 的上一级（即 src-tauri/）解析。
+[build]
+target-dir = "../build"

@@ -1,0 +1,2655 @@
+<!DOCTYPE html>
+<!-- saved from url=(0063)file:///F:/code/wuyou/roc_desk/docs/prototypes/devhub-main.html -->
+<html lang="zh-CN" data-theme="dark"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevHub — UI 设计原型</title>
+  <style>
+    /* ============================================================
+       Design Tokens（对应 UI_DESIGN.md §二）
+       ============================================================ */
+    :root {
+      /* 字体 */
+      --font-ui: "Inter", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", "Courier New", monospace;
+
+      /* 字号刻度（4px 网格） */
+      --text-xs: 11px;
+      --text-sm: 12px;
+      --text-base: 13px;
+      --text-lg: 15px;
+      --text-xl: 18px;
+
+      /* 间距 */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-7: 28px;
+      --space-8: 32px;
+
+      /* 圆角 */
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-full: 9999px;
+
+      /* 行高 */
+      --list-row-height: 28px;
+
+      /* 动效 */
+      --transition-duration: 200ms;
+      --transition-easing: ease-out;
+    }
+
+    /* 深色主题（默认） */
+    [data-theme="dark"] {
+      --bg-app: #1e1f22;
+      --bg-surface: #26282c;
+      --bg-surface-raised: #2f3136;
+      --bg-hover: #33353a;
+      --bg-selected: #3a4a63;
+      --bg-terminal: #0c0d0e;
+      --border-default: #3a3c41;
+      --border-subtle: #2d2f33;
+      --text-primary: #e6e6e6;
+      --text-secondary: #9a9ca1;
+      --text-disabled: #5c5e63;
+      --accent: #4f8cff;
+      --accent-dim: rgba(79, 140, 255, 0.15);
+      --success: #3fb950;
+      --warning: #d9a441;
+      --danger: #e5534b;
+      --info: #58a6ff;
+      --shadow: 0 4px 12px rgba(0,0,0,0.4);
+      --diff-added: rgba(63, 185, 80, 0.15);
+      --diff-removed: rgba(229, 83, 75, 0.15);
+    }
+
+    /* 浅色主题 */
+    [data-theme="light"] {
+      --bg-app: #f5f5f7;
+      --bg-surface: #ffffff;
+      --bg-surface-raised: #ffffff;
+      --bg-hover: #eceef1;
+      --bg-selected: #dbe7fb;
+      --bg-terminal: #1e1e1e;
+      --border-default: #e2e4e8;
+      --border-subtle: #eeef1;
+      --text-primary: #1b1c1e;
+      --text-secondary: #6b6d72;
+      --text-disabled: #b0b2b6;
+      --accent: #3568e0;
+      --accent-dim: rgba(53, 104, 224, 0.12);
+      --success: #2a9d3f;
+      --warning: #b8860b;
+      --danger: #cc3b33;
+      --info: #3568e0;
+      --shadow: 0 2px 8px rgba(0,0,0,0.12);
+      --diff-added: rgba(42, 157, 63, 0.12);
+      --diff-removed: rgba(204, 59, 51, 0.12);
+    }
+
+    /* ============================================================
+       Reset & Base
+       ============================================================ */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-ui);
+      font-size: var(--text-base);
+      color: var(--text-primary);
+      background: var(--bg-app);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+    input, select, textarea { font-family: inherit; font-size: var(--text-base); }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-full); }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-disabled); }
+
+    /* ============================================================
+       App Layout（对应 UI_DESIGN.md §三）
+       ============================================================ */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* --- Tab Bar (32px) --- */
+    .tab-bar {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-default);
+      padding-left: var(--space-2);
+      gap: var(--space-1);
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    .tab-bar .app-icon {
+      width: 20px; height: 20px;
+      margin-right: var(--space-2);
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    /* Workspace name switcher（UI_DESIGN.md §3.2） */
+    .workspace-name-btn {
+      height: 26px;
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-right: var(--space-2);
+      flex-shrink: 0;
+      -webkit-app-region: no-drag;
+    }
+    .workspace-name-btn:hover { background: var(--bg-hover); }
+    .workspace-name-btn .wp-chevron { font-size: 10px; color: var(--text-secondary); }
+
+    /* Quick Tools cluster（UI_DESIGN.md §3.4） */
+    .quick-tools {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: auto;
+      padding: 0 var(--space-2);
+      -webkit-app-region: no-drag;
+    }
+    .quick-tool-btn {
+      width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: 14px;
+      position: relative;
+    }
+    .quick-tool-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .quick-tool-btn.flash { animation: quicktoolflash 0.4s ease-out; }
+    @keyframes quicktoolflash {
+      0% { background: var(--accent-dim); color: var(--accent); }
+      100% { background: transparent; color: var(--text-secondary); }
+    }
+
+    .tab-item {
+      height: 26px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-3);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: background var(--transition-duration) var(--transition-easing),
+                  color var(--transition-duration) var(--transition-easing);
+      position: relative;
+      -webkit-app-region: no-drag;
+    }
+
+    .tab-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .tab-item.active {
+      background: var(--bg-app);
+      color: var(--text-primary);
+    }
+
+    .tab-item.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px; left: 0; right: 0;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    .tab-item .tab-icon { font-size: 14px; flex-shrink: 0; }
+
+    .tab-item .tab-dot {
+      width: 6px; height: 6px;
+      border-radius: var(--radius-full);
+      flex-shrink: 0;
+    }
+
+    .tab-item .tab-dot.connected { background: var(--success); }
+    .tab-item .tab-dot.connecting { background: var(--warning); animation: pulse 1.5s infinite; }
+    .tab-item .tab-dot.disconnected { background: var(--danger); }
+
+    .tab-item .tab-close {
+      width: 16px; height: 16px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      opacity: 0;
+      font-size: 14px;
+      transition: opacity var(--transition-duration);
+    }
+
+    .tab-item:hover .tab-close { opacity: 1; }
+    .tab-item .tab-close:hover { background: var(--bg-hover); }
+
+    .tab-bar .tab-add {
+      width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      flex-shrink: 0;
+      -webkit-app-region: no-drag;
+    }
+    .tab-bar .tab-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .tab-bar .window-controls {
+      margin-left: auto;
+      display: flex;
+      gap: var(--space-1);
+      padding-right: var(--space-2);
+      -webkit-app-region: no-drag;
+    }
+
+    .window-controls .wc-btn {
+      width: 28px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    .window-controls .wc-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .window-controls .wc-btn.close:hover { background: var(--danger); color: #fff; }
+
+    /* --- Main Body --- */
+    .main-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* --- Sidebar --- */
+    .sidebar {
+      width: 220px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      transition: width var(--transition-duration) var(--transition-easing);
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .sidebar.collapsed { width: 52px; }
+
+    .sidebar-nav {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-2);
+      gap: var(--space-1);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: 18px;
+      transition: all var(--transition-duration) var(--transition-easing);
+    }
+    .nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .nav-btn.active { background: var(--accent-dim); color: var(--accent); }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-2);
+    }
+
+    .sidebar.collapsed .sidebar-content { display: none; }
+    .sidebar.collapsed .sidebar-nav { justify-content: center; padding: 0; }
+    .sidebar.collapsed .nav-btn { width: 40px; height: 40px; font-size: 20px; }
+
+    /* Search box */
+    .search-box {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-2);
+      height: 28px;
+      background: var(--bg-app);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      margin-bottom: var(--space-3);
+    }
+    .search-box svg { color: var(--text-secondary); flex-shrink: 0; }
+    .search-box input {
+      flex: 1; border: none; background: none; color: var(--text-primary);
+      font-size: var(--text-sm); outline: none;
+    }
+    .search-box input::placeholder { color: var(--text-disabled); }
+
+    /* Connection tree */
+    .conn-group { margin-bottom: var(--space-2); }
+    .conn-group-header {
+      height: var(--list-row-height);
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: 0 var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      user-select: none;
+    }
+    .conn-group-header:hover { background: var(--bg-hover); }
+    .conn-group-header .chevron {
+      font-size: 10px; transition: transform var(--transition-duration);
+    }
+    .conn-group.collapsed .chevron { transform: rotate(-90deg); }
+    .conn-group.collapsed .conn-items { display: none; }
+
+    .conn-item {
+      height: var(--list-row-height);
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: 0 var(--space-2) 0 var(--space-6);
+      font-size: var(--text-sm);
+      color: var(--text-primary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      position: relative;
+    }
+    .conn-item:hover { background: var(--bg-hover); }
+    .conn-item.selected { background: var(--bg-selected); }
+
+    .conn-item .conn-dot {
+      width: 7px; height: 7px;
+      border-radius: var(--radius-full);
+      flex-shrink: 0;
+    }
+    .conn-item .conn-dot.connected { background: var(--success); }
+    .conn-item .conn-dot.connecting { background: var(--warning); animation: pulse 1.5s infinite; }
+    .conn-item .conn-dot.disconnected { background: var(--text-disabled); }
+    .conn-item .conn-dot.error { background: var(--danger); }
+
+    .conn-item .conn-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conn-item .conn-status { font-size: var(--text-xs); color: var(--text-secondary); }
+
+    .conn-item .conn-badge {
+      font-size: var(--text-xs);
+      padding: 1px 6px;
+      border-radius: var(--radius-full);
+      background: var(--bg-surface-raised);
+      color: var(--text-secondary);
+    }
+
+    .new-conn-btn {
+      width: 100%;
+      height: var(--list-row-height);
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: 0 var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+    }
+    .new-conn-btn:hover { background: var(--bg-hover); color: var(--accent); }
+
+    /* ============================================================
+       Workspace Picker（应用入口，DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）
+       ============================================================ */
+    .workspace-picker-screen {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-app);
+      gap: var(--space-8);
+    }
+    .wp-logo {
+      display: flex; align-items: center; gap: var(--space-2);
+      font-size: 22px; font-weight: 600; color: var(--text-primary);
+    }
+    .wp-logo svg { width: 28px; height: 28px; color: var(--accent); }
+    .wp-entries { display: flex; gap: var(--space-4); }
+    .wp-entry-btn {
+      width: 220px; height: 88px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      font-size: var(--text-base);
+      transition: all var(--transition-duration) var(--transition-easing);
+    }
+    .wp-entry-btn:hover { border-color: var(--accent); background: var(--bg-hover); }
+    .wp-entry-btn svg { width: 24px; height: 24px; color: var(--accent); }
+
+    .wp-recent {
+      width: 640px;
+    }
+    .wp-recent-title {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: var(--space-2);
+    }
+    .wp-recent-list {
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+    .wp-recent-item {
+      display: flex; align-items: center; gap: var(--space-3);
+      height: 40px;
+      padding: 0 var(--space-4);
+      cursor: pointer;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .wp-recent-item:last-child { border-bottom: none; }
+    .wp-recent-item:hover { background: var(--bg-hover); }
+    .wp-recent-item .wp-kind-icon { font-size: 16px; flex-shrink: 0; }
+    .wp-recent-item .wp-name { font-size: var(--text-sm); color: var(--text-primary); flex-shrink: 0; width: 120px; }
+    .wp-recent-item .wp-path { font-size: var(--text-xs); color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wp-recent-item .wp-host { font-size: var(--text-xs); color: var(--text-secondary); }
+
+    /* --- Content Area --- */
+    .content-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-app);
+    }
+
+    .view { display: none; flex: 1; overflow: hidden; }
+    .view.active { display: flex; }
+
+    /* --- Status Bar (22px) --- */
+    .status-bar {
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-3);
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border-default);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .status-left, .status-right { display: flex; align-items: center; gap: var(--space-3); }
+
+    .status-bar .status-dot {
+      width: 6px; height: 6px;
+      border-radius: var(--radius-full);
+    }
+    .status-bar .status-dot.connected { background: var(--success); }
+
+    /* ============================================================
+       Module: SSH Terminal（§五）
+       ============================================================ */
+    .terminal-view { flex-direction: column; }
+
+    .terminal-toolbar {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 0 var(--space-3);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .toolbar-btn {
+      height: 24px;
+      min-width: 24px;
+      padding: 0 var(--space-2);
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: var(--text-sm);
+    }
+    .toolbar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .toolbar-btn svg { width: 14px; height: 14px; }
+
+    .toolbar-sep { width: 1px; height: 16px; background: var(--border-default); margin: 0 var(--space-1); }
+
+    .terminal-body {
+      flex: 1;
+      background: var(--bg-terminal);
+      padding: var(--space-3);
+      font-family: var(--font-mono);
+      font-size: var(--text-base);
+      color: #d4d4d4;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    .terminal-body .prompt { color: var(--success); }
+    .terminal-body .path { color: var(--info); }
+    .terminal-body .log-info { color: #808080; }
+    .terminal-body .log-warn { color: var(--warning); }
+    .terminal-body .log-error { color: var(--danger); }
+    .terminal-body .cursor {
+      display: inline-block;
+      width: 8px; height: 16px;
+      background: #d4d4d4;
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+    }
+
+    /* Reconnect banner */
+    .reconnect-banner {
+      padding: var(--space-2) var(--space-3);
+      background: rgba(217, 164, 65, 0.1);
+      border-bottom: 1px solid var(--warning);
+      color: var(--warning);
+      font-size: var(--text-sm);
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .reconnect-banner.show { display: flex; }
+
+    /* ============================================================
+       Module: SFTP Browser（§六）
+       ============================================================ */
+    .sftp-view { flex-direction: column; }
+
+    .sftp-toolbar {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-3);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .breadcrumb {
+      display: flex; align-items: center; gap: var(--space-1);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+    }
+    .breadcrumb .crumb { cursor: pointer; }
+    .breadcrumb .crumb:hover { color: var(--accent); }
+    .breadcrumb .crumb.current { color: var(--text-primary); }
+    .breadcrumb .sep { color: var(--text-disabled); }
+
+    .file-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-1) 0;
+    }
+
+    .file-header, .file-row {
+      display: grid;
+      grid-template-columns: 2fr 100px 140px 120px 40px;
+      align-items: center;
+      height: var(--list-row-height);
+      padding: 0 var(--space-3);
+      font-size: var(--text-sm);
+      gap: var(--space-2);
+    }
+
+    .file-header {
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-default);
+      font-weight: 500;
+      position: sticky; top: 0;
+      background: var(--bg-app);
+      z-index: 1;
+    }
+
+    .file-header span { cursor: pointer; }
+    .file-header span:hover { color: var(--accent); }
+    .file-header .sort-arrow { font-size: 10px; color: var(--accent); }
+
+    .file-row { color: var(--text-primary); cursor: pointer; }
+    .file-row:hover { background: var(--bg-hover); }
+    .file-row.selected { background: var(--bg-selected); }
+
+    .file-row .file-icon { font-size: 14px; }
+    .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-row .file-size, .file-row .file-time, .file-row .file-perm { color: var(--text-secondary); font-family: var(--font-mono); font-size: var(--text-xs); }
+
+    .sftp-footer {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-3);
+      border-top: 1px solid var(--border-default);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    /* Large file banner */
+    .large-file-banner {
+      padding: var(--space-2) var(--space-3);
+      background: var(--accent-dim);
+      border-bottom: 1px solid var(--accent);
+      font-size: var(--text-sm);
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .large-file-banner .banner-actions { display: flex; gap: var(--space-2); }
+    .large-file-banner .banner-btn {
+      padding: 2px var(--space-2);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+    }
+    .large-file-banner .banner-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    /* File viewer (Monaco mock) */
+    .file-viewer-body {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: var(--text-base);
+      overflow: auto;
+      padding: var(--space-2) 0;
+    }
+
+    .code-line {
+      display: flex;
+      padding: 0 var(--space-3);
+      line-height: 1.6;
+    }
+    .code-line:hover { background: var(--bg-hover); }
+    .code-line .line-num {
+      width: 40px;
+      text-align: right;
+      padding-right: var(--space-2);
+      color: var(--text-disabled);
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .code-line .line-content { flex: 1; white-space: pre; }
+    .code-line .log-ts { color: var(--text-secondary); }
+    .code-line .log-lvl-error { color: var(--danger); font-weight: 500; }
+    .code-line .log-lvl-warn { color: var(--warning); font-weight: 500; }
+    .code-line .log-lvl-info { color: var(--info); }
+
+    /* ============================================================
+       Module: Log Search（§七）
+       ============================================================ */
+    .log-search-view { flex-direction: row; }
+
+    .ls-left-panel {
+      width: 220px;
+      border-right: 1px solid var(--border-default);
+      padding: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+
+    .ls-field-label {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      margin-bottom: var(--space-1);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .ls-input {
+      width: 100%;
+      height: 28px;
+      padding: 0 var(--space-2);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: var(--text-sm);
+      outline: none;
+    }
+    .ls-input:focus { border-color: var(--accent); }
+
+    .ls-checkbox {
+      display: flex; align-items: center; gap: var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .ls-checkbox input { accent-color: var(--accent); }
+
+    .ls-segmented {
+      display: flex;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .ls-segmented .seg-btn {
+      flex: 1;
+      height: 26px;
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      display: flex; align-items: center; justify-content: center;
+      gap: 4px;
+    }
+    .ls-segmented .seg-btn.active { background: var(--bg-selected); color: var(--accent); }
+
+    .ls-search-btn {
+      height: 30px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      display: flex; align-items: center; justify-content: center; gap: var(--space-1);
+    }
+    .ls-search-btn:hover { opacity: 0.9; }
+
+    .ls-results {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .ls-results-header {
+      height: 28px;
+      padding: 0 var(--space-3);
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .ls-results-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-1) 0;
+    }
+
+    .ls-result-row {
+      height: var(--list-row-height);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-3);
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      cursor: pointer;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .ls-result-row:hover { background: var(--bg-hover); }
+    .ls-result-row.selected { background: var(--bg-selected); }
+
+    .ls-result-row .level-block {
+      width: 4px; height: 18px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .ls-result-row .level-block.error { background: var(--danger); }
+    .ls-result-row .level-block.warn { background: var(--warning); }
+    .ls-result-row .level-block.info { background: var(--text-disabled); }
+
+    .ls-result-row .result-ts { color: var(--text-secondary); white-space: nowrap; }
+    .ls-result-row .result-level { font-weight: 500; min-width: 50px; }
+    .ls-result-row .result-level.error { color: var(--danger); }
+    .ls-result-row .result-level.warn { color: var(--warning); }
+    .ls-result-row .result-host { color: var(--info); min-width: 60px; }
+    .ls-result-row .result-text { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ls-result-row mark { background: var(--accent-dim); color: var(--accent); border-radius: 2px; padding: 0 2px; }
+
+    .ls-detail-panel {
+      width: 360px;
+      border-left: 1px solid var(--border-default);
+      padding: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .ls-detail-header {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    .ls-detail-content {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      line-height: 1.6;
+      color: var(--text-primary);
+    }
+
+    .ls-context-label {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      margin-top: var(--space-3);
+      padding-top: var(--space-2);
+      border-top: 1px solid var(--border-default);
+    }
+
+    .ls-jump-link {
+      font-size: var(--text-sm);
+      color: var(--accent);
+      cursor: pointer;
+      margin-top: var(--space-2);
+    }
+    .ls-jump-link:hover { text-decoration: underline; }
+
+    /* ============================================================
+       Module: AI Chat（§八）
+       ============================================================ */
+    .ai-chat-view { flex-direction: column; }
+
+    .chat-header {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-3);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .provider-selector {
+      display: flex; align-items: center; gap: var(--space-2);
+      height: 28px;
+      padding: 0 var(--space-2);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      color: var(--text-primary);
+    }
+    .provider-selector:hover { border-color: var(--accent); }
+
+    .provider-tag {
+      font-size: var(--text-xs);
+      padding: 1px 6px;
+      border-radius: var(--radius-full);
+    }
+    .provider-tag.cloud { background: rgba(88, 166, 255, 0.15); color: var(--info); }
+    .provider-tag.local { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-4);
+    }
+
+    .msg-bubble {
+      max-width: 75%;
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-md);
+      font-size: var(--text-base);
+      line-height: 1.6;
+    }
+
+    .msg-bubble.user {
+      align-self: flex-end;
+      background: var(--bg-selected);
+      color: var(--text-primary);
+    }
+
+    .msg-bubble.ai {
+      align-self: flex-start;
+      background: var(--bg-surface-raised);
+      color: var(--text-primary);
+      border: 1px solid var(--border-default);
+    }
+
+    .msg-bubble .msg-role {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      margin-bottom: var(--space-1);
+      display: flex; align-items: center; gap: var(--space-1);
+    }
+
+    .msg-bubble .code-block {
+      margin: var(--space-2) 0;
+      padding: var(--space-3);
+      background: var(--bg-app);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      border: 1px solid var(--border-default);
+      position: relative;
+      overflow-x: auto;
+    }
+
+    .msg-bubble .code-actions {
+      position: absolute;
+      top: var(--space-1);
+      right: var(--space-1);
+      display: flex;
+      gap: var(--space-1);
+      opacity: 0;
+      transition: opacity var(--transition-duration);
+    }
+    .msg-bubble .code-block:hover .code-actions { opacity: 1; }
+
+    .msg-bubble .code-action-btn {
+      padding: 2px var(--space-2);
+      background: var(--bg-surface-raised);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+    }
+    .msg-bubble .code-action-btn:hover { color: var(--accent); }
+
+    .streaming-cursor {
+      display: inline-block;
+      width: 7px; height: 15px;
+      background: var(--accent);
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+      margin-left: 2px;
+    }
+
+    .data-warning-bar {
+      padding: var(--space-2) var(--space-3);
+      background: var(--accent-dim);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-2);
+    }
+
+    .chat-input-area {
+      padding: var(--space-3);
+      border-top: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .chat-input-wrapper {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+    }
+    .chat-input-wrapper:focus-within { border-color: var(--accent); }
+
+    .chat-input-wrapper input {
+      flex: 1;
+      border: none; background: none; color: var(--text-primary);
+      font-size: var(--text-base); outline: none;
+    }
+    .chat-input-wrapper input::placeholder { color: var(--text-disabled); }
+
+    .chat-send-btn {
+      width: 32px; height: 32px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--accent);
+      border-radius: var(--radius-sm);
+      color: #fff;
+    }
+    .chat-send-btn:hover { opacity: 0.9; }
+
+    .chat-attach-btn {
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+    }
+    .chat-attach-btn:hover { background: var(--bg-hover); }
+
+    /* ============================================================
+       Module: Coding Agent（§九 — 三栏布局）
+       ============================================================ */
+    .coding-view { flex-direction: row; }
+
+    .coding-left {
+      width: 200px;
+      border-right: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .coding-left-header {
+      height: 28px;
+      display: flex; align-items: center;
+      padding: 0 var(--space-3);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .project-tree {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-1) 0;
+    }
+
+    .tree-item {
+      height: 24px;
+      display: flex; align-items: center; gap: var(--space-1);
+      padding: 0 var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--text-primary);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .tree-item:hover { background: var(--bg-hover); }
+    .tree-item.active { background: var(--bg-selected); }
+    .tree-item .tree-icon { font-size: 14px; width: 16px; flex-shrink: 0; }
+    .tree-item .tree-name { overflow: hidden; text-overflow: ellipsis; }
+    .tree-item .change-badge {
+      font-size: 10px;
+      width: 14px; height: 14px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-full);
+      margin-left: auto;
+    }
+    .change-badge.modified { background: var(--warning); color: var(--bg-app); }
+    .change-badge.added { background: var(--success); color: var(--bg-app); }
+
+    /* Explorer 树的"未保存" dirty 圆点（UI_DESIGN.md §3.3/§3.5，区别于 Git 变更色的 change-badge） */
+    .dirty-dot {
+      width: 6px; height: 6px;
+      border-radius: var(--radius-full);
+      background: var(--warning);
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .tab-item .tab-dirty, .file-tab .tab-dirty {
+      width: 6px; height: 6px;
+      border-radius: var(--radius-full);
+      background: var(--warning);
+    }
+
+    .changes-section {
+      border-top: 1px solid var(--border-default);
+      padding: var(--space-2);
+    }
+    .changes-title {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      margin-bottom: var(--space-2);
+      text-transform: uppercase;
+    }
+    .change-item {
+      display: flex; align-items: center; gap: var(--space-2);
+      font-size: var(--text-sm);
+      padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+    .change-item:hover { background: var(--bg-hover); }
+    .change-item .change-dot {
+      width: 8px; height: 8px;
+      border-radius: var(--radius-full);
+    }
+    .change-item .change-dot.applied { background: var(--success); }
+    .change-item .change-dot.pending { background: var(--warning); }
+
+    .coding-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .mode-tabs {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-3);
+      gap: var(--space-2);
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .mode-tab {
+      height: 26px;
+      padding: 0 var(--space-3);
+      display: flex; align-items: center; gap: var(--space-1);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+    .mode-tab:hover { background: var(--bg-hover); }
+    .mode-tab.active { background: var(--bg-selected); color: var(--accent); }
+    .mode-tab.active.build { border: 1px solid var(--warning); }
+
+    .mode-tab .target-select, .mode-tab .model-select {
+      font-size: var(--text-xs);
+      padding: 2px var(--space-2);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+    }
+
+    /* 目标：自动绑定工作区 + 可覆盖（UI_DESIGN.md §九，取代原来的下拉选择器） */
+    .target-badge {
+      font-size: var(--text-xs);
+      padding: 2px var(--space-2);
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .target-badge.remote { background: rgba(217,164,65,0.1); color: var(--warning); }
+    .target-badge.local { color: var(--text-secondary); }
+    .target-change-link {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      margin-left: 2px;
+    }
+    .target-change-link:hover { color: var(--accent); }
+
+    /* 远程能力边界徽标（DESIGN.md §3.8.7） */
+    .remote-capability-badge {
+      color: var(--text-secondary);
+      cursor: help;
+      border-bottom: 1px dotted var(--text-secondary);
+    }
+
+    /* 工具调用耗时反馈（DESIGN.md §3.8.7 性能诚实） */
+    .tool-call-progress {
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      display: flex; align-items: center; gap: 6px;
+      padding: 2px var(--space-2);
+    }
+    .tool-call-progress .spinner {
+      width: 10px; height: 10px;
+      border: 1.5px solid var(--border-default);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .chat-stream {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    .agent-msg {
+      max-width: 90%;
+      padding: var(--space-3);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      line-height: 1.6;
+    }
+    .agent-msg.user { align-self: flex-end; background: var(--bg-selected); }
+    .agent-msg.ai { align-self: flex-start; background: var(--bg-surface-raised); border: 1px solid var(--border-default); }
+    .agent-msg .msg-label { font-size: var(--text-xs); color: var(--text-secondary); margin-bottom: var(--space-1); }
+
+    /* FileChangeCard */
+    .file-change-card {
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      margin: var(--space-2) 0;
+      overflow: hidden;
+    }
+    .file-change-card.pending { border-color: var(--warning); }
+    .file-change-card.applied { border-color: var(--success); }
+    .file-change-card.rejected { border-color: var(--danger); }
+
+    .fcc-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--text-sm);
+    }
+    .fcc-header.pending { background: rgba(217,164,65,0.08); }
+    .fcc-header.applied { background: rgba(63,185,80,0.08); }
+    .fcc-header.rejected { background: rgba(229,83,75,0.08); }
+
+    .fcc-header .fcc-path { font-family: var(--font-mono); flex: 1; }
+    .fcc-header .fcc-badge {
+      font-size: var(--text-xs);
+      padding: 1px 6px;
+      border-radius: var(--radius-full);
+    }
+    .fcc-badge.pending { background: var(--warning); color: #000; }
+    .fcc-badge.applied { background: var(--success); color: #000; }
+    .fcc-badge.rejected { background: var(--danger); color: #fff; }
+
+    .fcc-actions { display: flex; gap: var(--space-1); }
+    .fcc-btn {
+      height: 22px;
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .fcc-btn.outline { border: 1px solid var(--border-default); color: var(--text-secondary); }
+    .fcc-btn.outline:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .fcc-btn.success { background: var(--success); color: #000; }
+    .fcc-btn.danger { background: var(--danger); color: #fff; }
+
+    .fcc-diff {
+      max-height: 150px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      padding: var(--space-2) var(--space-3);
+      background: var(--bg-app);
+    }
+    .fcc-diff .diff-line { display: flex; line-height: 1.5; }
+    .fcc-diff .diff-line.added { background: var(--diff-added); color: var(--success); }
+    .fcc-diff .diff-line.removed { background: var(--diff-removed); color: var(--danger); }
+    .fcc-diff .diff-line .diff-sign { width: 20px; flex-shrink: 0; }
+    .fcc-diff .diff-line .diff-content { white-space: pre; }
+
+    .coding-input {
+      padding: var(--space-2) var(--space-3);
+      border-top: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .target-indicator {
+      font-size: var(--text-xs);
+      color: var(--warning);
+      padding: var(--space-1) var(--space-2);
+      background: rgba(217,164,65,0.08);
+      border-radius: var(--radius-sm);
+      margin-bottom: var(--space-2);
+    }
+
+    .coding-right {
+      width: 420px;
+      border-left: 1px solid var(--border-default);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .editor-header {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: 0 var(--space-3);
+      border-bottom: 1px solid var(--border-default);
+      font-size: var(--text-sm);
+      flex-shrink: 0;
+    }
+
+    .editor-header .file-tab {
+      display: flex; align-items: center; gap: var(--space-1);
+      padding: 4px var(--space-2);
+      background: var(--bg-surface);
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      border-bottom: 2px solid var(--accent);
+    }
+
+    .editor-header .editor-actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--space-1);
+    }
+
+    .editor-body {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: var(--text-base);
+      overflow: auto;
+      background: var(--bg-app);
+    }
+
+    .editor-body .modified-marker {
+      width: 3px;
+      background: var(--warning);
+      margin-left: 38px;
+      position: absolute;
+    }
+
+    /* ============================================================
+       Module: Settings（§十）
+       ============================================================ */
+    .settings-view { flex-direction: row; }
+
+    .settings-nav {
+      width: 180px;
+      padding: var(--space-3) 0;
+      border-right: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .settings-nav-item {
+      height: var(--list-row-height);
+      display: flex; align-items: center; gap: var(--space-2);
+      padding: 0 var(--space-4);
+      font-size: var(--text-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .settings-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .settings-nav-item.active { background: var(--bg-selected); color: var(--accent); }
+
+    .settings-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-6);
+    }
+
+    .settings-section-title {
+      font-size: var(--text-lg);
+      font-weight: 600;
+      margin-bottom: var(--space-4);
+      color: var(--text-primary);
+    }
+
+    .settings-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      margin-bottom: var(--space-3);
+    }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-3) 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .settings-row:last-child { border-bottom: none; }
+
+    .settings-row .row-label { font-size: var(--text-base); color: var(--text-primary); }
+    .settings-row .row-desc { font-size: var(--text-xs); color: var(--text-secondary); margin-top: 2px; }
+
+    .toggle-switch {
+      width: 36px; height: 20px;
+      background: var(--border-default);
+      border-radius: var(--radius-full);
+      position: relative;
+      cursor: pointer;
+      transition: background var(--transition-duration);
+    }
+    .toggle-switch.on { background: var(--accent); }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      background: #fff;
+      border-radius: var(--radius-full);
+      transition: transform var(--transition-duration) var(--transition-easing);
+    }
+    .toggle-switch.on::after { transform: translateX(16px); }
+
+    .provider-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      margin-bottom: var(--space-2);
+    }
+
+    .danger-btn {
+      padding: var(--space-2) var(--space-4);
+      background: var(--danger);
+      color: #fff;
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+    }
+    .danger-btn:hover { opacity: 0.9; }
+
+    /* ============================================================
+       Dialogs（§四 §九）
+       ============================================================ */
+    .dialog-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .dialog-overlay.show { display: flex; }
+
+    .dialog {
+      min-width: 420px;
+      max-width: 540px;
+      background: var(--bg-surface-raised);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .dialog-title-bar {
+      padding: var(--space-4) var(--space-4) var(--space-2);
+      font-size: var(--text-lg);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .dialog-title-bar.info { color: var(--info); }
+    .dialog-title-bar.danger { background: var(--danger); color: #fff; }
+
+    .dialog-body {
+      padding: var(--space-2) var(--space-4) var(--space-4);
+      font-size: var(--text-base);
+      color: var(--text-primary);
+      line-height: 1.6;
+    }
+
+    .dialog-body .fingerprint-block {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      padding: var(--space-2) var(--space-3);
+      background: var(--bg-app);
+      border-radius: var(--radius-sm);
+      margin: var(--space-2) 0;
+      word-break: break-all;
+    }
+
+    .dialog-body .warning-text { color: var(--danger); font-weight: 500; }
+
+    .dialog-actions {
+      padding: var(--space-2) var(--space-4) var(--space-4);
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-2);
+    }
+
+    .dialog-btn {
+      height: 32px;
+      padding: 0 var(--space-4);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      display: flex; align-items: center; gap: var(--space-1);
+    }
+    .dialog-btn.primary { background: var(--accent); color: #fff; }
+    .dialog-btn.primary:hover { opacity: 0.9; }
+    .dialog-btn.ghost { border: 1px solid var(--border-default); color: var(--text-secondary); }
+    .dialog-btn.ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .dialog-btn.danger-strong { background: var(--danger); color: #fff; font-weight: 500; }
+    .dialog-btn.weak { color: var(--text-disabled); font-size: var(--text-xs); }
+
+    /* Command confirm dialog */
+    .cmd-confirm-host {
+      padding: var(--space-2) var(--space-3);
+      background: rgba(217,164,65,0.12);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-sm);
+      color: var(--warning);
+      margin: var(--space-2) 0;
+    }
+
+    .cmd-confirm-code {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      padding: var(--space-2) var(--space-3);
+      background: var(--bg-app);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      margin: var(--space-2) 0;
+      color: var(--text-primary);
+    }
+
+    /* Blocked command message */
+    .blocked-cmd-msg {
+      padding: var(--space-2) var(--space-3);
+      background: var(--danger);
+      color: #fff;
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    /* ============================================================
+       Animations
+       ============================================================ */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* Prototype info bar */
+    .proto-info {
+      position: fixed;
+      bottom: var(--space-2);
+      right: var(--space-2);
+      background: var(--bg-surface-raised);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      padding: var(--space-1) var(--space-2);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+      z-index: 999;
+      display: flex;
+      gap: var(--space-2);
+      align-items: center;
+    }
+    .proto-info button {
+      padding: 2px var(--space-2);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      color: var(--text-secondary);
+    }
+    .proto-info button:hover { background: var(--bg-hover); }
+  </style>
+</head>
+<body>
+
+<!-- ============================================================
+     Workspace Picker（应用入口，DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）
+     ============================================================ -->
+<div class="workspace-picker-screen" id="workspace-picker-screen" style="display: none;">
+  <div class="wp-logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+      <path d="M9 9l6 6M15 9l-6 6"></path>
+    </svg>
+    DevHub
+  </div>
+
+  <div class="wp-entries">
+    <button class="wp-entry-btn" onclick="enterWorkspace(&#39;local&#39;, &#39;my-local-app&#39;)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path></svg>
+      打开本地文件夹
+    </button>
+    <button class="wp-entry-btn" onclick="enterWorkspace(&#39;remote&#39;, &#39;app (web-01)&#39;)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="8" rx="2"></rect><rect x="2" y="13" width="20" height="8" rx="2"></rect><circle cx="6" cy="7" r="1" fill="currentColor"></circle><circle cx="6" cy="17" r="1" fill="currentColor"></circle></svg>
+      连接远程主机并选择目录
+    </button>
+  </div>
+
+  <div class="wp-recent">
+    <div class="wp-recent-title">最近打开的工作区</div>
+    <div class="wp-recent-list">
+      <div class="wp-recent-item" onclick="enterWorkspace(&#39;local&#39;, &#39;my-local-app&#39;)">
+        <span class="wp-kind-icon">💻</span>
+        <span class="wp-name">my-local-app</span>
+        <span class="wp-path">F:\code\my-local-app</span>
+      </div>
+      <div class="wp-recent-item" onclick="enterWorkspace(&#39;remote&#39;, &#39;nginx-conf&#39;)">
+        <span class="wp-kind-icon">🖥</span>
+        <span class="wp-name">nginx-conf</span>
+        <span class="wp-path">/etc/nginx</span>
+        <span class="wp-host">root@web-01</span>
+      </div>
+      <div class="wp-recent-item" onclick="enterWorkspace(&#39;remote&#39;, &#39;app (web-01)&#39;)">
+        <span class="wp-kind-icon">🖥</span>
+        <span class="wp-name">api-service</span>
+        <span class="wp-path">~/app</span>
+        <span class="wp-host">root@web-01</span>
+      </div>
+      <div class="wp-recent-item" onclick="enterWorkspace(&#39;local&#39;, &#39;scratch&#39;)">
+        <span class="wp-kind-icon">💻</span>
+        <span class="wp-name">scratch</span>
+        <span class="wp-path">D:\scratch</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="app" id="app-shell" style="display: flex;">
+  <!-- ============================================================
+       Tab Bar（32px）
+       ============================================================ -->
+  <div class="tab-bar">
+    <svg class="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+      <path d="M9 9l6 6M15 9l-6 6"></path>
+    </svg>
+
+    <button class="workspace-name-btn" id="workspace-name-btn" onclick="backToWorkspacePicker()" title="切换工作区 (Ctrl+Shift+O)">
+      <span id="workspace-name-label">app (web-01)</span>
+      <span class="wp-chevron">▾</span>
+    </button>
+
+    <div class="tab-item" data-view="terminal" onclick="switchTab(&#39;terminal&#39;)">
+      <span class="tab-dot connected"></span>
+      <span class="tab-icon">🖥</span>
+      <span id="terminal-tab-label">root@web-01</span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <div class="tab-item" data-view="editor" onclick="switchTab(&#39;editor&#39;)">
+      <span class="tab-icon">📄</span>
+      <span>main.rs</span>
+      <span class="tab-dirty" title="未保存" style="display: none;"></span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <div class="tab-item" data-view="sftp" onclick="switchTab(&#39;sftp&#39;)">
+      <span class="tab-icon">📂</span>
+      <span>SFTP — web-01</span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <div class="tab-item" data-view="logsearch" onclick="switchTab(&#39;logsearch&#39;)">
+      <span class="tab-icon">📄</span>
+      <span>日志搜索</span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <div class="tab-item" data-view="aichat" onclick="switchTab(&#39;aichat&#39;)">
+      <span class="tab-icon">🤖</span>
+      <span>AI 对话</span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <div class="tab-item" data-view="coding" onclick="switchTab(&#39;coding&#39;)">
+      <span class="tab-icon">🛠</span>
+      <span>编程助手</span>
+      <span class="tab-close" onclick="closeTab(event)">×</span>
+    </div>
+
+    <button class="tab-add" title="新建标签 (Ctrl+P 快速打开文件)">+</button>
+
+    <!-- 顶部快捷工具（UI_DESIGN.md §3.4）：已在本工作区打开过则直接激活，不重复新开 -->
+    <div class="quick-tools">
+      <button class="quick-tool-btn" id="qt-sftp" title="SFTP 传输管理器" onclick="quickTool(&#39;sftp&#39;)">📂</button>
+      <button class="quick-tool-btn" id="qt-browser" title="网页浏览" onclick="quickTool(&#39;browser&#39;)">🌐</button>
+      <button class="quick-tool-btn" id="qt-aichat" title="AI 问答" onclick="quickTool(&#39;aichat&#39;)">💬</button>
+      <button class="quick-tool-btn" id="qt-coding" title="AI 编程助手" onclick="quickTool(&#39;coding&#39;)">🛠</button>
+    </div>
+
+    <div class="window-controls">
+      <button class="wc-btn" title="最小化">─</button>
+      <button class="wc-btn" title="最大化">□</button>
+      <button class="wc-btn close" title="关闭">✕</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Main Body
+       ============================================================ -->
+  <div class="main-body">
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-nav">
+        <button class="nav-btn active" title="Explorer (Ctrl+Shift+E)" onclick="showSidebarPanel(&#39;explorer&#39;, this)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"></path>
+          </svg>
+        </button>
+        <button class="nav-btn" title="在工作区中搜索 (Ctrl+Shift+F)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path>
+          </svg>
+        </button>
+        <button class="nav-btn" title="服务器 / 连接管理" onclick="showSidebarPanel(&#39;connections&#39;, this)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="7" rx="1.5"></rect><rect x="2" y="14" width="20" height="7" rx="1.5"></rect>
+            <circle cx="6" cy="6.5" r="1" fill="currentColor"></circle><circle cx="6" cy="17.5" r="1" fill="currentColor"></circle>
+          </svg>
+        </button>
+        <button class="nav-btn" title="设置" onclick="switchTab(&#39;settings&#39;)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Explorer 面板（工作区默认 Sidebar 内容，UI_DESIGN.md §3.3） -->
+      <div class="sidebar-content" id="sidebar-panel-explorer">
+        <div class="coding-left-header" style="padding-left:0;text-transform:uppercase;letter-spacing:.5px">
+          <span id="explorer-root-label">APP (WEB-01)</span>
+        </div>
+        <div class="project-tree" style="padding-top:4px">
+          <div class="tree-item"><span class="tree-icon">📁</span><span class="tree-name">src/</span></div>
+          <div class="tree-item active" style="padding-left:24px">
+            <span class="tree-icon">📄</span><span class="tree-name">main.rs</span>
+            <span class="dirty-dot" title="未保存" style="display: none;"></span>
+          </div>
+          <div class="tree-item" style="padding-left:24px"><span class="tree-icon">📄</span><span class="tree-name">api.rs</span></div>
+          <div class="tree-item" style="padding-left:24px"><span class="tree-icon">📄</span><span class="tree-name">util.rs</span></div>
+          <div class="tree-item"><span class="tree-icon">📁</span><span class="tree-name">tests/</span></div>
+          <div class="tree-item"><span class="tree-icon">📄</span><span class="tree-name">Cargo.toml</span></div>
+          <div class="tree-item"><span class="tree-icon">📄</span><span class="tree-name">README.md</span></div>
+        </div>
+      </div>
+
+      <!-- 连接管理面板（UI_DESIGN.md §四，从「服务器」图标呼出，不再是默认内容） -->
+      <div class="sidebar-content" id="sidebar-panel-connections" style="display:none">
+        <div class="search-box">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path>
+          </svg>
+          <input type="text" placeholder="搜索连接…">
+        </div>
+
+        <div class="conn-group">
+          <div class="conn-group-header" onclick="toggleGroup(this)">
+            <span class="chevron">▾</span>
+            <span>生产环境 (3)</span>
+          </div>
+          <div class="conn-items">
+            <div class="conn-item selected">
+              <span class="conn-dot connected"></span>
+              <span class="conn-name">web-01</span>
+              <span class="conn-status">24ms</span>
+            </div>
+            <div class="conn-item">
+              <span class="conn-dot disconnected"></span>
+              <span class="conn-name">web-02</span>
+            </div>
+            <div class="conn-item">
+              <span class="conn-dot connected"></span>
+              <span class="conn-name">db-01</span>
+              <span class="conn-badge">prod</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="conn-group">
+          <div class="conn-group-header" onclick="toggleGroup(this)">
+            <span class="chevron">▾</span>
+            <span>测试环境 (2)</span>
+          </div>
+          <div class="conn-items">
+            <div class="conn-item">
+              <span class="conn-dot disconnected"></span>
+              <span class="conn-name">test-app</span>
+            </div>
+            <div class="conn-item">
+              <span class="conn-dot disconnected"></span>
+              <span class="conn-name">test-db</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="conn-group">
+          <div class="conn-group-header" onclick="toggleGroup(this)">
+            <span class="chevron">▾</span>
+            <span>个人服务器 (1)</span>
+          </div>
+          <div class="conn-items">
+            <div class="conn-item">
+              <span class="conn-dot connecting"></span>
+              <span class="conn-name">dev-vm</span>
+              <span class="conn-status">连接中</span>
+            </div>
+          </div>
+        </div>
+
+        <button class="new-conn-btn">
+          <span>+</span>
+          <span>新建连接</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content-area">
+
+      <!-- ========================================================
+           View: SSH Terminal（§五）
+           ======================================================== -->
+      <div class="view terminal-view" id="view-terminal">
+        <div class="terminal-toolbar">
+          <button class="toolbar-btn" title="搜索 (Ctrl+Shift+F)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg>
+          </button>
+          <button class="toolbar-btn" title="放大字号">A+</button>
+          <button class="toolbar-btn" title="缩小字号">A-</button>
+          <div class="toolbar-sep"></div>
+          <button class="toolbar-btn" title="水平分屏">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line></svg>
+            分屏
+          </button>
+          <div style="margin-left:auto">
+            <button class="toolbar-btn" title="会话设置">⚙ 会话设置</button>
+          </div>
+        </div>
+        <div class="reconnect-banner" id="reconnect-banner">
+          <span>⚠ 连接已断开，3s 后重试 (2/5)</span>
+          <div style="display:flex;gap:8px">
+            <button class="dialog-btn ghost" style="height:24px" onclick="hideReconnect()">立即重试</button>
+            <button class="dialog-btn ghost" style="height:24px" onclick="hideReconnect()">取消</button>
+          </div>
+        </div>
+        <div class="terminal-body">
+<span class="prompt">user@web-01</span>:<span class="path">~</span>$ tail -f /var/log/app.log
+<span class="log-info">2026-08-17 10:22:01 INFO  starting worker pool (8 workers)</span>
+<span class="log-info">2026-08-17 10:22:02 INFO  database connection established (postgres://10.0.0.3:5432)</span>
+<span class="log-warn">2026-08-17 10:22:03 WARN  queue depth high (120/200)</span>
+<span class="log-info">2026-08-17 10:22:05 INFO  processing batch #1024 (50 items)</span>
+<span class="log-error">2026-08-17 10:22:08 ERROR upstream timed out (110: Connection timed out)</span>
+<span class="log-warn">2026-08-17 10:22:09 WARN  retrying request (attempt 1/3)</span>
+<span class="log-info">2026-08-17 10:22:12 INFO  request completed (status=200, 3.2s)</span>
+<span class="log-info">2026-08-17 10:22:15 INFO  cache hit ratio: 87.3%</span>
+<span class="prompt">user@web-01</span>:<span class="path">~</span>$ <span class="cursor"></span>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: 通用代码编辑器（Explorer 单击打开，UI_DESIGN.md §3.3/§3.5）
+           点击 Explorer 或 Tab 栏中的 main.rs 打开；与 SFTP 只读查看不同，
+           这里默认即可编辑，Ctrl+S 保存，远程文件走本地缓冲区+SFTP写回
+           ======================================================== -->
+      <div class="view sftp-view" id="view-editor">
+        <div class="sftp-toolbar">
+          <div class="breadcrumb">
+            <span class="crumb">my-local-app</span>
+            <span class="sep">›</span>
+            <span class="crumb">src</span>
+            <span class="sep">›</span>
+            <span class="crumb current">main.rs</span>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
+            <span class="tool-call-progress" style="padding:0" title="未保存的更改会保留在本地缓冲区，直到 Ctrl+S">
+              <span class="dirty-dot" style="display: none;"></span> 未保存
+            </span>
+            <button class="toolbar-btn" title="搜索 (Ctrl+F)">🔍</button>
+            <button class="toolbar-btn" title="保存 (Ctrl+S)" onclick="saveEditor()">💾 保存</button>
+          </div>
+        </div>
+        <div class="file-viewer-body">
+          <div class="code-line"><span class="line-num">1</span><span class="line-content" style="color:var(--text-secondary)">// main.rs — 应用入口</span></div>
+          <div class="code-line"><span class="line-num">2</span><span class="line-content"><span style="color:var(--info)">mod</span> api;</span></div>
+          <div class="code-line"><span class="line-num">3</span><span class="line-content"></span></div>
+          <div class="code-line"><span class="line-num">4</span><span class="line-content"><span style="color:var(--info)">fn</span> <span style="color:var(--accent)">main</span>() {</span></div>
+          <div class="code-line"><span class="line-num">5</span><span class="line-content">    <span style="color:var(--info)">println!</span>(<span style="color:var(--success)">"server starting on :8080"</span>);</span></div>
+          <div class="code-line"><span class="line-num">6</span><span class="line-content">    api::serve();</span></div>
+          <div class="code-line"><span class="line-num">7</span><span class="line-content">}</span></div>
+        </div>
+        <div class="sftp-footer">
+          <span>行 4/7 · UTF-8 · Rust</span>
+          <span style="margin-left:auto">web-01 (远程) · 远程文件本地化编辑，保存时写回</span>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: SFTP Browser（§六）
+           ======================================================== -->
+      <div class="view sftp-view" id="view-sftp">
+        <div class="sftp-toolbar">
+          <div class="breadcrumb">
+            <span class="crumb">/</span>
+            <span class="sep">›</span>
+            <span class="crumb">var</span>
+            <span class="sep">›</span>
+            <span class="crumb">log</span>
+            <span class="sep">›</span>
+            <span class="crumb">nginx</span>
+            <span class="sep">›</span>
+            <span class="crumb current">error.log</span>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:4px">
+            <button class="toolbar-btn" title="默认只读，点击后可编辑" onclick="this.textContent=&#39;✎ 编辑中&#39;">✎ 编辑</button>
+            <button class="toolbar-btn" title="排序">⇅ 排序</button>
+            <button class="toolbar-btn" title="搜索">🔍</button>
+          </div>
+        </div>
+        <div class="large-file-banner">
+          <span>ℹ 文件较大（212MB），已启用分页加载，滚动时按需获取内容</span>
+          <div class="banner-actions">
+            <button class="banner-btn">下载到本地</button>
+            <button class="banner-btn">建索引搜索</button>
+          </div>
+        </div>
+        <div class="file-viewer-body">
+          <div class="code-line"><span class="line-num">1</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:05</span> <span class="log-lvl-error">[error]</span> upstream timed out (110: Connection timed out) while reading response header</span></div>
+          <div class="code-line"><span class="line-num">2</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:05</span> <span class="log-lvl-error">[error]</span> client: 10.0.0.5, server: api.example.com</span></div>
+          <div class="code-line"><span class="line-num">3</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:05</span> <span class="log-lvl-error">[error]</span> request: "GET /api/v1/users HTTP/1.1", upstream: "http://10.0.0.3:8080/api/v1/users"</span></div>
+          <div class="code-line"><span class="line-num">4</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:08</span> <span class="log-lvl-warn">[warn]</span> upstream server temporarily disabled</span></div>
+          <div class="code-line"><span class="line-num">5</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:10</span> <span class="log-lvl-error">[error]</span> connect() failed (111: Connection refused) while connecting to upstream</span></div>
+          <div class="code-line"><span class="line-num">6</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:12</span> <span class="log-lvl-warn">[warn]</span> upstream reconnecting (attempt 2/5)</span></div>
+          <div class="code-line"><span class="line-num">7</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:15</span> <span class="log-lvl-error">[error]</span> upstream timed out (110: Connection timed out) while reading response header</span></div>
+          <div class="code-line"><span class="line-num">8</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:20</span> <span class="log-lvl-error">[error]</span> client: 10.0.0.8, server: api.example.com</span></div>
+          <div class="code-line"><span class="line-num">9</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:20</span> <span class="log-lvl-error">[error]</span> request: "POST /api/v1/orders HTTP/1.1", upstream: "http://10.0.0.3:8080/api/v1/orders"</span></div>
+          <div class="code-line"><span class="line-num">10</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:25</span> <span class="log-lvl-warn">[warn]</span> upstream server temporarily disabled</span></div>
+          <div class="code-line"><span class="line-num">11</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:30</span> <span class="log-lvl-error">[error]</span> connect() failed (111: Connection refused) while connecting to upstream</span></div>
+          <div class="code-line"><span class="line-num">12</span><span class="line-content"><span class="log-ts">2026/08/17 03:21:35</span> <span class="log-lvl-error">[error]</span> upstream timed out (110: Connection timed out)</span></div>
+        </div>
+        <div class="sftp-footer">
+          <span>行 12/24580 · UTF-8 · 212MB · /var/log/nginx/error.log</span>
+          <span style="margin-left:auto">web-01 (远程)</span>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: Log Search（§七）
+           ======================================================== -->
+      <div class="view log-search-view" id="view-logsearch">
+        <!-- Left: Search Conditions -->
+        <div class="ls-left-panel">
+          <div>
+            <div class="ls-field-label">关键词</div>
+            <input class="ls-input" type="text" value="upstream timed out" placeholder="输入搜索关键词…">
+          </div>
+          <label class="ls-checkbox"><input type="checkbox" checked=""> 正则匹配</label>
+          <div>
+            <div class="ls-field-label">时间范围</div>
+            <div style="display:flex;gap:4px;align-items:center">
+              <input class="ls-input" type="text" value="2026-08-17 00:00" style="font-size:11px">
+              <span style="color:var(--text-secondary)">–</span>
+              <input class="ls-input" type="text" value="2026-08-17 23:59" style="font-size:11px">
+            </div>
+          </div>
+          <div>
+            <div class="ls-field-label">文件过滤</div>
+            <input class="ls-input" type="text" placeholder="*.log" value="*.log">
+          </div>
+          <div>
+            <div class="ls-field-label">搜索模式</div>
+            <div class="ls-segmented">
+              <button class="seg-btn">○ 索引</button>
+              <button class="seg-btn active">● 实时</button>
+            </div>
+          </div>
+          <button class="ls-search-btn">🔍 搜索</button>
+        </div>
+
+        <!-- Center: Results -->
+        <div class="ls-results">
+          <div class="ls-results-header">
+            <span>共 1,204 条 · 用时 42ms</span>
+            <span style="color:var(--accent)">实时模式 · web-01</span>
+          </div>
+          <div class="ls-results-list">
+            <div class="ls-result-row selected">
+              <div class="level-block error"></div>
+              <span class="result-ts">10:22:08</span>
+              <span class="result-level error">ERROR</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text"><mark>upstream</mark> <mark>timed</mark> <mark>out</mark> (110: Connection timed out)</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block warn"></div>
+              <span class="result-ts">10:22:05</span>
+              <span class="result-level warn">WARN</span>
+              <span class="result-host">web-02</span>
+              <span class="result-text">queue depth high (120/200)</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block error"></div>
+              <span class="result-ts">10:22:03</span>
+              <span class="result-level error">ERROR</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text"><mark>upstream</mark> <mark>timed</mark> <mark>out</mark> while reading response header</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block error"></div>
+              <span class="result-ts">10:21:55</span>
+              <span class="result-level error">ERROR</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text">connect() failed (111: Connection refused) <mark>upstream</mark></span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block warn"></div>
+              <span class="result-ts">10:21:50</span>
+              <span class="result-level warn">WARN</span>
+              <span class="result-host">web-02</span>
+              <span class="result-text"><mark>upstream</mark> server temporarily disabled</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block error"></div>
+              <span class="result-ts">10:21:45</span>
+              <span class="result-level error">ERROR</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text"><mark>upstream</mark> <mark>timed</mark> <mark>out</mark> (110: Connection timed out)</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block info"></div>
+              <span class="result-ts">10:21:40</span>
+              <span class="result-level info">INFO</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text">reconnecting to <mark>upstream</mark> (attempt 3/5)</span>
+            </div>
+            <div class="ls-result-row">
+              <div class="level-block error"></div>
+              <span class="result-ts">10:21:35</span>
+              <span class="result-level error">ERROR</span>
+              <span class="result-host">web-01</span>
+              <span class="result-text"><mark>upstream</mark> connection reset by peer</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Detail -->
+        <div class="ls-detail-panel">
+          <div class="ls-detail-header">
+            2026-08-17 10:22:08 · [ERROR] · web-01
+          </div>
+          <div class="ls-detail-content">
+            <mark>upstream</mark> <mark>timed</mark> <mark>out</mark>
+            (110: Connection <mark>timed</mark> <mark>out</mark>)
+            while reading response header from upstream
+          </div>
+          <div class="ls-context-label">── 上下文（±5行）──</div>
+          <div class="ls-detail-content" style="font-size:11px;color:var(--text-secondary)">
+            10:22:03 INFO  starting worker pool<br>
+            10:22:05 WARN  queue depth high (120)<br>
+            10:22:06 INFO  processing batch #1024<br>
+            <span style="color:var(--danger)">10:22:08 ERROR upstream timed out</span><br>
+            10:22:09 WARN  retrying request (1/3)<br>
+            10:22:12 INFO  request completed (200)<br>
+            10:22:15 INFO  cache hit ratio: 87.3%
+          </div>
+          <div class="ls-jump-link">→ 跳转到 SFTP 中查看原文</div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: AI Chat（§八）
+           ======================================================== -->
+      <div class="view ai-chat-view" id="view-aichat">
+        <div class="chat-header">
+          <div class="provider-selector">
+            <span>DeepSeek</span>
+            <span class="provider-tag cloud">🌐 云端</span>
+            <span style="color:var(--text-disabled)">▾</span>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="toolbar-btn">＋ 新对话</button>
+            <button class="toolbar-btn">🗑</button>
+          </div>
+        </div>
+        <div class="chat-messages">
+          <div class="msg-bubble user">
+            <div class="msg-role">👤 我</div>
+            帮我分析这段 nginx 报错：<br>
+            <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-secondary)">upstream timed out (110: Connection timed out) while reading response header</span>
+          </div>
+          <div class="msg-bubble ai">
+            <div class="msg-role">🤖 DeepSeek-V3</div>
+            这是典型的 Nginx 上游超时错误。`upstream timed out` 表示 Nginx 作为反向代理，在等待后端服务响应时超时了。常见原因和解决方案：
+            <div class="code-block">
+              <div class="code-actions">
+                <button class="code-action-btn">复制</button>
+                <button class="code-action-btn">插入到编辑器</button>
+              </div>
+<span style="color:var(--text-secondary)"># nginx.conf — 增加超时时间</span>
+location /api {
+    proxy_read_timeout <span style="color:var(--success)">300s</span>;  <span style="color:var(--text-secondary)"># 默认 60s</span>
+    proxy_connect_timeout <span style="color:var(--success)">60s</span>;
+    proxy_send_timeout <span style="color:var(--success)">300s</span>;
+}
+            </div>
+            <div style="margin-top:8px">
+              1. <strong>后端处理过慢</strong>：检查后端日志，优化慢查询<br>
+              2. <strong>网络问题</strong>：检查 Nginx 到后端的网络连通性<br>
+              3. <strong>后端服务挂了</strong>：`curl -v http://10.0.0.3:8080/health` 确认服务存活<span class="streaming-cursor"></span>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <div class="data-warning-bar">
+            <span>ℹ 此内容将发送至 DeepSeek（云端）。数据可能包含敏感信息。</span>
+            <button class="dialog-btn ghost" style="height:24px">不再提醒</button>
+          </div>
+          <div class="chat-input-wrapper">
+            <button class="chat-attach-btn" title="添加文件">📎</button>
+            <input type="text" placeholder="输入消息… (Ctrl+Enter 发送)">
+            <button class="chat-send-btn" title="发送">▶</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: Coding Agent（§九 — 三栏布局）
+           ======================================================== -->
+      <div class="view coding-view" id="view-coding">
+        <!-- Left: Project Tree -->
+        <div class="coding-left">
+          <div class="coding-left-header" title="与左侧全局 Sidebar 的 Explorer 是同一份状态，非独立的另一棵树">Explorer（工作区共享）</div>
+          <div class="project-tree">
+            <div class="tree-item">
+              <span class="tree-icon">📁</span>
+              <span class="tree-name">src/</span>
+            </div>
+            <div class="tree-item active" style="padding-left:24px">
+              <span class="tree-icon">📄</span>
+              <span class="tree-name">main.rs</span>
+              <span class="change-badge modified">●</span>
+            </div>
+            <div class="tree-item" style="padding-left:24px">
+              <span class="tree-icon">📄</span>
+              <span class="tree-name">api.rs</span>
+              <span class="change-badge added">+</span>
+            </div>
+            <div class="tree-item" style="padding-left:24px">
+              <span class="tree-icon">📄</span>
+              <span class="tree-name">util.rs</span>
+            </div>
+            <div class="tree-item">
+              <span class="tree-icon">📁</span>
+              <span class="tree-name">tests/</span>
+            </div>
+            <div class="tree-item">
+              <span class="tree-icon">📄</span>
+              <span class="tree-name">Cargo.toml</span>
+            </div>
+            <div class="tree-item">
+              <span class="tree-icon">📄</span>
+              <span class="tree-name">README.md</span>
+            </div>
+          </div>
+          <div class="changes-section">
+            <div class="changes-title">变更 (2)</div>
+            <div class="change-item">
+              <span class="change-dot applied"></span>
+              <span style="font-family:var(--font-mono);font-size:12px">main.rs</span>
+              <span style="margin-left:auto;font-size:10px;color:var(--success)">已应用</span>
+            </div>
+            <div class="change-item">
+              <span class="change-dot pending"></span>
+              <span style="font-family:var(--font-mono);font-size:12px">api.rs</span>
+              <span style="margin-left:auto;font-size:10px;color:var(--warning)">待确认</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Center: Chat -->
+        <div class="coding-center">
+          <div class="mode-tabs">
+            <div class="mode-tab" onclick="switchMode(&#39;plan&#39;)">📝 Plan</div>
+            <div class="mode-tab active build" onclick="switchMode(&#39;build&#39;)">🔨 Build</div>
+            <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <!-- 目标：自动绑定当前工作区，非下拉选择（DESIGN.md §3.8.1 / UI_DESIGN.md §九） -->
+              <span class="target-badge remote" title="目标自动继承当前工作区">🖥 目标: web-01(远程)</span>
+              <a class="target-change-link" href="javascript:void(0)" title="临时切换到工作区之外的其他已保存连接">更改▾</a>
+              <select class="model-select">
+                <option>DeepSeek-V3</option>
+                <option>Claude-3.5</option>
+                <option>Ollama (local)</option>
+              </select>
+              <span class="remote-capability-badge" title="远程工作区暂不支持语言服务器级智能感知（跳转定义/实时诊断/语义补全），编辑器仅提供基础语法高亮。">远程模式：无智能补全</span>
+            </span>
+          </div>
+
+          <div class="chat-stream">
+            <div class="agent-msg user">
+              <div class="msg-label">👤 用户</div>
+              添加一个用户认证的 API 路由，支持 JWT token 验证
+            </div>
+            <div class="tool-call-progress"><span class="spinner"></span> 正在执行 read_file(src/api.rs) · 1.2s（SSH 往返，DESIGN.md §3.8.7）</div>
+            <div class="agent-msg ai">
+              <div class="msg-label">🤖 AI Agent · Build 模式</div>
+              我来为你添加 JWT 认证路由。需要修改以下文件：
+              <div class="file-change-card applied">
+                <div class="fcc-header applied">
+                  <span style="font-size:14px">📄</span>
+                  <span class="fcc-path">src/main.rs</span>
+                  <span class="fcc-badge applied">✓ 已应用</span>
+                  <div class="fcc-actions">
+                    <button class="fcc-btn outline">查看 Diff</button>
+                    <button class="fcc-btn outline">↩ 撤销</button>
+                  </div>
+                </div>
+                <div class="fcc-diff">
+                  <div class="diff-line removed"><span class="diff-sign">-</span><span class="diff-content">fn main() {</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">mod auth;</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">fn main() {</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">    // 初始化认证模块</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">    auth::init();</span></div>
+                </div>
+              </div>
+              <div class="file-change-card pending">
+                <div class="fcc-header pending">
+                  <span style="font-size:14px">📄</span>
+                  <span class="fcc-path">src/api.rs</span>
+                  <span class="fcc-badge pending">⏳ 待确认</span>
+                  <div class="fcc-actions">
+                    <button class="fcc-btn outline" onclick="showDialog(&#39;command-confirm&#39;)">查看 Diff</button>
+                    <button class="fcc-btn success">✓ 应用</button>
+                    <button class="fcc-btn danger">✗ 拒绝</button>
+                  </div>
+                </div>
+                <div class="fcc-diff">
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">pub fn auth_routes() -&gt; Vec&lt;Route&gt; {</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">    vec![</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">        Route::post("/api/login", login_handler),</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">        Route::get("/api/profile", auth_middleware(profile)),</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">    ]</span></div>
+                  <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">}</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="blocked-cmd-msg">
+              🛑 已拦截高危命令：rm -rf /target，如需执行请前往终端手动操作
+            </div>
+          </div>
+
+          <div class="coding-input">
+            <div class="target-indicator">⚠ 目标: web-01 (10.0.0.1) · 远程 — AI 修改将作用于远程主机</div>
+            <div class="chat-input-wrapper">
+              <button class="chat-attach-btn" title="添加文件">📎</button>
+              <button class="chat-attach-btn" title="截图">📷</button>
+              <input type="text" placeholder="输入消息… (Ctrl+Enter 发送 · Tab 切换 Plan/Build)">
+              <button class="chat-send-btn" title="发送">▶</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Code Editor -->
+        <div class="coding-right">
+          <div class="editor-header">
+            <div class="file-tab">
+              <span style="font-size:14px">📄</span>
+              <span>api.rs</span>
+              <span style="width:3px;height:12px;background:var(--warning);border-radius:2px;margin-left:4px"></span>
+            </div>
+            <div class="editor-actions">
+              <button class="toolbar-btn" title="Diff 视图">⇄ Diff</button>
+              <button class="toolbar-btn" title="撤销">↩</button>
+              <button class="toolbar-btn" title="重做">↪</button>
+            </div>
+          </div>
+          <div class="editor-body">
+            <div class="code-line"><span class="line-num">1</span><span class="line-content" style="color:var(--text-secondary)">// api.rs — API route definitions</span></div>
+            <div class="code-line"><span class="line-num">2</span><span class="line-content"></span></div>
+            <div class="code-line"><span class="line-num">3</span><span class="line-content"><span style="color:var(--info)">use</span> crate::auth;<span style="background:var(--diff-added);display:inline;width:2px;height:14px;margin-left:2px"></span></span></div>
+            <div class="code-line"><span class="line-num">4</span><span class="line-content"><span style="color:var(--info)">use</span> crate::models::User;</span></div>
+            <div class="code-line"><span class="line-num">5</span><span class="line-content"></span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">6</span><span class="line-content"><span style="color:var(--info)">pub fn</span> <span style="color:var(--accent)">auth_routes</span>() -&gt; Vec&lt;Route&gt; {</span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">7</span><span class="line-content">    <span style="color:var(--info)">vec!</span>[</span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">8</span><span class="line-content">        Route::<span style="color:var(--accent)">post</span>(<span style="color:var(--success)">"/api/login"</span>, login_handler),</span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">9</span><span class="line-content">        Route::<span style="color:var(--accent)">get</span>(<span style="color:var(--success)">"/api/profile"</span>, auth_middleware(profile)),</span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">10</span><span class="line-content">    ]</span></div>
+            <div class="code-line" style="background:var(--diff-added)"><span class="line-num" style="color:var(--success)">11</span><span class="line-content">}</span></div>
+            <div class="code-line"><span class="line-num">12</span><span class="line-content"></span></div>
+            <div class="code-line"><span class="line-num">13</span><span class="line-content"><span style="color:var(--info)">fn</span> <span style="color:var(--accent)">login_handler</span>(req: Request) -&gt; Response {</span></div>
+            <div class="code-line"><span class="line-num">14</span><span class="line-content">    <span style="color:var(--text-secondary)">// TODO: implement</span></span></div>
+            <div class="code-line"><span class="line-num">15</span><span class="line-content">}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           View: Settings（§十）
+           ======================================================== -->
+      <div class="view settings-view active" id="view-settings">
+        <div class="settings-nav">
+          <div class="settings-nav-item">通用</div>
+          <div class="settings-nav-item">外观</div>
+          <div class="settings-nav-item active">AI Provider</div>
+          <div class="settings-nav-item" onclick="switchSettingsTab(&#39;security&#39;)">安全</div>
+          <div class="settings-nav-item">快捷键</div>
+          <div class="settings-nav-item">插件</div>
+        </div>
+        <div class="settings-content" id="settings-ai">
+          <div class="settings-section-title">AI Provider</div>
+          <div class="provider-row">
+            <div style="flex:1">
+              <div style="font-size:14px;font-weight:500">DeepSeek</div>
+              <div style="font-size:12px;color:var(--text-secondary)">api.deepseek.com · gpt-4o 兼容</div>
+            </div>
+            <span class="provider-tag cloud">🌐 云端</span>
+            <button class="toolbar-btn">编辑</button>
+            <button class="toolbar-btn" style="color:var(--danger)">删</button>
+          </div>
+          <div class="provider-row">
+            <div style="flex:1">
+              <div style="font-size:14px;font-weight:500">Ollama (local)</div>
+              <div style="font-size:12px;color:var(--text-secondary)">localhost:11434 · llama3.1:8b</div>
+            </div>
+            <span class="provider-tag local">💻 本地</span>
+            <button class="toolbar-btn">编辑</button>
+            <button class="toolbar-btn" style="color:var(--danger)">删</button>
+          </div>
+          <button class="dialog-btn ghost" style="margin-top:8px">+ 添加 Provider</button>
+
+          <div class="settings-section-title" style="margin-top:32px" onclick="switchSettingsTab(&#39;security&#39;)">安全设置</div>
+          <div class="settings-card">
+            <div class="settings-row">
+              <div>
+                <div class="row-label">发送前自动遮蔽疑似密钥/密码</div>
+                <div class="row-desc">正则匹配 AKIA、PRIVATE KEY、password= 等模式</div>
+              </div>
+              <div class="toggle-switch on" onclick="this.classList.toggle(&#39;on&#39;)"></div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="row-label">只读命令白名单自动放行</div>
+                <div class="row-desc">ls / cat / grep / git status 等不需确认</div>
+              </div>
+              <div class="toggle-switch on" onclick="this.classList.toggle(&#39;on&#39;)"></div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="row-label">高危命令黑名单拦截</div>
+                <div class="row-desc">rm -rf / · mkfs · dd if=... of=/dev/* · 不可关闭</div>
+              </div>
+              <div class="toggle-switch on" style="opacity:0.5;pointer-events:none"></div>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="row-label">审计日志记录</div>
+                <div class="row-desc">记录所有远程命令执行、文件写入等敏感操作</div>
+              </div>
+              <div class="toggle-switch on" onclick="this.classList.toggle(&#39;on&#39;)"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-row">
+              <div>
+                <div class="row-label" style="color:var(--danger)">清空所有已保存凭据</div>
+                <div class="row-desc">将从系统密钥链中删除所有 SSH 密码/私钥口令和 API Key</div>
+              </div>
+              <button class="danger-btn">清空凭据</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content-area -->
+  </div><!-- /main-body -->
+
+  <!-- ============================================================
+       Status Bar（22px）
+       ============================================================ -->
+  <div class="status-bar">
+    <div class="status-left">
+      <span class="status-dot connected"></span>
+      <span>已连接 root@10.0.0.1 · 24ms</span>
+      <span>UTF-8</span>
+    </div>
+    <div class="status-right">
+      <span id="status-context">Ln 12, Col 4</span>
+      <span>SSH · russh 0.46</span>
+    </div>
+  </div>
+</div><!-- /app -->
+
+<!-- ============================================================
+     Dialog: Host Key TOFU（§4.1）
+     ============================================================ -->
+<div class="dialog-overlay" id="dialog-hostkey-tofu">
+  <div class="dialog" style="border:1px solid var(--info)">
+    <div class="dialog-title-bar info">
+      <span>ℹ</span>
+      <span>首次连接该主机</span>
+    </div>
+    <div class="dialog-body">
+      <p>这是你首次连接该主机，请确认其密钥指纹：</p>
+      <div style="margin:8px 0">
+        <div style="font-size:12px;color:var(--text-secondary)">host</div>
+        <div style="font-family:var(--font-mono);font-size:13px">web-01.example.com</div>
+      </div>
+      <div style="margin:8px 0">
+        <div style="font-size:12px;color:var(--text-secondary)">指纹</div>
+        <div class="fingerprint-block">SHA256:AbCdEf1234567890+abcdefghijklmnopqrstuvwxyz123456</div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn ghost" onclick="hideDialog(&#39;dialog-hostkey-tofu&#39;)">取消</button>
+      <button class="dialog-btn primary" onclick="hideDialog(&#39;dialog-hostkey-tofu&#39;)">信任并连接</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Dialog: Host Key Changed（§4.1 — 危险级别）
+     ============================================================ -->
+<div class="dialog-overlay" id="dialog-hostkey-changed">
+  <div class="dialog">
+    <div class="dialog-title-bar danger">
+      <span>🛑</span>
+      <span>安全警告：主机指纹已变化</span>
+    </div>
+    <div class="dialog-body">
+      <p class="warning-text">该主机的密钥指纹与已保存的记录不一致，可能遭遇中间人攻击或主机被重装。</p>
+      <div style="margin:12px 0">
+        <div style="font-size:12px;color:var(--text-secondary)">host</div>
+        <div style="font-family:var(--font-mono);font-size:13px">web-01.example.com</div>
+      </div>
+      <div style="margin:8px 0">
+        <div style="font-size:12px;color:var(--text-secondary)">旧指纹</div>
+        <div class="fingerprint-block" style="color:var(--text-secondary)">SHA256:1234OldFingerprint567890abcdef...</div>
+      </div>
+      <div style="margin:8px 0">
+        <div style="font-size:12px;color:var(--text-secondary)">新指纹</div>
+        <div class="fingerprint-block" style="color:var(--danger)">SHA256:AbCdEf1234567890+abcdefghijklmno...</div>
+      </div>
+      <p style="font-size:12px;color:var(--text-secondary);margin-top:12px">
+        此弹窗不可通过点击遮罩或按 Esc 关闭，必须显式选择。
+      </p>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn danger-strong" onclick="hideDialog(&#39;dialog-hostkey-changed&#39;)">取消连接</button>
+      <button class="dialog-btn weak" onclick="hideDialog(&#39;dialog-hostkey-changed&#39;)">仍要信任 (危险)</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Dialog: Command Confirm（§九 — 高危命令确认）
+     ============================================================ -->
+<div class="dialog-overlay" id="dialog-command-confirm">
+  <div class="dialog">
+    <div class="dialog-title-bar" style="color:var(--warning)">
+      <span>⚠</span>
+      <span>确认执行命令</span>
+    </div>
+    <div class="dialog-body">
+      <div class="cmd-confirm-host">
+        目标主机: web-01 (10.0.0.1) · 远程
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">命令：</div>
+      <div class="cmd-confirm-code">$ systemctl restart nginx</div>
+      <p style="font-size:12px;color:var(--text-secondary)">
+        此命令将在远程主机上执行，请确认你了解其影响。
+      </p>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn ghost" onclick="hideDialog(&#39;dialog-command-confirm&#39;)">拒绝</button>
+      <button class="dialog-btn primary" onclick="hideDialog(&#39;dialog-command-confirm&#39;)">仅本次允许</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Dialog: 远程文件保存冲突（UI_DESIGN.md §3.5 / DESIGN.md §3.1.4）
+     ============================================================ -->
+<div class="dialog-overlay" id="dialog-conflict">
+  <div class="dialog">
+    <div class="dialog-title-bar" style="color:var(--warning)">
+      <span>⚠</span>
+      <span>远程文件已被修改</span>
+    </div>
+    <div class="dialog-body">
+      <p>
+        <span class="fingerprint-block" style="font-family:var(--font-mono)">/home/user/app/src/main.rs</span>
+        在你编辑期间已被其他进程修改。
+      </p>
+      <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">
+        直接覆盖会丢失对方的修改，建议先查看差异。
+      </p>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn ghost" onclick="hideDialog(&#39;dialog-conflict&#39;)">查看差异</button>
+      <button class="dialog-btn ghost" onclick="hideDialog(&#39;dialog-conflict&#39;)">另存为副本</button>
+      <button class="dialog-btn weak" onclick="hideDialog(&#39;dialog-conflict&#39;)">仍要覆盖</button>
+    </div>
+  </div>
+</div>
+
+<!-- Prototype Info Bar -->
+<div class="proto-info">
+  <span>DevHub UI Prototype</span>
+  <button onclick="backToWorkspacePicker()">工作区选择页</button>
+  <button onclick="showDialog(&#39;dialog-hostkey-tofu&#39;)">指纹 TOFU</button>
+  <button onclick="showDialog(&#39;dialog-hostkey-changed&#39;)">指纹变化</button>
+  <button onclick="showDialog(&#39;dialog-command-confirm&#39;)">命令确认</button>
+  <button onclick="showDialog(&#39;dialog-conflict&#39;)">编辑冲突</button>
+  <button onclick="toggleTheme()">切换主题</button>
+  <button onclick="toggleSidebar()">折叠侧栏</button>
+</div>
+
+<script>
+  // ============================================================
+  // Workspace Picker（UI_DESIGN.md §3.1）
+  // ============================================================
+  function enterWorkspace(kind, name) {
+    document.getElementById('workspace-picker-screen').style.display = 'none';
+    document.getElementById('app-shell').style.display = 'flex';
+    document.getElementById('workspace-name-label').textContent = name;
+    document.getElementById('explorer-root-label').textContent = name.toUpperCase();
+    // 进入工作区后默认打开终端 Tab：远程=SSH 终端，本地=本机 Shell（DESIGN.md §3.1.2）
+    document.getElementById('terminal-tab-label').textContent = kind === 'remote' ? 'root@web-01' : '本地终端';
+    switchTab('terminal');
+  }
+
+  function backToWorkspacePicker() {
+    document.getElementById('app-shell').style.display = 'none';
+    document.getElementById('workspace-picker-screen').style.display = 'flex';
+  }
+
+  // ============================================================
+  // 顶部快捷工具：已开则激活已有 Tab，未开则新开（UI_DESIGN.md §3.4）
+  // ============================================================
+  const QUICK_TOOL_VIEW = { sftp: 'sftp', browser: 'webbrowser', aichat: 'aichat', coding: 'coding' };
+  function quickTool(tool) {
+    const view = QUICK_TOOL_VIEW[tool];
+    const existing = document.querySelector(`[data-view="${view}"]`);
+    const btn = document.getElementById('qt-' + tool);
+    if (btn) { btn.classList.remove('flash'); void btn.offsetWidth; btn.classList.add('flash'); }
+    if (existing) {
+      switchTab(view); // 已在本工作区打开过 → 直接激活，不新开
+    } else {
+      alert(`原型演示：将为「${tool}」新开一个绑定当前工作区的 Tab（网页浏览视图未在此原型中实现）`);
+    }
+  }
+
+  // ============================================================
+  // Sidebar 面板切换：Explorer / 连接管理（UI_DESIGN.md §四）
+  // ============================================================
+  function showSidebarPanel(panel, btn) {
+    document.querySelectorAll('.sidebar-nav .nav-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    document.getElementById('sidebar-panel-explorer').style.display = panel === 'explorer' ? 'block' : 'none';
+    document.getElementById('sidebar-panel-connections').style.display = panel === 'connections' ? 'block' : 'none';
+  }
+
+  function hideReconnect() {
+    document.getElementById('reconnect-banner').classList.remove('show');
+  }
+
+  function saveEditor() {
+    document.querySelectorAll('.dirty-dot, .tab-dirty').forEach(d => d.style.display = 'none');
+    alert('原型演示：Ctrl+S 保存 — 本地直接写文件系统，远程走 SFTP 写回（含 mtime 冲突检测）');
+  }
+
+  // Tab switching
+  function switchTab(view) {
+    document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const tab = document.querySelector(`[data-view="${view}"]`);
+    const v = document.getElementById(`view-${view}`);
+    if (tab) tab.classList.add('active');
+    if (v) v.classList.add('active');
+  }
+
+  function closeTab(e) {
+    e.stopPropagation();
+    alert('关闭标签页功能在原型中不可用');
+  }
+
+  // Sidebar toggle
+  function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('collapsed');
+  }
+
+  // Connection group toggle
+  function toggleGroup(el) {
+    el.parentElement.classList.toggle('collapsed');
+  }
+
+  // Theme toggle
+  function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  }
+
+  // Dialog show/hide
+  function showDialog(id) {
+    document.getElementById(id).classList.add('show');
+  }
+  function hideDialog(id) {
+    document.getElementById(id).classList.remove('show');
+  }
+
+  // Close dialog on overlay click (except hostkey-changed)
+  document.querySelectorAll('.dialog-overlay').forEach(overlay => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay && overlay.id !== 'dialog-hostkey-changed') {
+        overlay.classList.remove('show');
+      }
+    });
+  });
+
+  // Mode switching
+  function switchMode(mode) {
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    const target = document.querySelector(`.mode-tab:nth-child(${mode === 'plan' ? 1 : 2})`);
+    if (target) target.classList.add('active');
+  }
+
+  // Settings tab
+  function switchSettingsTab(tab) {
+    // In prototype, just visual
+  }
+
+  // Keyboard shortcuts（UI_DESIGN.md §十二）
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'b') { e.preventDefault(); toggleSidebar(); }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); backToWorkspacePicker(); }
+    if (e.ctrlKey && e.key === 'p') { e.preventDefault(); alert('快速打开文件（模糊搜索当前工作区文件名）'); }
+    if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveEditor(); }
+    if (e.ctrlKey && e.key === 'k') { e.preventDefault(); alert('命令面板'); }
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.dialog-overlay.show').forEach(d => {
+        if (d.id !== 'dialog-hostkey-changed') d.classList.remove('show');
+      });
+    }
+  });
+</script>
+
+
+</body></html>

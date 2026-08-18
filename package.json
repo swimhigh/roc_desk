@@ -1,0 +1,15 @@
+{
+  "name": "roc_desk",
+  "private": true,
+  "version": "0.1.0",
+  "description": "roc_desk — 根目录构建入口，实际前端在 src-web/，后端在 src-tauri/",
+  "scripts": {
+    "dev": "npm run dev --prefix src-web",
+    "build:web": "npm run build --prefix src-web",
+    "tauri": "node src-web/node_modules/@tauri-apps/cli/tauri.js",
+    "tauri:dev": "npm run tauri -- dev",
+    "tauri:build": "npm run tauri -- build",
+    "test:web": "npm run test --prefix src-web",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+  }
+}

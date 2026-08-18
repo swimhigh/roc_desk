@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevHub — 弹窗与组件设计原型</title>
+  <style>
+    /* ============================================================
+       Design Tokens（与 devhub-main.html 完全一致，对应 UI_DESIGN.md §二）
+       ============================================================ */
+    :root {
+      --font-ui: "Inter", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", "Courier New", monospace;
+      --text-xs: 11px; --text-sm: 12px; --text-base: 13px; --text-lg: 15px; --text-xl: 18px;
+      --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+      --space-5: 20px; --space-6: 24px; --space-7: 28px; --space-8: 32px;
+      --radius-sm: 4px; --radius-md: 6px; --radius-full: 9999px;
+      --list-row-height: 28px;
+      --transition-duration: 200ms; --transition-easing: ease-out;
+    }
+    [data-theme="dark"] {
+      --bg-app: #1e1f22; --bg-surface: #26282c; --bg-surface-raised: #2f3136;
+      --bg-hover: #33353a; --bg-selected: #3a4a63; --bg-terminal: #0c0d0e;
+      --border-default: #3a3c41; --border-subtle: #2d2f33;
+      --text-primary: #e6e6e6; --text-secondary: #9a9ca1; --text-disabled: #5c5e63;
+      --accent: #4f8cff; --accent-dim: rgba(79, 140, 255, 0.15);
+      --success: #3fb950; --warning: #d9a441; --danger: #e5534b; --info: #58a6ff;
+      --shadow: 0 4px 12px rgba(0,0,0,0.4);
+      --diff-added: rgba(63, 185, 80, 0.15); --diff-removed: rgba(229, 83, 75, 0.15);
+    }
+    [data-theme="light"] {
+      --bg-app: #f5f5f7; --bg-surface: #ffffff; --bg-surface-raised: #ffffff;
+      --bg-hover: #eceef1; --bg-selected: #dbe7fb; --bg-terminal: #1e1e1e;
+      --border-default: #e2e4e8; --border-subtle: #eeef1;
+      --text-primary: #1b1c1e; --text-secondary: #6b6d72; --text-disabled: #b0b2b6;
+      --accent: #3568e0; --accent-dim: rgba(53, 104, 224, 0.12);
+      --success: #2a9d3f; --warning: #b8860b; --danger: #cc3b33; --info: #3568e0;
+      --shadow: 0 2px 8px rgba(0,0,0,0.12);
+      --diff-added: rgba(42, 157, 63, 0.12); --diff-removed: rgba(204, 59, 51, 0.12);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { font-family: var(--font-ui); font-size: var(--text-base); color: var(--text-primary); background: var(--bg-app); }
+    body { padding: var(--space-8); max-width: 1100px; margin: 0 auto; -webkit-font-smoothing: antialiased; }
+    button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+    input, select { font-family: inherit; font-size: var(--text-base); }
+
+    .back-link { display: inline-block; margin-bottom: var(--space-4); font-size: var(--text-sm); color: var(--accent); text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: var(--space-2); }
+    h2 { font-size: var(--text-lg); font-weight: 600; margin: var(--space-8) 0 var(--space-2); padding-top: var(--space-4); border-top: 1px solid var(--border-default); }
+    h2:first-of-type { border-top: none; padding-top: 0; }
+    .desc { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.6; margin-bottom: var(--space-4); max-width: 760px; }
+    .desc code { font-family: var(--font-mono); background: var(--bg-surface); padding: 1px 4px; border-radius: 3px; }
+
+    .component-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--space-4); }
+    .component-card { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; }
+    .component-card-title { font-size: var(--text-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+    .demo-area { padding: var(--space-4); display: flex; align-items: center; justify-content: center; min-height: 60px; gap: var(--space-2); }
+
+    /* === Dialog（复用 devhub-main.html 的弹窗规范） === */
+    .dialog { min-width: 380px; max-width: 480px; background: var(--bg-surface-raised); border-radius: var(--radius-md); overflow: hidden; }
+    .dialog-title-bar { padding: var(--space-4) var(--space-4) var(--space-2); font-size: var(--text-lg); font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
+    .dialog-title-bar.info { color: var(--info); }
+    .dialog-title-bar.danger { background: var(--danger); color: #fff; }
+    .dialog-title-bar.warning { color: var(--warning); }
+    .dialog-body { padding: var(--space-2) var(--space-4) var(--space-4); font-size: var(--text-base); color: var(--text-primary); line-height: 1.6; }
+    .dialog-body .fingerprint-block { font-family: var(--font-mono); font-size: var(--text-sm); padding: var(--space-2) var(--space-3); background: var(--bg-app); border-radius: var(--radius-sm); margin: var(--space-2) 0; word-break: break-all; }
+    .dialog-body .warning-text { color: var(--danger); font-weight: 500; }
+    .dialog-actions { padding: var(--space-2) var(--space-4) var(--space-4); display: flex; justify-content: flex-end; gap: var(--space-2); }
+    .btn { height: 32px; padding: 0 var(--space-4); border-radius: var(--radius-sm); font-size: var(--text-sm); display: flex; align-items: center; gap: var(--space-1); }
+    .btn.sm { height: 24px; padding: 0 var(--space-3); font-size: var(--text-xs); }
+    .btn.primary { background: var(--accent); color: #fff; }
+    .btn.primary:hover { opacity: .9; }
+    .btn.ghost { border: 1px solid var(--border-default); color: var(--text-secondary); }
+    .btn.ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .btn.success { background: var(--success); color: #000; }
+    .btn.danger { background: var(--danger); color: #fff; }
+    .btn.danger-strong { background: var(--danger); color: #fff; font-weight: 500; }
+    .btn.weak { color: var(--text-disabled); font-size: var(--text-xs); }
+
+    .cmd-confirm-host { padding: var(--space-2) var(--space-3); background: rgba(217,164,65,0.12); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--warning); margin: var(--space-2) 0; }
+    .cmd-confirm-code { font-family: var(--font-mono); font-size: var(--text-sm); padding: var(--space-2) var(--space-3); background: var(--bg-app); border: 1px solid var(--border-default); border-radius: var(--radius-sm); margin: var(--space-2) 0; color: var(--text-primary); }
+    .blocked-cmd-msg { padding: var(--space-2) var(--space-3); background: var(--danger); color: #fff; border-radius: var(--radius-md); font-size: var(--text-sm); display: flex; align-items: center; gap: var(--space-2); width: 100%; max-width: 440px; }
+
+    /* === ConnectionForm（§3 — DESIGN.md §3.2.2） === */
+    .form { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: var(--space-3); }
+    .form-row { display: flex; flex-direction: column; gap: 4px; }
+    .form-row.split { flex-direction: row; gap: var(--space-2); }
+    .form-row.split > * { flex: 1; }
+    .form-label { font-size: var(--text-xs); color: var(--text-secondary); }
+    .form-input, .form-select { height: 30px; padding: 0 var(--space-2); background: var(--bg-app); border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-primary); font-size: var(--text-sm); outline: none; }
+    .form-input:focus, .form-select:focus { border-color: var(--accent); }
+    .form-input-group { display: flex; gap: var(--space-1); }
+    .form-input-group .form-input { flex: 1; }
+    .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+    /* === FileChangeCard（§4 — DESIGN.md §3.8.3） === */
+    .fcc { border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; width: 100%; max-width: 480px; }
+    .fcc.pending { border-color: var(--warning); }
+    .fcc.applied { border-color: var(--success); }
+    .fcc.rejected { border-color: var(--danger); }
+    .fcc-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+    .fcc-header.pending { background: rgba(217,164,65,0.08); }
+    .fcc-header.applied { background: rgba(63,185,80,0.08); }
+    .fcc-header.rejected { background: rgba(229,83,75,0.08); }
+    .fcc-header .fcc-path { font-family: var(--font-mono); flex: 1; }
+    .fcc-badge { font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-full); }
+    .fcc-badge.pending { background: var(--warning); color: #000; }
+    .fcc-badge.applied { background: var(--success); color: #000; }
+    .fcc-badge.rejected { background: var(--danger); color: #fff; }
+    .fcc-actions { display: flex; gap: var(--space-1); }
+    .fcc-btn { height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-xs); display: flex; align-items: center; gap: 4px; }
+    .fcc-btn.outline { border: 1px solid var(--border-default); color: var(--text-secondary); }
+    .fcc-btn.outline:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .fcc-btn.success { background: var(--success); color: #000; }
+    .fcc-btn.danger { background: var(--danger); color: #fff; }
+    .fcc-diff { max-height: 120px; overflow-y: auto; font-family: var(--font-mono); font-size: var(--text-xs); padding: var(--space-2) var(--space-3); background: var(--bg-app); }
+    .fcc-diff .diff-line { display: flex; line-height: 1.5; }
+    .fcc-diff .diff-line.added { background: var(--diff-added); color: var(--success); }
+    .fcc-diff .diff-line.removed { background: var(--diff-removed); color: var(--danger); }
+    .fcc-diff .diff-line .diff-sign { width: 20px; flex-shrink: 0; }
+    .fcc-diff .diff-line .diff-content { white-space: pre; }
+
+    /* === Banners & 提示条（§5） === */
+    .large-file-banner { padding: var(--space-2) var(--space-3); background: var(--accent-dim); border: 1px solid var(--accent); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--text-primary); display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 440px; gap: var(--space-2); }
+    .large-file-banner.warning { background: rgba(217,164,65,0.12); border-color: var(--warning); }
+    .banner-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
+    .banner-btn { padding: 2px var(--space-2); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--text-secondary); }
+    .banner-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .reconnect-banner { padding: var(--space-2) var(--space-3); background: rgba(217, 164, 65, 0.1); border: 1px solid var(--warning); border-radius: var(--radius-sm); color: var(--warning); font-size: var(--text-sm); display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 440px; gap: var(--space-2); }
+    .data-warning-bar { padding: var(--space-2) var(--space-3); background: var(--accent-dim); border: 1px solid var(--accent); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--text-primary); display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 440px; gap: var(--space-2); }
+
+    /* === 连接/会话状态指示器（§6） === */
+    .status-row { display: flex; flex-direction: column; gap: var(--space-3); align-items: flex-start; }
+    .status-item { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+    .dot { width: 8px; height: 8px; border-radius: var(--radius-full); flex-shrink: 0; }
+    .dot.connected { background: var(--success); }
+    .dot.connecting { background: var(--warning); animation: pulse 1.5s infinite; }
+    .dot.disconnected { background: var(--text-disabled); }
+    .dot.error { background: var(--danger); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* === Toast / Skeleton / EmptyState / Toggle（§7） === */
+    .toast { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); display: flex; align-items: center; gap: var(--space-2); box-shadow: var(--shadow); max-width: 360px; }
+    .toast.success { background: rgba(63,185,80,0.15); border: 1px solid var(--success); color: var(--success); }
+    .toast.info { background: rgba(88,166,255,0.15); border: 1px solid var(--info); color: var(--info); }
+    .toast.error { background: rgba(229,83,75,0.15); border: 1px solid var(--danger); color: var(--danger); }
+
+    .skeleton-line { height: 12px; border-radius: var(--radius-sm); margin-bottom: var(--space-2);
+      background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-surface-raised) 50%, var(--bg-hover) 75%);
+      background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+    .skeleton-line.short { width: 60%; } .skeleton-line.medium { width: 80%; } .skeleton-line.long { width: 100%; }
+    .skeleton-line:last-child { margin-bottom: 0; }
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+    .empty-state { text-align: center; padding: var(--space-8); color: var(--text-secondary); }
+    .empty-state .es-icon { font-size: 32px; margin-bottom: var(--space-3); opacity: 0.5; }
+    .empty-state .es-text { font-size: var(--text-sm); margin-bottom: var(--space-4); }
+    .empty-state .es-btn { color: var(--accent); font-size: var(--text-sm); cursor: pointer; }
+    .empty-state .es-btn:hover { text-decoration: underline; }
+
+    .segmented { display: flex; background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
+    .segmented .seg-btn { flex: 1; height: 26px; padding: 0 var(--space-3); font-size: var(--text-xs); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
+    .segmented .seg-btn.active { background: var(--bg-selected); color: var(--accent); }
+
+    .toggle-switch { width: 36px; height: 20px; background: var(--border-default); border-radius: var(--radius-full); position: relative; cursor: pointer; transition: background var(--transition-duration); flex-shrink: 0; }
+    .toggle-switch.on { background: var(--accent); }
+    .toggle-switch.disabled { opacity: .5; pointer-events: none; }
+    .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: var(--radius-full); transition: transform var(--transition-duration) var(--transition-easing); }
+    .toggle-switch.on::after { transform: translateX(16px); }
+
+    /* === Workspace 改版新增（§9） === */
+    .target-badge { font-size: var(--text-xs); padding: 2px var(--space-2); border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 4px; }
+    .target-badge.remote { background: rgba(217,164,65,0.1); color: var(--warning); }
+    .target-badge.local { color: var(--text-secondary); }
+    .target-change-link { font-size: var(--text-xs); color: var(--text-secondary); margin-left: 2px; }
+    .target-change-link:hover { color: var(--accent); }
+    .remote-capability-badge { font-size: var(--text-xs); color: var(--text-secondary); cursor: help; border-bottom: 1px dotted var(--text-secondary); }
+    .dirty-dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--warning); }
+    .tool-call-progress { font-size: var(--text-xs); color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+    .tool-call-progress .spinner { width: 10px; height: 10px; border: 1.5px solid var(--border-default); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* === Theme toggle / Dialog overlay demo === */
+    .theme-toggle { position: fixed; top: var(--space-4); right: var(--space-4); display: flex; gap: var(--space-2); }
+    .theme-toggle button { padding: var(--space-1) var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--text-secondary); }
+    .theme-toggle button:hover { background: var(--bg-hover); }
+
+    @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+  </style>
+</head>
+<body>
+  <a href="devhub-main.html" class="back-link">← 返回主界面原型</a>
+  <h1>DevHub — 弹窗与组件设计原型</h1>
+  <p class="desc">
+    本页面展示 DevHub 所有关键交互组件的独立视觉规格，对应 <code>UI_DESIGN.md</code> 中的具体章节，便于设计评审和前端实现对照。
+    <strong style="color:var(--warning)">说明：</strong>本文件在一次脚手架操作事故中被误删，此为按 <code>UI_DESIGN.md</code> 规格重新生成的等效版本（而非原文件的逐字恢复），设计令牌、组件结构与规格严格对应文档，但具体措辞/布局细节可能与原版本有出入。
+  </p>
+
+  <div class="theme-toggle">
+    <button onclick="document.documentElement.setAttribute('data-theme','dark')">深色</button>
+    <button onclick="document.documentElement.setAttribute('data-theme','light')">浅色</button>
+  </div>
+
+  <!-- ============================================================
+       1. Host Key Dialogs（§4.1）
+       ============================================================ -->
+  <h2>1. 主机指纹确认弹窗（HostKeyDialog）</h2>
+  <p class="desc">首次连接（TOFU）使用 <code>--info</code> 边框，"信任并连接"为默认按钮；指纹变化使用 <code>--danger</code> 实色标题条，不设默认高亮按钮，"仍要信任"按钮样式弱化，弹窗不可通过 Esc 或点击遮罩关闭。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">首次连接（TOFU）— info 级别</div>
+      <div class="demo-area" style="display:block;padding:0">
+        <div class="dialog" style="border:1px solid var(--info); box-shadow:none;">
+          <div class="dialog-title-bar info"><span>ℹ</span><span>首次连接该主机</span></div>
+          <div class="dialog-body">
+            <p>这是你首次连接该主机，请确认其密钥指纹：</p>
+            <div style="margin:8px 0"><div style="font-size:12px;color:var(--text-secondary)">host</div><div style="font-family:var(--font-mono);font-size:13px">web-01.example.com</div></div>
+            <div style="margin:8px 0"><div style="font-size:12px;color:var(--text-secondary)">指纹</div><div class="fingerprint-block">SHA256:AbCdEf1234567890+abcdefghijklmnopqrstuvwxyz123456</div></div>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn ghost sm">取消</button>
+            <button class="btn primary sm">信任并连接</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="component-card">
+      <div class="component-card-title">指纹已变化 — danger 级别</div>
+      <div class="demo-area" style="display:block;padding:0">
+        <div class="dialog" style="box-shadow:none;">
+          <div class="dialog-title-bar danger"><span>🛑</span><span>安全警告：主机指纹已变化</span></div>
+          <div class="dialog-body">
+            <p class="warning-text">该主机的密钥指纹与已保存的记录不一致，可能遭遇中间人攻击或主机被重装。</p>
+            <div style="margin:12px 0"><div style="font-size:12px;color:var(--text-secondary)">host</div><div style="font-family:var(--font-mono);font-size:13px">web-01.example.com</div></div>
+            <div style="margin:8px 0"><div style="font-size:12px;color:var(--text-secondary)">旧指纹</div><div class="fingerprint-block" style="color:var(--text-secondary)">SHA256:1234OldFingerprint567890...</div></div>
+            <div style="margin:8px 0"><div style="font-size:12px;color:var(--text-secondary)">新指纹</div><div class="fingerprint-block" style="color:var(--danger)">SHA256:AbCdEf1234567890+abc...</div></div>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn danger-strong sm">取消连接</button>
+            <button class="btn weak sm">仍要信任 (危险)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       2. Command Confirm & Blocked（§九）
+       ============================================================ -->
+  <h2>2. 高危命令确认与拦截（CommandGuard）</h2>
+  <p class="desc">需要确认的命令弹窗展示目标主机（远程时用 warning 底色强调）；黑名单命中命令不弹窗，直接在对话流中插入不可操作的 <code>--danger</code> 实色条，且不提供任何绕过按钮。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">命令确认弹窗（CommandConfirmDialog）</div>
+      <div class="demo-area" style="display:block;padding:0">
+        <div class="dialog" style="box-shadow:none;">
+          <div class="dialog-title-bar warning"><span>⚠</span><span>确认执行命令</span></div>
+          <div class="dialog-body">
+            <div class="cmd-confirm-host">目标主机: web-01 (10.0.0.1) · 远程</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">命令：</div>
+            <div class="cmd-confirm-code">$ systemctl restart nginx</div>
+            <p style="font-size:12px;color:var(--text-secondary)">此命令将在远程主机上执行，请确认你了解其影响。</p>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn ghost sm">拒绝</button>
+            <button class="btn primary sm">仅本次允许</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="component-card">
+      <div class="component-card-title">黑名单拦截（对话流内嵌，非弹窗）</div>
+      <div class="demo-area">
+        <div class="blocked-cmd-msg">🛑 已拦截高危命令：rm -rf /target，如需执行请前往终端手动操作</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       3. ConnectionForm（DESIGN.md §3.2.2）
+       ============================================================ -->
+  <h2>3. 连接编辑表单（ConnectionForm）</h2>
+  <p class="desc">新建/编辑连接用 Dialog 呈现，不跳转新页面；认证方式切换时下方输入项动态变化；密码/私钥口令默认 <code>type=password</code>，带显示切换。</p>
+  <div class="component-card">
+    <div class="component-card-title">新建连接</div>
+    <div class="demo-area" style="justify-content:flex-start">
+      <div class="form">
+        <div class="form-row">
+          <label class="form-label">名称</label>
+          <input class="form-input" value="web-01" placeholder="连接名称">
+        </div>
+        <div class="form-row split">
+          <div class="form-row">
+            <label class="form-label">Host</label>
+            <input class="form-input" value="10.0.0.1">
+          </div>
+          <div class="form-row" style="max-width:80px">
+            <label class="form-label">Port</label>
+            <input class="form-input" value="22">
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="form-label">用户名</label>
+          <input class="form-input" value="root">
+        </div>
+        <div class="form-row">
+          <label class="form-label">认证方式</label>
+          <select class="form-select">
+            <option>密码</option>
+            <option selected>密钥</option>
+            <option>SSH Agent</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">私钥口令</label>
+          <div class="form-input-group">
+            <input class="form-input" type="password" value="••••••••">
+            <button class="btn ghost sm">显示</button>
+          </div>
+        </div>
+        <div class="form-row split">
+          <div class="form-row">
+            <label class="form-label">分组</label>
+            <select class="form-select"><option>生产环境</option></select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">跳板机（可选）</label>
+            <select class="form-select"><option>— 无 —</option></select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn ghost sm">取消</button>
+          <button class="btn primary sm">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       4. FileChangeCard（DESIGN.md §3.8.3）
+       ============================================================ -->
+  <h2>4. 文件变更卡片（FileChangeCard）</h2>
+  <p class="desc">三态配色直接对应语义色（pending=warning 边框、applied=success 边框、rejected=danger 边框），Diff 预览默认折叠。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">pending — 待确认</div>
+      <div class="demo-area" style="display:block;padding:var(--space-3)">
+        <div class="fcc pending">
+          <div class="fcc-header pending">
+            <span>📄</span><span class="fcc-path">src/api.rs</span>
+            <span class="fcc-badge pending">⏳ 待确认</span>
+            <div class="fcc-actions">
+              <button class="fcc-btn outline">查看 Diff</button>
+              <button class="fcc-btn success">✓ 应用</button>
+              <button class="fcc-btn danger">✗ 拒绝</button>
+            </div>
+          </div>
+          <div class="fcc-diff">
+            <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">pub fn auth_routes() -> Vec&lt;Route&gt; {</span></div>
+            <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">    vec![Route::post("/api/login", login_handler)]</span></div>
+            <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="component-card">
+      <div class="component-card-title">applied — 已应用</div>
+      <div class="demo-area" style="display:block;padding:var(--space-3)">
+        <div class="fcc applied">
+          <div class="fcc-header applied">
+            <span>📄</span><span class="fcc-path">src/main.rs</span>
+            <span class="fcc-badge applied">✓ 已应用</span>
+            <div class="fcc-actions">
+              <button class="fcc-btn outline">查看 Diff</button>
+              <button class="fcc-btn outline">↩ 撤销</button>
+            </div>
+          </div>
+          <div class="fcc-diff">
+            <div class="diff-line removed"><span class="diff-sign">-</span><span class="diff-content">fn main() {</span></div>
+            <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">mod auth;</span></div>
+            <div class="diff-line added"><span class="diff-sign">+</span><span class="diff-content">fn main() {</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="component-card">
+      <div class="component-card-title">rejected — 已拒绝</div>
+      <div class="demo-area" style="display:block;padding:var(--space-3)">
+        <div class="fcc rejected">
+          <div class="fcc-header rejected">
+            <span>📄</span><span class="fcc-path">src/util.rs</span>
+            <span class="fcc-badge rejected">✗ 已拒绝</span>
+            <div class="fcc-actions">
+              <button class="fcc-btn outline">查看 Diff</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       5. 提示条与状态横幅
+       ============================================================ -->
+  <h2>5. 提示条与状态横幅</h2>
+  <p class="desc">大文件分级提示、断线重连横幅、AI 数据出境提示——均为常驻内联条，不是可随手关闭的 Toast，因为它们承载的是需要用户持续知晓的状态。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">大文件提示条（&lt; 500MB）</div>
+      <div class="demo-area">
+        <div class="large-file-banner">
+          <span>ℹ 文件较大（212MB），已启用分页加载，滚动时按需获取内容</span>
+          <div class="banner-actions">
+            <button class="banner-btn">下载到本地</button>
+            <button class="banner-btn">建索引搜索</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">大文件提示条（&gt; 500MB，warning 级）</div>
+      <div class="demo-area">
+        <div class="large-file-banner warning">
+          <span>⚠ 文件过大，建议下载到本地或建立索引后搜索</span>
+          <div class="banner-actions"><button class="banner-btn">仍要预览（可能卡顿）</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">断线重连横幅</div>
+      <div class="demo-area">
+        <div class="reconnect-banner">
+          <span>⚠ 连接已断开，3s 后重试 (2/5)</span>
+          <div style="display:flex;gap:8px"><button class="btn ghost sm">立即重试</button><button class="btn ghost sm">取消</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">AI 数据出境提示</div>
+      <div class="demo-area">
+        <div class="data-warning-bar">
+          <span>ℹ 此内容将发送至 DeepSeek（云端）。数据可能包含敏感信息。</span>
+          <button class="btn ghost sm">不再提醒</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       6. 连接状态指示器
+       ============================================================ -->
+  <h2>6. 连接状态指示器</h2>
+  <p class="desc">圆点复用 §2.1 语义色，四态：已连接/连接中（呼吸动效）/未连接/错误。同一套视觉在 Explorer 工作区名、Tab 栏、连接树、状态栏中复用。</p>
+  <div class="component-card">
+    <div class="component-card-title">状态圆点</div>
+    <div class="demo-area" style="display:block;padding:var(--space-4)">
+      <div class="status-row">
+        <div class="status-item"><span class="dot connected"></span>已连接 · root@web-01 · 24ms</div>
+        <div class="status-item"><span class="dot connecting"></span>连接中…</div>
+        <div class="status-item"><span class="dot disconnected"></span>未连接</div>
+        <div class="status-item"><span class="dot error"></span>连接失败</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       7. 空态与反馈组件
+       ============================================================ -->
+  <h2>7. 空态与反馈组件</h2>
+  <p class="desc">Toast（非阻塞提示）、Skeleton（加载态）、EmptyState（空列表）、Toggle（设置开关）——对应 UI_DESIGN.md §十一 状态/空态/反馈规范。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">Toast</div>
+      <div class="demo-area" style="flex-direction:column;align-items:stretch;gap:var(--space-2)">
+        <div class="toast success">✓ 文件已保存</div>
+        <div class="toast info">ℹ 正在建立连接…</div>
+        <div class="toast error">✗ 保存失败，点击重试</div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">Skeleton</div>
+      <div class="demo-area" style="display:block;padding:var(--space-4)">
+        <div class="skeleton-line long"></div>
+        <div class="skeleton-line medium"></div>
+        <div class="skeleton-line short"></div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">EmptyState</div>
+      <div class="demo-area" style="display:block;padding:0">
+        <div class="empty-state">
+          <div class="es-icon">📁</div>
+          <div class="es-text">暂无连接</div>
+          <div class="es-btn">+ 新建连接</div>
+        </div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">Segmented Control</div>
+      <div class="demo-area" style="display:block;padding:var(--space-4)">
+        <div class="segmented">
+          <div class="seg-btn">○ 索引</div>
+          <div class="seg-btn active">● 实时</div>
+        </div>
+      </div>
+    </div>
+    <div class="component-card">
+      <div class="component-card-title">Toggle Switch</div>
+      <div class="demo-area" style="gap:var(--space-4)">
+        <div class="toggle-switch on" onclick="this.classList.toggle('on')"></div>
+        <div class="toggle-switch" onclick="this.classList.toggle('on')"></div>
+        <div class="toggle-switch on disabled"></div>
+        <span style="font-size:12px;color:var(--text-disabled)">禁用（不可关闭）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       8. Button Reference
+       ============================================================ -->
+  <h2>8. 按钮规格参考</h2>
+  <p class="desc">所有按钮高度 32px（sm 变体 24px），圆角 <code>--radius-sm: 4px</code>。风险越高，默认按钮越弱化甚至不给默认按钮。</p>
+  <div class="component-card">
+    <div class="component-card-title">按钮变体</div>
+    <div class="demo-area" style="gap:var(--space-3);flex-wrap:wrap">
+      <button class="btn primary">Primary（主操作）</button>
+      <button class="btn ghost">Ghost（次要操作）</button>
+      <button class="btn success">Success（应用变更）</button>
+      <button class="btn danger">Danger（拒绝/删除）</button>
+      <button class="btn danger-strong">Danger Strong（取消连接）</button>
+      <button class="btn weak">Weak（仍要信任-危险）</button>
+      <button class="btn primary sm">SM Primary</button>
+      <button class="btn ghost sm">SM Ghost</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       9. Workspace 改版新增：远程文件编辑冲突 + 目标/能力徽标
+       ============================================================ -->
+  <h2>9. 远程文件编辑冲突（ConflictDialog）与目标/能力徽标</h2>
+  <p class="desc">工作区模型改版新增（DESIGN.md §3.1.4 / §3.8.7）：远程文件本地化编辑保存时的冲突检测弹窗，以及 AI 编程助手"目标自动绑定+可覆盖"和"远程模式无智能补全"的常驻徽标。</p>
+  <div class="component-grid">
+    <div class="component-card">
+      <div class="component-card-title">保存冲突弹窗（ConflictDialog）</div>
+      <div class="demo-area" style="display:block;padding:0">
+        <div class="dialog" style="box-shadow:none;">
+          <div class="dialog-title-bar warning"><span>⚠</span><span>远程文件已被修改</span></div>
+          <div class="dialog-body">
+            <p><span class="fingerprint-block" style="font-family:var(--font-mono)">/home/user/app/src/main.rs</span> 在你编辑期间已被其他进程修改。</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">直接覆盖会丢失对方的修改，建议先查看差异。</p>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn ghost sm">查看差异</button>
+            <button class="btn ghost sm">另存为副本</button>
+            <button class="btn weak sm">仍要覆盖</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="component-card">
+      <div class="component-card-title">目标徽标 · 远程能力徽标 · dirty 圆点 · 工具调用进度</div>
+      <div class="demo-area" style="flex-direction:column;align-items:flex-start;gap:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="target-badge remote">🖥 目标: web-01(远程)</span>
+          <a class="target-change-link" href="javascript:void(0)">更改▾</a>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="target-badge local">💻 目标: 本地</span>
+          <a class="target-change-link" href="javascript:void(0)">更改▾</a>
+        </div>
+        <span class="remote-capability-badge" title="远程工作区暂不支持语言服务器级智能感知，编辑器仅提供基础语法高亮。">远程模式：无智能补全</span>
+        <div class="tool-call-progress"><span class="spinner"></span> 正在执行 read_file(src/api.rs) · 1.2s</div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-primary)">
+          <span>main.rs</span><span class="dirty-dot" title="未保存"></span>
+          <span style="color:var(--text-secondary);font-size:11px">← Explorer / 编辑器标签的未保存标记</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:var(--space-8);padding:var(--space-4);background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-md);font-size:var(--text-sm);color:var(--text-secondary)">
+    <strong style="color:var(--text-primary)">设计规格对应表</strong><br>
+    所有组件的 CSS 变量、间距、圆角、字号均严格对应 <code>UI_DESIGN.md §二 设计令牌</code>。<br>
+    颜色语义对应 <code>§2.1 语义色使用规则</code>，动效对应 <code>§十一 动效统一规范</code>。<br>
+    弹窗规范对应 <code>§4.1 主机指纹确认弹窗</code>、<code>§九 高危命令确认弹窗</code> 和 <code>§3.5 远程文件编辑冲突弹窗</code>。
+  </div>
+</body>
+</html>

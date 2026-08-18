@@ -1,0 +1,32 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Rust/Tauri 构建产物（src-tauri/.cargo/config.toml 里改到了根目录 build/，
+# 但 cargo check/test 默认还是写 src-tauri/target/，两处都要排除）
+/build
+/src-tauri/target
+
+# Claude Code 个人本地设置（不随项目共享）
+.claude/settings.local.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
