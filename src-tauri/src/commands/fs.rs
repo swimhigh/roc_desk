@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::fsops::encoding;
-use crate::fsops::{FileContent, FileEntry, WriteOutcome};
+use crate::fsops::{FileContent, FileEntry, ReplaceSummary, SearchOptions, SearchSummary, WriteOutcome};
 use crate::state::AppState;
 use crate::workspace::{WorkspaceHandle, WorkspaceKind};
 
@@ -154,4 +154,36 @@ pub async fn fs_copy(state: State<'_, AppState>, workspace_id: Uuid, from: Strin
     guard_local_path(&handle, &from)?;
     guard_local_path(&handle, &to)?;
     handle.file_ops.copy(&from, &to, is_dir).await
+}
+
+/// 左侧目录树的"搜索"功能（参考 VS Code 全局搜索面板，2026-08-18 需求）：在整个
+/// 工作区根目录下全文搜索，见 `fsops::FileOps::search_text` 的取舍说明。
+#[tauri::command]
+pub async fn fs_search(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    query: String,
+    options: SearchOptions,
+) -> Result<SearchSummary, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    handle.file_ops.search_text(&handle.profile.root_path, &query, &options).await
+}
+
+/// 查找并替换全部（参考 VS Code 搜索面板的 Replace）。`paths` 是前端已经拿到的
+/// 搜索结果里的文件路径——不重新在后端跑一遍搜索，替换范围严格等于用户在结果里
+/// 看到的那些文件，不会有"UI 显示的和实际改的不一致"的落差。
+#[tauri::command]
+pub async fn fs_replace(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    paths: Vec<String>,
+    query: String,
+    replacement: String,
+    options: SearchOptions,
+) -> Result<ReplaceSummary, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    for path in &paths {
+        guard_local_path(&handle, path)?;
+    }
+    handle.file_ops.replace_text(&paths, &query, &replacement, &options).await
 }

@@ -36,3 +36,33 @@ self.MonacoEnvironment = {
 };
 
 loader.config({ monaco });
+
+// Monaco 自带的 basic-languages 列表里没有 makefile（确认过 node_modules 里的语言目录，
+// 只有 shell/dockerfile 等，makefile 不在其中），只能自己注册一个 Monarch tokenizer——
+// 不追求覆盖 GNU Make 全部语法细节（比如 `$(shell ...)` 之类函数调用内部的精细分词），
+// 覆盖到"变量/目标/指令/注释/Recipe 命令行"这几个最常见、最需要用颜色区分的元素就够用。
+monaco.languages.register({
+  id: "makefile",
+  filenamePatterns: ["Makefile", "makefile", "GNUmakefile", "*.mk", "*.mak"],
+});
+monaco.languages.setMonarchTokensProvider("makefile", {
+  tokenizer: {
+    root: [
+      // Recipe 命令行：Tab 缩进，整行按字符串色处理（不做二次分词，足够和普通语句区分开）
+      [/^\t.*$/, "string"],
+      [/#.*$/, "comment"],
+      // 自动变量 $@ $< $^ $? $* 等
+      [/\$[@<^?*+%]/, "variable.predefined"],
+      // 变量引用 $(VAR) / ${VAR}，不处理嵌套函数调用内部结构
+      [/\$[({][^)}]*[)}]/, "variable"],
+      [/^\s*\.(PHONY|SUFFIXES|DEFAULT|PRECIOUS|INTERMEDIATE|SECONDARY|DELETE_ON_ERROR|IGNORE|EXPORT_ALL_VARIABLES|NOTPARALLEL|ONESHELL)\b/, "keyword"],
+      [/^\s*(ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|include|-include|sinclude|export|unexport|override|vpath|undefine)\b/, "keyword"],
+      // 变量赋值：VAR = / := / ::= / ?= / +=
+      [/^[\w.][\w.-]*(?=[ \t]*:{0,2}[+?]?=)/, "variable.name"],
+      [/::?=|[+?]=|=/, "operator"],
+      // 目标规则：target(s): prerequisites（排除 := 这一路赋值写法）
+      [/^[^\s#:][^:#]*(?=:(?!=))/, "type.identifier"],
+      [/:/, "delimiter"],
+    ],
+  },
+});

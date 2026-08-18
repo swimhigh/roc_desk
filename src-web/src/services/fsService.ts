@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FileContent, FileEntry, WriteOutcome } from "../types/bindings";
+import type { FileContent, FileEntry, ReplaceSummary, SearchOptions, SearchSummary, WriteOutcome } from "../types/bindings";
 
 export const fsService = {
   listDir(workspaceId: string, path: string): Promise<FileEntry[]> {
@@ -55,5 +55,21 @@ export const fsService = {
   /** 剪切+粘贴的移动就是换个目标路径调 rename；复制目前只支持文件，见后端 `FileOps::copy` 注释。*/
   copy(workspaceId: string, from: string, to: string, isDir: boolean): Promise<void> {
     return invoke("fs_copy", { workspaceId, from, to, isDir });
+  },
+
+  /** 左侧目录树的全文搜索（参考 VS Code 搜索面板，2026-08-18 需求）。 */
+  search(workspaceId: string, query: string, options: SearchOptions): Promise<SearchSummary> {
+    return invoke("fs_search", { workspaceId, query, options });
+  },
+
+  /** 查找并替换全部——paths 是搜索结果里的文件路径，不重新在后端搜一遍。 */
+  replace(
+    workspaceId: string,
+    paths: string[],
+    query: string,
+    replacement: string,
+    options: SearchOptions,
+  ): Promise<ReplaceSummary> {
+    return invoke("fs_replace", { workspaceId, paths, query, replacement, options });
   },
 };

@@ -230,3 +230,39 @@ export interface SftpTransferProgressEvent {
   requestId: string;
   path: string;
 }
+
+export interface BrowserHistoryEntry {
+  id: string;
+  url: string;
+  title: string | null;
+  visited_at: string;
+}
+
+export interface SearchOptions {
+  case_sensitive: boolean;
+  whole_word: boolean;
+  use_regex: boolean;
+}
+
+export interface SearchMatch {
+  line_number: number;
+  line_text: string;
+  /** 字符下标（不是字节下标），可直接配合 Array.from(line) 做高亮切片。 */
+  match_start: number;
+  match_end: number;
+}
+
+export interface SearchFileResult {
+  path: string;
+  matches: SearchMatch[];
+}
+
+export interface SearchSummary {
+  files: SearchFileResult[];
+  truncated: boolean;
+}
+
+export interface ReplaceSummary {
+  files_changed: number;
+  occurrences_replaced: number;
+}

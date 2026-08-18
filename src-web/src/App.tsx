@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Code2, FolderCog, Globe, MessageSquare, Wrench, TerminalSquare, FileCode, ScrollText } from "lucide-react";
+import { Code2, FolderCog, Globe, MessageSquare, Wrench, TerminalSquare, FileCode, ScrollText, Files, Search as SearchIcon } from "lucide-react";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { useEditorStore } from "./stores/editorStore";
 import { useTerminalStore } from "./stores/terminalStore";
@@ -14,13 +14,15 @@ import { SftpBrowser } from "./components/SftpBrowser/SftpBrowser";
 import { SftpFileViewer } from "./components/SftpBrowser/SftpFileViewer";
 import { LogSearchPanel } from "./components/LogSearch/LogSearchPanel";
 import { ChatPanel } from "./components/AiChat/ChatPanel";
+import { WebBrowserPanel } from "./components/WebBrowser/WebBrowserPanel";
+import { SearchPanel } from "./components/Search/SearchPanel";
 import { CodingAgentPanel } from "./components/CodingAgent/CodingAgentPanel";
 import { HostKeyPromptHost } from "./components/ConnectionManager/HostKeyPromptHost";
 import { ToastStack } from "./components/shared/Toast";
 import { ThemeToggle } from "./components/shared/ThemeToggle";
 import { sshService } from "./services/sshService";
 
-type ActiveView = "editor" | "sftp" | "logs" | "aichat" | "coding";
+type ActiveView = "editor" | "sftp" | "logs" | "aichat" | "coding" | "browser";
 
 /**
  * 顶层入口：没有打开的工作区时展示 WorkspacePicker，
@@ -38,6 +40,7 @@ function App() {
   const pinFile = useEditorStore((s) => s.pin);
 
   const [activeView, setActiveView] = useState<ActiveView>("editor");
+  const [sidebarMode, setSidebarMode] = useState<"explorer" | "search">("explorer");
   const [sftpViewingPath, setSftpViewingPath] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("roc_desk-sidebar-width"));
@@ -73,6 +76,12 @@ function App() {
 
   useEffect(() => {
     resetTerminals();
+    // 切换工作区（含"返回工作区选择页再打开另一个"）时，上一个工作区打开的编辑器
+    // 标签必须一起清掉——editorStore 是全局 Zustand store，不会因为 App 组件内部
+    // 切换 WorkspacePicker/主界面这两棵 JSX 子树而自动重置（App 组件实例本身没
+    // 卸载，只是子树切换），之前只重置了终端，编辑器标签被遗漏（真实 bug，
+    // 2026-08-18 用户报告"打开新的工作区时，老工作区的编辑TAB未关闭"）。
+    useEditorStore.getState().reset();
     if (!current) return;
     if (connectingRef.current === current.id) return;
     connectingRef.current = current.id;
@@ -168,7 +177,11 @@ function App() {
           >
             <ScrollText />
           </button>
-          <button className="quick-tool-btn" disabled title="网页浏览（尚未实现，DESIGN.md Phase 3）">
+          <button
+            className={`quick-tool-btn ${activeView === "browser" ? "active" : ""}`}
+            title="网页浏览（独立窗口打开，这里管理历史记录）"
+            onClick={() => setActiveView("browser")}
+          >
             <Globe />
           </button>
           <button
@@ -194,22 +207,56 @@ function App() {
           style={{
             width: sidebarWidth,
             flexShrink: 0,
-            overflowY: "auto",
-            overflowX: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
             background: "var(--bg-surface)",
           }}
         >
-          <ExplorerTree
-            workspaceId={current.id}
-            rootPath={current.root_path}
-            onOpenFile={(path, opts) => {
-              const opened = openPreview(current.id, path);
-              // 双击固定：等 openPreview 落地（buffer 出现在 store 里）之后再 pin，
-              // 否则 pin 会因为 buffer 还不存在而静默失效（ExplorerTree.tsx 同款注释）。
-              if (opts?.pin) opened.then(() => pinFile(path));
-              setActiveView("editor");
-            }}
-          />
+          {/* Explorer/搜索 模式切换（参考 VS Code 左侧活动栏，2026-08-18 需求：
+              "左边的目录树，需要加类似的搜索功能"）——不新建一整套活动栏系统，
+              侧边栏内容本身按需要在这两种视图间切换就够用。 */}
+          <div style={{ display: "flex", flexShrink: 0, borderBottom: "1px solid var(--border-subtle)" }}>
+            <button
+              className={`quick-tool-btn ${sidebarMode === "explorer" ? "active" : ""}`}
+              title="资源管理器"
+              onClick={() => setSidebarMode("explorer")}
+            >
+              <Files />
+            </button>
+            <button
+              className={`quick-tool-btn ${sidebarMode === "search" ? "active" : ""}`}
+              title="搜索（跨文件全文搜索/替换）"
+              onClick={() => setSidebarMode("search")}
+            >
+              <SearchIcon />
+            </button>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            {sidebarMode === "explorer" ? (
+              <ExplorerTree
+                workspaceId={current.id}
+                rootPath={current.root_path}
+                onOpenFile={(path, opts) => {
+                  const opened = openPreview(current.id, path);
+                  // 双击固定：等 openPreview 落地（buffer 出现在 store 里）之后再 pin，
+                  // 否则 pin 会因为 buffer 还不存在而静默失效（ExplorerTree.tsx 同款注释）。
+                  if (opts?.pin) opened.then(() => pinFile(path));
+                  setActiveView("editor");
+                }}
+              />
+            ) : (
+              <SearchPanel
+                workspaceId={current.id}
+                onOpenResult={(path, line) => {
+                  openPreview(current.id, path).then(() => {
+                    useEditorStore.getState().revealLine(path, line);
+                  });
+                  setActiveView("editor");
+                }}
+              />
+            )}
+          </div>
         </div>
         {/* 侧边栏拖拽调宽（用户反馈：深层嵌套路径在固定 220px 宽度下会被截断看不全）。 */}
         <div className="sidebar-resize-handle" onMouseDown={onSidebarDragStart} />
@@ -241,6 +288,7 @@ function App() {
               workspaceKind={current.kind}
               profileId={current.connection_id}
               workspaceName={current.display_name}
+              rootPath={current.root_path}
             />
           </div>
           <div style={{ flex: 1, overflow: "hidden", display: activeView === "aichat" ? "block" : "none" }}>
@@ -248,6 +296,9 @@ function App() {
           </div>
           <div style={{ flex: 1, overflow: "hidden", display: activeView === "coding" ? "block" : "none" }}>
             <CodingAgentPanel workspaceId={current.id} />
+          </div>
+          <div style={{ flex: 1, overflow: "hidden", display: activeView === "browser" ? "block" : "none" }}>
+            <WebBrowserPanel visible={activeView === "browser"} />
           </div>
           {/* 终端停靠在编辑器/SFTP/日志搜索下方，和 VS Code 的底部面板一致——不是和编辑器
               互斥切换的"视图"，是常驻的独立面板，可同时看到代码和终端输出

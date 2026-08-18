@@ -59,6 +59,24 @@ impl WorkspaceRepo {
         Ok(result)
     }
 
+    /// 和 `find_by_local_path` 对称——远程工作区判"是否已经打开过"要看连接档案 +
+    /// 远程目录这两个字段的组合，不能只看 `root_path`（同一个远程路径字符串在
+    /// 不同主机上完全是两回事）。之前 `open_remote` 里漏了这一步，导致每次重新打开
+    /// 同一个远程工作区都新建一条记录，"最近工作区"列表里同一个目录会不断堆积
+    /// 重复项（真实 bug，2026-08-18 用户报告同一目录出现 4 条记录）。
+    pub fn find_by_remote(&self, connection_id: Uuid, root_path: &str) -> Result<Option<WorkspaceProfile>, AppError> {
+        let conn = self.pool.get()?;
+        let result = conn
+            .query_row(
+                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+                 FROM workspaces WHERE kind = 'remote' AND connection_id = ?1 AND root_path = ?2",
+                params![connection_id.to_string(), root_path],
+                Self::map_row,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
     pub fn list_recent(&self, limit: usize) -> Result<Vec<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(

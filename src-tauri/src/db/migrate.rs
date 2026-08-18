@@ -26,6 +26,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0007_ai_providers",
         include_str!("../../migrations/0007_ai_providers.sql"),
     ),
+    (
+        "0008_browser_history",
+        include_str!("../../migrations/0008_browser_history.sql"),
+    ),
 ];
 
 /// 启动时自动 apply 尚未执行过的迁移。

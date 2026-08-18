@@ -11,6 +11,7 @@ interface LogSearchPanelProps {
   workspaceKind: "local" | "remote";
   profileId: string | null;
   workspaceName: string;
+  rootPath: string;
 }
 
 type Row = LogSearchResult | LiveSearchResult;
@@ -19,7 +20,7 @@ type Row = LogSearchResult | LiveSearchResult;
  * 日志搜索面板（DESIGN.md §3.4）：模式 B 默认查本地 FTS5 索引，模式 A 对远程工作区
  * 提供实时 rg/grep（不落索引，适合"这次偶发问题"这种一次性排查）。
  */
-export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, profileId, workspaceName }) => {
+export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, profileId, workspaceName, rootPath }) => {
   const {
     mode,
     query,
@@ -48,6 +49,14 @@ export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, p
 
   useEffect(() => {
     loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 实时搜索默认查当前工作区目录（2026-08-18 用户反馈：默认应该是工作区目录，
+  // 之前硬编码成 "/"）；只在挂载时设一次，之后用户在输入框里改了就不再覆盖——
+  // 切工作区时这个面板会随 App.tsx 的整体卸载/重新挂载一起刷新，不需要额外监听。
+  useEffect(() => {
+    setLivePath(rootPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

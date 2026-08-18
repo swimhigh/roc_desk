@@ -75,6 +75,12 @@ impl WorkspaceManager {
 
     /// 连接远程主机并打开工作区（DESIGN.md §3.1.1）。内部经 `SshConnectionPool`
     /// 建连/复用连接（含 §3.2.1 的指纹校验），成功后用同一条连接构造 `RemoteFileOps`。
+    ///
+    /// 若该"连接档案 + 远程目录"组合此前已经打开过，复用同一个 id（和 `open_local`
+    /// 对同一本地路径的处理方式一致），否则每次重新打开同一个远程工作区都会在
+    /// "最近工作区"里产生一条新记录（真实 bug：2026-08-18 用户报告同一个远程目录
+    /// 出现了 4 条一模一样的记录——此前这里漏了这一步判断，是本文件唯一没有走
+    /// "查是否已存在"路径的分支）。
     pub async fn open_remote(&self, connection_id: Uuid, remote_path: &str) -> Result<WorkspaceHandle, AppError> {
         let connection = self
             .connection_manager
@@ -83,20 +89,27 @@ impl WorkspaceManager {
 
         let session = self.ssh_pool.get_or_connect(connection_id).await?;
 
-        let display_name = format!(
-            "{} ({}@{})",
-            remote_path.trim_end_matches('/').rsplit('/').next().unwrap_or(remote_path),
-            connection.username,
-            connection.host
-        );
-
-        let profile = WorkspaceProfile {
-            id: Uuid::new_v4(),
-            kind: WorkspaceKind::Remote,
-            root_path: remote_path.to_string(),
-            connection_id: Some(connection_id),
-            display_name,
-            last_opened_at: Some(Utc::now().to_rfc3339()),
+        let profile = match self.repo.find_by_remote(connection_id, remote_path)? {
+            Some(mut existing) => {
+                existing.last_opened_at = Some(Utc::now().to_rfc3339());
+                existing
+            }
+            None => {
+                let display_name = format!(
+                    "{} ({}@{})",
+                    remote_path.trim_end_matches('/').rsplit('/').next().unwrap_or(remote_path),
+                    connection.username,
+                    connection.host
+                );
+                WorkspaceProfile {
+                    id: Uuid::new_v4(),
+                    kind: WorkspaceKind::Remote,
+                    root_path: remote_path.to_string(),
+                    connection_id: Some(connection_id),
+                    display_name,
+                    last_opened_at: Some(Utc::now().to_rfc3339()),
+                }
+            }
         };
         self.repo.upsert(&profile)?;
 

@@ -1,13 +1,14 @@
 import React from "react";
 import Editor from "@monaco-editor/react";
 import { KeyCode, KeyMod } from "monaco-editor";
-import { Save, Search, X } from "lucide-react";
+import { Save, Search, X, Eye, EyeOff } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { ConflictDialog } from "./ConflictDialog";
 import { EncodingMenu } from "./EncodingMenu";
 import { useToastStore } from "../shared/Toast";
 import { detectLanguage } from "../../utils/language";
 import { formatError } from "../../utils/error";
+import { renderMarkdown } from "../../utils/markdown";
 import { useThemeStore } from "../../stores/themeStore";
 
 interface CodeEditorProps {
@@ -35,12 +36,36 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     resolveConflict,
     reopenWithEncoding,
     saveWithEncoding,
+    pendingReveal,
+    clearReveal,
   } = useEditorStore();
   const push = useToastStore((s) => s.push);
   const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "vs-dark" : "vs"));
   const editorRef = React.useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
+  const [previewOpen, setPreviewOpen] = React.useState(false);
 
   const active = activePath ? buffers[activePath] : null;
+  const language = active ? detectLanguage(active.path) : "plaintext";
+  const isMarkdown = language === "markdown";
+  // 只在预览真正打开时才解析，避免每次敲字符都跑一遍 marked（非 Markdown 文件更是完全不需要）。
+  const previewHtml = React.useMemo(
+    () => (isMarkdown && previewOpen && active ? renderMarkdown(active.content) : ""),
+    [isMarkdown, previewOpen, active?.content],
+  );
+
+  // 搜索面板点一个匹配行之后要求跳转（DESIGN.md 左侧目录树搜索功能）：这里统一处理
+  // "文件已经打开、只是切换 active" 和 "editor 实例刚挂载" 两种情况——后者靠
+  // `active?.path` 变化触发这个 effect 重跑，届时子组件 <Editor> 的 onMount 已经在
+  // 同一次 commit 里跑过（子组件的挂载 effect 先于父组件自己的 effect），
+  // editorRef.current 保证已经是最新的。
+  React.useEffect(() => {
+    if (!pendingReveal || !editorRef.current) return;
+    if (pendingReveal.path !== active?.path) return;
+    editorRef.current.revealLineInCenter(pendingReveal.line);
+    editorRef.current.setPosition({ lineNumber: pendingReveal.line, column: 1 });
+    editorRef.current.focus();
+    clearReveal();
+  }, [pendingReveal, active?.path, clearReveal]);
 
   const handleSave = React.useCallback(async () => {
     if (!activePath) return;
@@ -150,34 +175,60 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           >
             <Search style={{ width: 14, height: 14 }} />
           </button>
+          {isMarkdown && (
+            <button
+              className={`btn ghost sm ${previewOpen ? "active" : ""}`}
+              onClick={() => setPreviewOpen((v) => !v)}
+              title="Markdown 预览 (Ctrl+Shift+V)"
+            >
+              {previewOpen ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />} 预览
+            </button>
+          )}
           <button className="btn ghost sm" onClick={handleSave} title="保存 (Ctrl+S)">
             <Save style={{ width: 14, height: 14 }} /> 保存
           </button>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <Editor
-          key={active.path}
-          path={active.path}
-          language={detectLanguage(active.path)}
-          value={active.content}
-          theme={monacoTheme}
-          onChange={(value) => updateContent(active.path, value ?? "")}
-          onMount={(editor) => {
-            editorRef.current = editor;
-            editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
-              handleSave();
-            });
-          }}
-          options={{
-            fontSize: 13,
-            fontFamily: "var(--font-mono)",
-            minimap: { enabled: true },
-            wordWrap: "on",
-            automaticLayout: true,
-            scrollBeyondLastLine: false,
-          }}
-        />
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        {/* 参考 VS Code 默认的 Ctrl+Shift+V"打开预览"（不是 Ctrl+K V 那种分栏预览）：
+            预览会整体替换掉编辑区域，不是和源码并排——两者占同一块区域，用 display
+            互斥切换，Monaco 实例不销毁（只是隐藏），切回编辑态时光标/滚动位置都还在。 */}
+        <div style={{ display: previewOpen ? "none" : "block", width: "100%", height: "100%" }}>
+          <Editor
+            key={active.path}
+            path={active.path}
+            language={language}
+            value={active.content}
+            theme={monacoTheme}
+            onChange={(value) => updateContent(active.path, value ?? "")}
+            onMount={(editor) => {
+              editorRef.current = editor;
+              editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
+                handleSave();
+              });
+              if (isMarkdown) {
+                editor.addCommand(KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyV, () => {
+                  setPreviewOpen((v) => !v);
+                });
+              }
+            }}
+            options={{
+              fontSize: 13,
+              fontFamily: "var(--font-mono)",
+              minimap: { enabled: true },
+              wordWrap: "on",
+              automaticLayout: true,
+              scrollBeyondLastLine: false,
+            }}
+          />
+        </div>
+        {isMarkdown && previewOpen && (
+          <div
+            className="markdown-preview"
+            style={{ width: "100%", height: "100%", overflowY: "auto" }}
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
+          />
+        )}
       </div>
       {conflict && (
         <ConflictDialog

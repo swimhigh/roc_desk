@@ -9,6 +9,7 @@ use crate::coding::{CodingSession, CommandConfirmRegistry};
 use crate::connection::ConnectionManager;
 use crate::credential::CredentialStore;
 use crate::db::repo::audit_log_repo::AuditLogRepo;
+use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
 use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
 use crate::pty::LocalPtyManager;
@@ -38,4 +39,5 @@ pub struct AppState {
     pub command_confirms: CommandConfirmRegistry,
     pub audit_log: Arc<AuditLogRepo>,
     pub local_pty: Arc<LocalPtyManager>,
+    pub browser_history: Arc<BrowserHistoryRepo>,
 }

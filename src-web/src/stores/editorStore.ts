@@ -16,11 +16,19 @@ export interface SaveConflict {
   currentPreview: string;
 }
 
+export interface PendingReveal {
+  path: string;
+  line: number;
+}
+
 interface EditorState {
   buffers: Record<string, EditorBuffer>;
   order: string[];
   activePath: string | null;
   conflict: SaveConflict | null;
+  /** 搜索面板点一个匹配行 → 要求编辑器跳转到该文件的这一行（DESIGN.md 左侧目录树
+   * 搜索功能，2026-08-18 需求）。CodeEditor 消费后自己清空，不在这里自动清。 */
+  pendingReveal: PendingReveal | null;
 
   /** 单击文件：复用/替换预览标签，而不是无限开新标签 */
   openPreview: (workspaceId: string, path: string) => Promise<void>;
@@ -34,6 +42,8 @@ interface EditorState {
     resolution: "overwrite" | "discard",
   ) => Promise<void>;
   close: (path: string) => void;
+  revealLine: (path: string, line: number) => void;
+  clearReveal: () => void;
   /** "Reopen with Encoding"（参考 VS Code）：丢弃当前内容，强制按指定编码重新读取。*/
   reopenWithEncoding: (workspaceId: string, path: string, encodingLabel: string) => Promise<void>;
   /** "Save with Encoding"（参考 VS Code）：按指定编码写盘，而不是固定 UTF-8。*/
@@ -46,6 +56,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   order: [],
   activePath: null,
   conflict: null,
+  pendingReveal: null,
 
   openPreview: async (workspaceId, path) => {
     const existing = get().buffers[path];
@@ -170,5 +181,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  reset: () => set({ buffers: {}, order: [], activePath: null, conflict: null }),
+  revealLine: (path, line) => set({ pendingReveal: { path, line } }),
+  clearReveal: () => set({ pendingReveal: null }),
+
+  reset: () => set({ buffers: {}, order: [], activePath: null, conflict: null, pendingReveal: null }),
 }));

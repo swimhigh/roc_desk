@@ -1,0 +1,85 @@
+name: Release
+
+# 推一个 vX.Y.Z 形式的 tag 就自动触发：在 GitHub 的 Windows 运行器上构建
+# roc_desk.exe + MSI/NSIS 安装包，创建一个同名 GitHub Release 并把产物传上去。
+# 也支持从 Actions 页面手动触发（workflow_dispatch）——用来重跑失败的构建，
+# 或者对着一个已存在的 tag 重新打包，不需要专门再造一个新版本号。
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 版本号的唯一权威来源是 src-tauri/Cargo.toml（tauri.conf.json 故意没写
+      # version 字段，Tauri 会自动回退读 Cargo.toml——这是本次为了"充分考虑版本
+      # 问题"特意做的简化，见 REQUIREMENTS.md/RELEASING.md）。这一步在真正花时间
+      # 构建之前先校验 tag 和它是否一致，忘了同步版本号就直接在这里快速失败，
+      # 而不是等 10 分钟构建完、发布出去了才发现文件名对不上 tag。
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 对应版本号 $TAG_VERSION，但 src-tauri/Cargo.toml 里是 $CARGO_VERSION，两者必须一致。请先更新 Cargo.toml 的 version、提交，再打 tag。"
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: src-web/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 构建产物目录被 src-tauri/.cargo/config.toml 重定向到仓库根目录的 build/
+      # （不是默认的 src-tauri/target/），这里显式告诉缓存动作真实路径，否则它会
+      # 按默认约定去缓存一个根本不存在写入的目录，白占缓存空间还不生效。
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> ../build"
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix src-web
+
+      # 和本地开发者机器上完全一样的构建命令（RELEASING.md 里让人本地验证用的
+      # 也是这一条），不用 tauri-action 之类现成 Action 重新拼一遍构建参数——
+      # 这个仓库 src-tauri/src-web 是同级目录、Tauri CLI 装在 src-web/
+      # node_modules 下，属于非默认布局，直接复用已经验证过能跑通的脚本比让
+      # 通用 Action 重新猜一遍布局更可靠。
+      - name: Build (frontend + Tauri bundle)
+        run: npm run tauri:build
+
+      - name: Locate build artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          cp "build/release/roc_desk.exe" "build/release/roc_desk-v${VERSION}-portable.exe"
+          echo "portable_exe=build/release/roc_desk-v${VERSION}-portable.exe" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "roc_desk ${{ github.ref_name }}"
+          draft: false
+          generate_release_notes: true
+          files: |
+            build/release/bundle/nsis/*.exe
+            build/release/bundle/msi/*.msi
+            ${{ steps.artifacts.outputs.portable_exe }}

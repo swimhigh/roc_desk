@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod browser;
 pub mod coding;
 pub mod commands;
 pub mod connection;
@@ -24,6 +25,7 @@ use connection::ConnectionManager;
 use credential::KeyringStore;
 use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
+use db::repo::browser_history_repo::BrowserHistoryRepo;
 use db::repo::connections_repo::ConnectionsRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
@@ -87,6 +89,7 @@ pub fn run() {
             let ai_chat_client = Arc::new(AiChatClient::new());
 
             let audit_log = Arc::new(AuditLogRepo::new(pool.clone()));
+            let browser_history = Arc::new(BrowserHistoryRepo::new(pool.clone()));
 
             app.manage(AppState {
                 db: pool,
@@ -104,6 +107,7 @@ pub fn run() {
                 command_confirms: CommandConfirmRegistry::default(),
                 audit_log,
                 local_pty: Arc::new(LocalPtyManager::default()),
+                browser_history,
             });
 
             Ok(())
@@ -123,6 +127,8 @@ pub fn run() {
             commands::fs::fs_delete,
             commands::fs::fs_rename,
             commands::fs::fs_copy,
+            commands::fs::fs_search,
+            commands::fs::fs_replace,
             commands::connection::connection_list,
             commands::connection::connection_create,
             commands::connection::connection_update,
@@ -170,6 +176,14 @@ pub fn run() {
             commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::pty::pty_close,
+            commands::browser::browser_open,
+            commands::browser::browser_set_bounds,
+            commands::browser::browser_hide,
+            commands::browser::browser_show,
+            commands::browser::browser_close,
+            commands::browser::browser_history_list,
+            commands::browser::browser_history_remove,
+            commands::browser::browser_history_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

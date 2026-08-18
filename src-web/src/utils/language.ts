@@ -39,11 +39,21 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
   rb: "ruby",
   php: "php",
   dockerfile: "dockerfile",
+  mk: "makefile",
+  mak: "makefile",
+};
+
+/** 没有扩展名、靠固定文件名识别的类型（不区分大小写）——Dockerfile/Makefile 都是这类。*/
+const FILENAME_LANGUAGE: Record<string, string> = {
+  dockerfile: "dockerfile",
+  makefile: "makefile",
+  gnumakefile: "makefile",
 };
 
 export function detectLanguage(path: string): string {
   const fileName = path.split(/[\\/]/).pop() ?? path;
-  if (fileName.toLowerCase() === "dockerfile") return "dockerfile";
+  const byName = FILENAME_LANGUAGE[fileName.toLowerCase()];
+  if (byName) return byName;
   const ext = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
   return EXTENSION_LANGUAGE[ext] ?? "plaintext";
 }

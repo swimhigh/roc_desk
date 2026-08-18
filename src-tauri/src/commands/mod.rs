@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod browser;
 pub mod coding;
 pub mod connection;
 pub mod fs;
