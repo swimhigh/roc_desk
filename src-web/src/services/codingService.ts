@@ -39,6 +39,9 @@ export const codingService = {
   confirmCommand(requestId: string, allow: boolean): Promise<void> {
     return invoke("coding_confirm_command", { requestId, allow });
   },
+  answerQuestion(requestId: string, answer: string): Promise<void> {
+    return invoke("coding_answer_question", { requestId, answer });
+  },
   historyList(workspaceId: string): Promise<CodingHistorySummary[]> {
     return invoke("coding_history_list", { workspaceId });
   },

@@ -19,7 +19,13 @@ function toolLabel(tool: string): string {
   const labels: Record<string, string> = {
     read_file: "读取文件", write_file: "创建文件变更", edit_file: "编辑文件",
     list_directory: "查看目录", search_files: "搜索代码", run_command: "执行命令",
+    glob: "按文件名查找", webfetch: "抓取网页", todo_write: "更新任务清单",
+    question: "向你提问", skill: "加载技能",
   };
+  if (tool.startsWith("mcp__")) {
+    const [, server, name] = tool.split("__");
+    return `调用 MCP 工具 ${server ?? ""}.${name ?? tool}`;
+  }
   return labels[tool] ?? `执行 ${tool}`;
 }
 
@@ -28,10 +34,21 @@ function toolLabel(tool: string): string {
  * （SSH 往返有延迟）；本地目标如果单次调用 < 300ms，由调用方直接不渲染这个组件，
  * 阈值属于业务决策，组件本身只负责展示。
  */
-export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({ tool, elapsedMs, done, detail, onOpenFile }) => (
-  <div className="tool-call-progress">
-    {done ? <Check style={{ width: 10, height: 10, color: "var(--text-secondary)" }} /> : <span className="spinner" />}
-    {done ? `已完成 ${toolLabel(tool)}` : `正在${toolLabel(tool)} · ${(elapsedMs / 1000).toFixed(1)}s`}
-    {detail && (onOpenFile ? <button className="tool-file-ref" onClick={onOpenFile}>· {detail}</button> : <span style={{ opacity: 0.7 }}>· {detail}</span>)}
-  </div>
-);
+export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({ tool, elapsedMs, done, detail, onOpenFile }) => {
+  const isCommand = tool === "run_command";
+  return (
+    <div className="tool-call-progress">
+      {done ? <Check style={{ width: 10, height: 10, color: "var(--text-secondary)" }} /> : <span className="spinner" />}
+      {done ? `已完成 ${toolLabel(tool)}` : `正在${toolLabel(tool)} · ${(elapsedMs / 1000).toFixed(1)}s`}
+      {detail && (
+        onOpenFile ? (
+          <button className="tool-file-ref" onClick={onOpenFile}>· {detail}</button>
+        ) : isCommand ? (
+          <code className="tool-detail-cmd">{detail}</code>
+        ) : (
+          <span style={{ opacity: 0.7 }}>· {detail}</span>
+        )
+      )}
+    </div>
+  );
+};

@@ -8,6 +8,7 @@ pub mod db;
 pub mod error;
 pub mod fsops;
 pub mod log;
+pub mod mcp;
 pub mod pty;
 pub mod rdp;
 pub mod ssh;
@@ -31,8 +32,11 @@ use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
 use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
+use db::repo::mcp_servers_repo::McpServersRepo;
+use db::repo::permission_rules_repo::PermissionRulesRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
+use mcp::McpServerManager;
 use pty::LocalPtyManager;
 use rdp::RdpSessionManager;
 use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
@@ -141,6 +145,9 @@ pub fn run() {
             let audit_log = Arc::new(AuditLogRepo::new(pool.clone()));
             let coding_history = Arc::new(CodingHistoryRepo::new(pool.clone()));
             let browser_history = Arc::new(BrowserHistoryRepo::new(pool.clone()));
+            let permission_rules = Arc::new(PermissionRulesRepo::new(pool.clone()));
+            let mcp_servers_repo = Arc::new(McpServersRepo::new(pool.clone()));
+            let mcp_manager = Arc::new(McpServerManager::new(mcp_servers_repo, credential_store.clone()));
 
             app.manage(AppState {
                 db: pool,
@@ -163,6 +170,9 @@ pub fn run() {
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
+                permission_rules,
+                question_confirms: coding::QuestionRegistry::default(),
+                mcp_manager,
             });
 
             Ok(())
@@ -245,6 +255,14 @@ pub fn run() {
             commands::coding::coding_history_save,
             commands::coding::coding_history_rename,
             commands::coding::coding_history_delete,
+            commands::coding::coding_answer_question,
+            commands::coding::permission_rule_list,
+            commands::coding::permission_rule_create,
+            commands::coding::permission_rule_delete,
+            commands::coding::mcp_server_list,
+            commands::coding::mcp_server_create,
+            commands::coding::mcp_server_update,
+            commands::coding::mcp_server_delete,
             commands::pty::pty_open,
             commands::pty::pty_write,
             commands::pty::pty_resize,
@@ -259,6 +277,16 @@ pub fn run() {
             commands::browser::browser_history_remove,
             commands::browser::browser_history_clear,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // RDP 内嵌窗口从 `SetParent` 子窗口改成属主窗口之后（见 `rdp/mod.rs`
+            // 顶部"代价"一节），Windows 不再在主窗口销毁时自动级联关掉它——退出时
+            // 必须显式收尾，否则 wfreerdp.exe 连带它的窗口会变成孤儿留在桌面上。
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    let _ = state.rdp_sessions.disconnect_all();
+                }
+            }
+        });
 }

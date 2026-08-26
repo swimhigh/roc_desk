@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { codingService } from "../services/codingService";
+import { permissionRuleService } from "../services/permissionRuleService";
+import { mcpServerService } from "../services/mcpServerService";
 import { formatError } from "../utils/error";
 import { useAiChatStore } from "./aiChatStore";
 import type {
@@ -10,10 +12,16 @@ import type {
   CodingFileChangeEvent,
   CodingGitCommitResultEvent,
   CodingMode,
+  CodingQuestionRequestEvent,
   CodingSessionInfo,
   CodingToolCallEvent,
+  CodingTodoUpdateEvent,
   FileChange,
   CodingHistorySummary,
+  McpServer,
+  McpServerInput,
+  PermissionRule,
+  PermissionRuleInput,
 } from "../types/bindings";
 
 export type TimelineEntry =
@@ -35,7 +43,10 @@ interface CodingState {
   changesById: Record<string, FileChange>;
   sending: boolean;
   error: string | null;
-  confirmRequest: { requestId: string; command: string; host: string | null } | null;
+  confirmRequest: { requestId: string; command: string; host: string | null; kind: "command" | "mcp"; matchKey?: string } | null;
+  questionRequest: { requestId: string; question: string; options: string[] } | null;
+  permissionRules: PermissionRule[];
+  mcpServers: McpServer[];
   histories: CodingHistorySummary[];
   viewingHistoryId: string | null;
   loadHistories: (workspaceId?: string) => Promise<void>;
@@ -57,6 +68,16 @@ interface CodingState {
   undoChange: (changeId: string) => Promise<void>;
   redoChange: () => Promise<void>;
   resolveConfirm: (allow: boolean) => Promise<void>;
+  /** "允许并记住"：先按建议模式落一条 allow 规则，再照常放行这一次。 */
+  resolveConfirmAndRemember: (pattern: string) => Promise<void>;
+  answerQuestion: (answer: string) => Promise<void>;
+  loadPermissionRules: () => Promise<void>;
+  createPermissionRule: (input: PermissionRuleInput) => Promise<void>;
+  deletePermissionRule: (id: string) => Promise<void>;
+  loadMcpServers: () => Promise<void>;
+  createMcpServer: (input: McpServerInput) => Promise<void>;
+  updateMcpServer: (id: string, input: McpServerInput) => Promise<void>;
+  deleteMcpServer: (id: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -71,6 +92,9 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   sending: false,
   error: null,
   confirmRequest: null,
+  questionRequest: null,
+  permissionRules: [],
+  mcpServers: [],
   histories: [],
   viewingHistoryId: null,
 
@@ -186,6 +210,61 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     await codingService.confirmCommand(confirmRequest.requestId, allow);
   },
 
+  resolveConfirmAndRemember: async (pattern) => {
+    const { confirmRequest } = get();
+    if (!confirmRequest) return;
+    set({ confirmRequest: null });
+    try {
+      await get().createPermissionRule({
+        tool: confirmRequest.kind === "mcp" ? "mcp" : "run_command",
+        pattern,
+        decision: "allow",
+      });
+    } finally {
+      await codingService.confirmCommand(confirmRequest.requestId, true);
+    }
+  },
+
+  answerQuestion: async (answer) => {
+    const { questionRequest } = get();
+    if (!questionRequest) return;
+    set({ questionRequest: null });
+    await codingService.answerQuestion(questionRequest.requestId, answer);
+  },
+
+  loadPermissionRules: async () => {
+    try { set({ permissionRules: await permissionRuleService.list() }); } catch { /* best effort */ }
+  },
+
+  createPermissionRule: async (input) => {
+    const rule = await permissionRuleService.create(input);
+    set((s) => ({ permissionRules: [...s.permissionRules, rule] }));
+  },
+
+  deletePermissionRule: async (id) => {
+    await permissionRuleService.delete(id);
+    set((s) => ({ permissionRules: s.permissionRules.filter((r) => r.id !== id) }));
+  },
+
+  loadMcpServers: async () => {
+    try { set({ mcpServers: await mcpServerService.list() }); } catch { /* best effort */ }
+  },
+
+  createMcpServer: async (input) => {
+    const server = await mcpServerService.create(input);
+    set((s) => ({ mcpServers: [...s.mcpServers, server] }));
+  },
+
+  updateMcpServer: async (id, input) => {
+    const server = await mcpServerService.update(id, input);
+    set((s) => ({ mcpServers: s.mcpServers.map((m) => (m.id === id ? server : m)) }));
+  },
+
+  deleteMcpServer: async (id) => {
+    await mcpServerService.delete(id);
+    set((s) => ({ mcpServers: s.mcpServers.filter((m) => m.id !== id) }));
+  },
+
   loadHistories: async (workspaceId) => {
     const id = workspaceId ?? get().workspaceId;
     if (!id) return;
@@ -208,7 +287,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     await get().saveCurrentHistory();
     const detail = await codingService.historyGet(id);
     if (!detail) return;
-    set({ workspaceId: detail.workspace_id, viewingHistoryId: detail.id, sessionInfo: { id: detail.id, provider_id: detail.provider_id, mode: detail.mode as CodingMode, target: get().sessionInfo?.target ?? { kind: "Local" }, auto_allow_readonly: false, git_repo: false, auto_git_commit: false, changes: detail.changes as FileChange[] }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries((detail.changes as FileChange[]).map((c) => [c.id, c])), error: null });
+    set({ workspaceId: detail.workspace_id, viewingHistoryId: detail.id, sessionInfo: { id: detail.id, provider_id: detail.provider_id, mode: detail.mode as CodingMode, target: get().sessionInfo?.target ?? { kind: "Local" }, auto_allow_readonly: false, git_repo: false, auto_git_commit: false, changes: detail.changes as FileChange[], todos: [], project_memory_loaded: [] }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries((detail.changes as FileChange[]).map((c) => [c.id, c])), error: null });
   },
 
   deleteHistory: async (id) => {
@@ -262,7 +341,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     }
   },
 
-  reset: () => set({ workspaceId: null, sessionInfo: null, timeline: [], changesById: {}, sending: false, error: null, confirmRequest: null }),
+  reset: () => set({ workspaceId: null, sessionInfo: null, timeline: [], changesById: {}, sending: false, error: null, confirmRequest: null, questionRequest: null }),
 }));
 
 let listenersRegistered = false;
@@ -318,7 +397,23 @@ export function registerCodingListeners(): Promise<() => void> {
     listen<CodingCommandConfirmRequestEvent>("coding:command-confirm-request", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
       useCodingStore.setState({
-        confirmRequest: { requestId: event.payload.requestId, command: event.payload.command, host: event.payload.host },
+        confirmRequest: {
+          requestId: event.payload.requestId,
+          command: event.payload.command,
+          host: event.payload.host,
+          kind: event.payload.kind ?? "command",
+          matchKey: event.payload.matchKey,
+        },
+      });
+    }),
+    listen<CodingTodoUpdateEvent>("coding:todo-update", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      useCodingStore.setState((s) => (s.sessionInfo ? { sessionInfo: { ...s.sessionInfo, todos: event.payload.todos } } : s));
+    }),
+    listen<CodingQuestionRequestEvent>("coding:question-request", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      useCodingStore.setState({
+        questionRequest: { requestId: event.payload.requestId, question: event.payload.question, options: event.payload.options },
       });
     }),
     listen<CodingGitCommitResultEvent>("coding:git-commit-result", (event) => {

@@ -15,23 +15,26 @@ const windTermTheme: ITheme = {
   selectionInactiveBackground: "rgba(108, 99, 160, 0.22)",
 
   // Normal ANSI colors are saturated enough for prompts and diagnostics.
-  black: "#30332F",
-  red: "#E44747",
-  green: "#48B84E",
-  yellow: "#D9B83F",
-  blue: "#4B7BEC",
-  magenta: "#B45ACB",
-  cyan: "#20B8C5",
-  white: "#D8D9D4",
+  black: "#2A2D28",
+  red: "#E5484D",
+  green: "#3FC97A",
+  yellow: "#E0B23D",
+  blue: "#4C93F8",
+  magenta: "#C15FE0",
+  cyan: "#22C3D6",
+  white: "#D9DAD5",
 
-  // Bright colors are intentionally distinct, not merely pale variants.
-  brightBlack: "#777B75",
-  brightRed: "#FF3B62",
-  brightGreen: "#8BEA31",
-  brightYellow: "#FFE14D",
-  brightBlue: "#7297FF",
-  brightMagenta: "#C873FF",
-  brightCyan: "#43E5F3",
+  // Bright colors are intentionally distinct, not merely pale variants. These
+  // exact hex values are reused verbatim as the --shell-* tokens in theme.css
+  // so command syntax highlighting in the AI panel visually matches the
+  // terminal — keep both in sync if you retune this palette.
+  brightBlack: "#7A7E76",
+  brightRed: "#FF5C72",
+  brightGreen: "#7CF23A",
+  brightYellow: "#FFDD57",
+  brightBlue: "#74A6FF",
+  brightMagenta: "#D98CFF",
+  brightCyan: "#4FF0FF",
   brightWhite: "#FFFFFF",
 };
 

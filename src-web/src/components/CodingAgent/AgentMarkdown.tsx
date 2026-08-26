@@ -1,5 +1,8 @@
 import React, { useMemo } from "react";
 import { renderMarkdown } from "../../utils/markdown";
+import { highlightShellCommand } from "../../utils/shellHighlight";
+
+const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console", "powershell", "ps1", "cmd", "batch"]);
 
 interface AgentMarkdownProps {
   content: string;
@@ -24,6 +27,19 @@ function decorateFileReferences(html: string): string {
     const raw = element instanceof HTMLAnchorElement ? element.getAttribute("href") || element.textContent || "" : element.textContent || "";
     if (parseFileRef(raw) && !element.closest("pre")) element.classList.add("agent-file-ref");
   });
+
+  // 围栏代码块如果标了 shell 类语言（```bash 等），给命令上色，让它在一堆说明
+  // 文字里一眼可辨；其余语言（python/json/...）保持原样，避免误上色。
+  root.querySelectorAll("pre > code").forEach((element) => {
+    const lang = Array.from(element.classList)
+      .find((c) => c.startsWith("language-"))
+      ?.slice("language-".length);
+    if (lang && SHELL_LANGS.has(lang)) {
+      element.innerHTML = highlightShellCommand(element.textContent || "");
+      element.classList.add("agent-shell-block");
+    }
+  });
+
   return root.innerHTML;
 }
 

@@ -196,12 +196,15 @@
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   padding: var(--space-2) var(--space-3);
-  background: var(--bg-app);
+  background: var(--bg-terminal);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   margin: var(--space-2) 0;
-  color: var(--text-primary);
+  color: var(--shell-fg);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
+.cmd-confirm-code .cmd-confirm-prompt { color: var(--shell-comment); margin-right: 6px; }
 .blocked-cmd-msg {
   padding: var(--space-2) var(--space-3);
   background: var(--danger);
@@ -930,6 +933,7 @@
 .tool-call-progress .spinner { width: 10px; height: 10px; border: 1.5px solid var(--border-default); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .tool-file-ref { padding: 0; color: var(--text-secondary); opacity: 0.8; background: none; font: inherit; cursor: pointer; }
 .tool-file-ref:hover { color: var(--accent); opacity: 1; text-decoration: underline; }
+.tool-detail-cmd { font-family: var(--font-mono); font-size: 0.95em; padding: 1px 6px; border-radius: 4px; background: var(--bg-terminal); color: var(--shell-cmd); }
 
 /* === Coding Agent conversation (Codex/OpenCode inspired hierarchy) === */
 .agent-model-select {
@@ -962,9 +966,17 @@
 .agent-markdown ul, .agent-markdown ol { margin: 0.45em 0; padding-left: 1.65em; }
 .agent-markdown li { margin: 0.2em 0; }
 .agent-markdown blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid var(--border-default); color: var(--text-secondary); }
-.agent-markdown code { font-family: var(--font-mono); font-size: 0.9em; padding: 1px 5px; border-radius: 4px; background: var(--bg-hover); }
-.agent-markdown pre { margin: 0.7em 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-surface); }
-.agent-markdown pre code { padding: 0; background: transparent; }
+.agent-markdown code { font-family: var(--font-mono); font-size: 0.9em; padding: 1px 6px; border-radius: 4px; background: var(--bg-terminal); color: var(--shell-fg); }
+.agent-markdown code.agent-file-ref { background: var(--bg-hover); color: var(--accent); }
+.agent-markdown pre { margin: 0.7em 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-terminal); }
+.agent-markdown pre code { padding: 0; background: transparent; color: var(--shell-fg); }
+.shell-cmd { color: var(--shell-cmd); font-weight: 600; }
+.shell-flag { color: var(--shell-flag); }
+.shell-string { color: var(--shell-string); }
+.shell-var { color: var(--shell-var); }
+.shell-op { color: var(--shell-op); }
+.shell-comment { color: var(--shell-comment); font-style: italic; }
+.shell-arg { color: var(--shell-fg); opacity: 0.92; }
 .agent-markdown table { width: 100%; margin: 0.6em 0; border-collapse: collapse; }
 .agent-markdown th, .agent-markdown td { padding: 5px 8px; border: 1px solid var(--border-default); text-align: left; }
 .agent-markdown th { background: var(--bg-surface); }

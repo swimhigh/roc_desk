@@ -1,6 +1,6 @@
 [package]
 name = "roc_desk"
-version = "1.0.0"
+version = "1.1.0"
 description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
 authors = ["you"]
 edition = "2021"
@@ -74,31 +74,16 @@ futures-util = "0.3"
 similar = "2"
 
 [target.'cfg(windows)'.dependencies]
-# RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——先后踩了 rustls 套件受限
-# （被 SChannel 策略较老的服务器 RST 掉）、IronRDP 库本身不支持"会话数超限时弹出
-# 选择/踢人界面"、mstsc.exe 进程生命周期里换好几个顶层窗口导致嵌入中途卡住三个坑
-# （详见 src/rdp/mod.rs 顶部注释），最终落地在：以 ActiveX 方式承载 Windows 自带
-# 的 RDP 客户端控件（`mstscax.dll` 的 `MsTscAx`），这正是 MobaXterm 自己验证过在用
-# 的技术、也是 mstsc.exe 内部渲染桌面用的同一个控件。`Win32_System_Ole`/
-# `Win32_System_Com`/`Win32_System_Threading` 是 ActiveX 就地激活（IOleObject/
-# IOleClientSite 一整套协议）+ COM 初始化 + STA 线程 ID 需要的功能。版本对齐 tauri
-# 自己内部依赖的 windows crate（见 tauri 2.11.5 的 Cargo.toml
-# `[target."cfg(windows)".dependencies.windows]`），这样
+# RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——依次踩了 rustls 套件受限、
+# IronRDP 不支持会话选择界面、ActiveX 承载 `mstscax.dll` 控件时 `Connect()` 总是
+# 同步自我拒绝且始终没能定位到根因几个坑（详见 src/rdp/mod.rs 顶部注释），最终
+# 落地在拉起系统自带的 `mstsc.exe`、用 Win32 API 把它的窗口摘掉标题栏/边框、
+# `SetParent` 挪进 roc_desk 主窗口。`Win32_Foundation`/`Win32_UI_WindowsAndMessaging`
+# 是这条路径本身需要的 API 面；`Win32_Graphics_Gdi` 是 `RedrawWindow` 需要的——
+# 真机联调发现跨进程 `SetParent` 之后硬件加速渲染的窗口（现代 mstsc.exe 用
+# DirectX/DXGI 画桌面画面）经常不会正确挂到新宿主的合成表面上，窗口本身的位置/
+# 大小/可见性这些属性完全正常但内容是黑的，`embed_window` 里用尺寸抖动+强制重绘
+# 应对这类问题。版本对齐 tauri 自己内部依赖的 windows crate（见 tauri 2.11.5 的
+# Cargo.toml `[target."cfg(windows)".dependencies.windows]`），这样
 # `tauri::WebviewWindow::hwnd()` 返回的 HWND 类型能直接互操作，不用做类型转换。
-windows = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Ole",
-    "Win32_System_Com",
-    "Win32_System_Threading",
-    "Win32_System_ApplicationInstallationAndServicing",
-    "Win32_System_SystemInformation",
-    "Win32_System_Variant",
-] }
-# `#[windows::core::interface(...)]`（用来手写 IMsTscAx 等 MSTSCAX 接口，windows
-# crate 预生成绑定不包含这几个第三方/系统自带控件专属接口）生成的代码里直接写死
-# `windows_core::...` 路径，不是走 `windows::core::...`——必须把 `windows-core` 也
-# 声明成本 crate 能直接解析到的依赖名，版本对齐 windows 0.61.3 内部实际使用的
-# 0.61.2（见其 Cargo.toml `[dependencies.windows-core]`），否则宏展开出来的代码
-# 编译不过（`cannot find windows_core in the crate root`）。
-windows-core = "=0.61.2"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }

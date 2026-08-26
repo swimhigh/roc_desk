@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus } from "lucide-react";
+import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle } from "lucide-react";
 import { useCodingStore } from "../../stores/codingStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { SegmentedControl } from "../shared/SegmentedControl";
@@ -9,10 +9,27 @@ import { RemoteCapabilityBadge } from "./RemoteCapabilityBadge";
 import { ToolCallProgress } from "./ToolCallProgress";
 import { FileChangeCard, type DiffLine as CardDiffLine } from "./FileChangeCard";
 import { CommandConfirmDialog, BlockedCommandMessage } from "./CommandConfirmDialog";
+import { QuestionDialog } from "./QuestionDialog";
+import { PermissionRulesDialog } from "./PermissionRulesDialog";
+import { McpServerManagerDialog } from "./McpServerManagerDialog";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { ProviderManagerDialog, hasProviderDraft } from "../AiChat/ProviderManagerDialog";
 import { CodingHistoryDialog } from "./CodingHistoryDialog";
-import type { CodingTarget } from "../../types/bindings";
+import type { CodingTarget, TodoStatus } from "../../types/bindings";
+
+function todoIcon(status: TodoStatus) {
+  if (status === "completed") return <CircleCheck style={{ width: 13, height: 13, color: "var(--accent)" }} />;
+  if (status === "in_progress") return <CircleDot style={{ width: 13, height: 13, color: "var(--warning)" }} />;
+  return <Circle style={{ width: 13, height: 13, color: "var(--text-secondary)" }} />;
+}
+
+/** `run_command` 的"记住此模式"默认建议：取命令第一个词 + " *"（如 `npm install`
+ * → `npm *`），比逐字精确匹配更实用——大多数场景是"这一类命令都想放行"，不是
+ * "只放行一模一样的这一条"。用户仍然可以在弹窗里把它改成任意通配模式。 */
+function suggestCommandPattern(command: string): string {
+  const first = command.trim().split(/\s+/)[0];
+  return first ? `${first} *` : command;
+}
 
 interface CodingAgentPanelProps {
   workspaceId: string;
@@ -54,6 +71,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     sending,
     error,
     confirmRequest,
+    questionRequest,
     start,
     setMode,
     setProvider,
@@ -64,6 +82,8 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     rejectChange,
     undoChange,
     resolveConfirm,
+    resolveConfirmAndRemember,
+    answerQuestion,
     histories,
     viewingHistoryId,
     loadHistories,
@@ -79,6 +99,8 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showProviders, setShowProviders] = useState(false);
   const [providerDraftPending, setProviderDraftPending] = useState(() => hasProviderDraft());
   const [showHistory, setShowHistory] = useState(false);
+  const [showPermissionRules, setShowPermissionRules] = useState(false);
+  const [showMcpServers, setShowMcpServers] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const restoredWorkspaceRef = useRef<string | null>(null);
@@ -193,11 +215,25 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         </select>
         <TargetBadge targetLabel={targetLabel(sessionInfo.target)} isRemote={isRemote} />
         {isRemote && <RemoteCapabilityBadge />}
+        {sessionInfo.project_memory_loaded.length > 0 && (
+          <span
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}
+            title={`系统提示词已注入：${sessionInfo.project_memory_loaded.join(", ")}`}
+          >
+            <BookOpen style={{ width: 12, height: 12 }} /> {sessionInfo.project_memory_loaded.join(" / ")}
+          </span>
+        )}
         <button className="btn ghost sm" onClick={() => { setShowHistory(true); loadHistories(workspaceId); }} title="历史会话">
           <History style={{ width: 13, height: 13 }} /> 历史{histories.length ? ` (${histories.length})` : ""}
         </button>
         <button className="btn ghost sm" onClick={() => newSession(sessionInfo.provider_id)} disabled={sending} title="新建会话">
           <Plus style={{ width: 13, height: 13 }} /> 新会话
+        </button>
+        <button className="btn ghost sm" onClick={() => setShowPermissionRules(true)} title="权限规则管理">
+          <ShieldCheck style={{ width: 13, height: 13 }} /> 权限规则
+        </button>
+        <button className="btn ghost sm" onClick={() => setShowMcpServers(true)} title="MCP 服务器管理">
+          <Plug style={{ width: 13, height: 13 }} /> MCP
         </button>
         <button className={`btn ghost sm ${hasDraft ? "active" : ""}`} onClick={() => setShowProviders(true)}>
           <Settings style={{ width: 13, height: 13 }} /> {hasDraft ? "继续配置" : "模型管理"}
@@ -223,6 +259,24 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           </>
         )}
       </div>
+
+      {sessionInfo.todos.length > 0 && (
+        <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", gap: 3 }}>
+          {sessionInfo.todos.map((todo) => (
+            <div
+              key={todo.id}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, fontSize: 12,
+                color: todo.status === "completed" ? "var(--text-secondary)" : "var(--text-primary)",
+                textDecoration: todo.status === "completed" ? "line-through" : "none",
+              }}
+            >
+              {todoIcon(todo.status)}
+              <span>{todo.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {viewingHistoryId && <div className="coding-history-banner">
         <span>正在查看历史会话（只读）</span>
@@ -346,12 +400,25 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           open
           host={confirmRequest.host ?? undefined}
           command={confirmRequest.command}
+          kind={confirmRequest.kind}
+          suggestedPattern={confirmRequest.kind === "mcp" ? (confirmRequest.matchKey ?? confirmRequest.command) : suggestCommandPattern(confirmRequest.command)}
           onReject={() => resolveConfirm(false)}
           onAllowOnce={() => resolveConfirm(true)}
+          onAllowAndRemember={(pattern) => resolveConfirmAndRemember(pattern)}
+        />
+      )}
+      {questionRequest && (
+        <QuestionDialog
+          open
+          question={questionRequest.question}
+          options={questionRequest.options}
+          onAnswer={(answer) => answerQuestion(answer)}
         />
       )}
       {showProviders && <ProviderManagerDialog onClose={(hasDraft) => { setShowProviders(false); setProviderDraftPending(hasDraft); }} />}
       {showHistory && <CodingHistoryDialog histories={histories} onOpen={(id) => { openHistory(id); setShowHistory(false); }} onDelete={deleteHistory} onRename={renameHistory} onClose={() => setShowHistory(false)} />}
+      {showPermissionRules && <PermissionRulesDialog onClose={() => setShowPermissionRules(false)} />}
+      {showMcpServers && <McpServerManagerDialog onClose={() => setShowMcpServers(false)} />}
     </div>
   );
 };

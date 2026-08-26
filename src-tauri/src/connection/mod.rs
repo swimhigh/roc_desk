@@ -41,9 +41,9 @@ impl ConnectionManager {
         let profile = ConnectionProfile {
             id,
             name: input.name,
-            host: input.host,
+            host: input.host.trim().to_string(),
             port: input.port,
-            username: input.username,
+            username: input.username.trim().to_string(),
             auth_method: input.auth_method,
             credential_ref,
             group_id: input.group_id,
@@ -75,9 +75,9 @@ impl ConnectionManager {
         let profile = ConnectionProfile {
             id,
             name: input.name,
-            host: input.host,
+            host: input.host.trim().to_string(),
             port: input.port,
-            username: input.username,
+            username: input.username.trim().to_string(),
             auth_method: input.auth_method,
             credential_ref,
             group_id: input.group_id,

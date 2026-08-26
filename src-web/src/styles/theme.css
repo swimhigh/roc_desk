@@ -31,6 +31,17 @@
 
   --transition-duration: 200ms;
   --transition-easing: ease-out;
+
+  /* Shell 语法高亮令牌：数值取自 utils/terminalTheme.ts 里 WindTerm 风格调色板的
+   * bright* 系列，让 AI 工具面板里展示的命令和真正的终端用同一套颜色——不随
+   * 亮/暗应用主题变化（终端本身也是固定深色画布）。 */
+  --shell-fg: #f2f2ee;
+  --shell-cmd: #74a6ff;
+  --shell-flag: #4ff0ff;
+  --shell-string: #ffdd57;
+  --shell-var: #d98cff;
+  --shell-op: #ff5c72;
+  --shell-comment: #7a7e76;
 }
 
 /* 深色主题（默认） */

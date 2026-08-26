@@ -5,4 +5,6 @@ pub mod coding_history_repo;
 pub mod connection_groups_repo;
 pub mod connections_repo;
 pub mod known_hosts_repo;
+pub mod mcp_servers_repo;
+pub mod permission_rules_repo;
 pub mod workspace_repo;

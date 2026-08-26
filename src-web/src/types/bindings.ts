@@ -236,6 +236,14 @@ export interface FileChange {
   status: ChangeStatus;
 }
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: TodoStatus;
+}
+
 export interface CodingSessionInfo {
   id: string;
   provider_id: string;
@@ -245,6 +253,65 @@ export interface CodingSessionInfo {
   git_repo: boolean;
   auto_git_commit: boolean;
   changes: FileChange[];
+  todos: TodoItem[];
+  project_memory_loaded: string[];
+}
+
+export type PermissionDecision = "allow" | "ask" | "deny";
+
+export interface PermissionRule {
+  id: string;
+  tool: string;
+  pattern: string;
+  decision: PermissionDecision;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface PermissionRuleInput {
+  tool: string;
+  pattern: string;
+  decision: PermissionDecision;
+}
+
+export type McpTransportKind = "stdio" | "http";
+
+export interface McpServer {
+  id: string;
+  name: string;
+  transport: McpTransportKind;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+  headers: Record<string, string>;
+  auth_token_ref: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface McpServerInput {
+  name: string;
+  transport: McpTransportKind;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+  headers: Record<string, string>;
+  auth_token: string | null;
+  enabled: boolean;
+}
+
+export interface CodingTodoUpdateEvent {
+  sessionId: string;
+  todos: TodoItem[];
+}
+
+export interface CodingQuestionRequestEvent {
+  sessionId: string;
+  requestId: string;
+  question: string;
+  options: string[];
 }
 
 export interface CodingToolCallEvent {
@@ -296,6 +363,12 @@ export interface CodingCommandConfirmRequestEvent {
   requestId: string;
   command: string;
   host: string | null;
+  /** "mcp" 表示这是一次 MCP 工具调用确认，不是本地/远程 Shell 命令——弹窗文案
+   * 据此区分（`CommandConfirmDialog.tsx`）。旧事件没有这个字段时按 "command" 处理。 */
+  kind?: "command" | "mcp";
+  /** 仅 kind === "mcp" 时存在：`"<server>:<tool>"`，权限规则引擎按这个字符串
+   * 做通配匹配（不是展示用的 `command` 文本，那个还带着调用参数）。 */
+  matchKey?: string;
 }
 
 export interface CodingGitCommitResultEvent {

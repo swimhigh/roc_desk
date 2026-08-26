@@ -31,6 +31,14 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0009_coding_history",
         include_str!("../../migrations/0009_coding_history.sql"),
     ),
+    (
+        "0011_permission_rules",
+        include_str!("../../migrations/0011_permission_rules.sql"),
+    ),
+    (
+        "0012_mcp_servers",
+        include_str!("../../migrations/0012_mcp_servers.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[

@@ -5,9 +5,9 @@ use crate::error::AppError;
 use crate::rdp::PanelBounds;
 use crate::state::AppState;
 
-/// 打开一个 RDP 会话：以 ActiveX 方式激活 Windows 自带的 RDP 客户端控件，把它的
-/// 窗口内嵌到 `bounds` 描述的屏幕区域（远程工具模式，DESIGN.md §3.9，见
-/// `rdp/mod.rs` 顶部为什么不自己实现协议的说明）。
+/// 打开一个 RDP 会话：拉起 wfreerdp.exe（FreeRDP）并把它的窗口内嵌到 `bounds`
+/// 描述的屏幕区域（远程工具模式，DESIGN.md §3.9，见 `rdp/mod.rs` 顶部为什么不
+/// 自己实现协议的说明）。
 #[tauri::command]
 pub async fn rdp_connect(
     state: State<'_, AppState>,
@@ -46,7 +46,7 @@ pub async fn rdp_show(
     state.rdp_sessions.show(&app_handle, session_id, bounds)
 }
 
-/// 关闭这个 RDP 会话：通知控件所在的 STA 线程退出消息循环，释放 ActiveX 控件。
+/// 关闭这个 RDP 会话：杀掉内嵌的 wfreerdp.exe 进程。
 #[tauri::command]
 pub async fn rdp_disconnect(state: State<'_, AppState>, session_id: Uuid) -> Result<(), AppError> {
     state.rdp_sessions.disconnect(session_id)

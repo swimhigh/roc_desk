@@ -57,21 +57,25 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix src-web
 
-      # 和本地开发者机器上完全一样的构建命令（RELEASING.md 里让人本地验证用的
-      # 也是这一条），不用 tauri-action 之类现成 Action 重新拼一遍构建参数——
-      # 这个仓库 src-tauri/src-web 是同级目录、Tauri CLI 装在 src-web/
-      # node_modules 下，属于非默认布局，直接复用已经验证过能跑通的脚本比让
-      # 通用 Action 重新猜一遍布局更可靠。
-      - name: Build (frontend + Tauri bundle)
-        run: npm run tauri:build
+      # 和本地开发者机器上完全一样的构建命令（scripts/build-portable.ps1 已经在
+      # 本机反复验证过跑得通）——不单独调 `npm run tauri:build` 再手动拼一份
+      # portable 产物：那样拼出来的只有裸 `roc_desk.exe`，漏了 RDP 内嵌依赖的
+      # `vendor/wfreerdp.exe`，下载下来的用户 RDP 功能会直接不可用。这个脚本会
+      # 自己跑构建、再把 exe + wfreerdp.exe + license + README 一起放进 bin/，
+      # 和本地开发者机器上产出的便携版是同一份逻辑，不会出现本地能跑、CI 发布的
+      # 版本缺文件这种分叉。
+      - name: Build portable bundle
+        shell: pwsh
+        run: .\scripts\build-portable.ps1
 
-      - name: Locate build artifacts
+      - name: Package portable zip
         id: artifacts
-        shell: bash
+        shell: pwsh
         run: |
-          VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          cp "build/release/roc_desk.exe" "build/release/roc_desk-v${VERSION}-portable.exe"
-          echo "portable_exe=build/release/roc_desk-v${VERSION}-portable.exe" >> "$GITHUB_OUTPUT"
+          $version = (Select-String -Path 'src-tauri/Cargo.toml' -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $zipPath = "roc_desk-v$version-portable.zip"
+          Compress-Archive -Path 'bin\*' -DestinationPath $zipPath -Force
+          "portable_zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -82,4 +86,4 @@ jobs:
           files: |
             build/release/bundle/nsis/*.exe
             build/release/bundle/msi/*.msi
-            ${{ steps.artifacts.outputs.portable_exe }}
+            ${{ steps.artifacts.outputs.portable_zip }}

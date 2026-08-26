@@ -33,14 +33,15 @@ impl SshSession {
         secret: Option<String>,
         verifier: Arc<KnownHostsVerifier>,
     ) -> Result<Self, AppError> {
+        let host = profile.host.trim();
         let config = Arc::new(russh::client::Config::default());
         let sh = SshHandler {
-            host: profile.host.clone(),
+            host: host.to_string(),
             port: profile.port,
             verifier,
         };
 
-        let mut handle = russh::client::connect(config, (profile.host.as_str(), profile.port), sh)
+        let mut handle = russh::client::connect(config, (host, profile.port), sh)
             .await
             .map_err(|e| AppError::Connection(e.to_string()))?;
 

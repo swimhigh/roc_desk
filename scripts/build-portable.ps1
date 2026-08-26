@@ -1,4 +1,9 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
+
+# 便携版正在运行时会锁住 bin\roc_desk.exe——之前踩过一次：目录已经清空但拷贝
+# 因为文件被占用而失败，脚本中止，留下一个只剩 .rock_desk 的半损坏 bin\ 目录。
+# 构建前先关掉任何还在跑的实例，避免重现这个问题。
+Get-Process roc_desk -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $releaseDir = Join-Path $repoRoot 'build\release'
@@ -46,6 +51,19 @@ Copy-Item -LiteralPath $exePath -Destination (Join-Path $portableDir 'roc_desk.e
 # Copy side-by-side runtime DLLs if future Tauri settings produce any.
 Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.dll' -ErrorAction SilentlyContinue |
     Copy-Item -Destination $portableDir -Force
+
+# RDP（远程工具模式）内嵌用的 FreeRDP 客户端——vendor/ 下是校验过 SHA256 的官方 CI
+# 产物（见 src-tauri/src/rdp/mod.rs 顶部注释），运行时从 roc_desk.exe 同目录查找，
+# 便携版必须把它一起放进 bin/。
+$vendorExe = Join-Path $repoRoot 'vendor\wfreerdp.exe'
+if (-not (Test-Path -LiteralPath $vendorExe -PathType Leaf)) {
+    throw "vendor\wfreerdp.exe not found — RDP embedding depends on it"
+}
+Copy-Item -LiteralPath $vendorExe -Destination (Join-Path $portableDir 'wfreerdp.exe') -Force
+$vendorLicense = Join-Path $repoRoot 'vendor\wfreerdp.LICENSE.txt'
+if (Test-Path -LiteralPath $vendorLicense -PathType Leaf) {
+    Copy-Item -LiteralPath $vendorLicense -Destination (Join-Path $portableDir 'wfreerdp.LICENSE.txt') -Force
+}
 
 $readmeTemplate = Join-Path $PSScriptRoot 'README-portable.txt'
 if (-not (Test-Path -LiteralPath $readmeTemplate -PathType Leaf)) {

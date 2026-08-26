@@ -5,8 +5,11 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::coding::permission::{Decision, PermissionRule};
+use crate::coding::tools::TodoItem;
 use crate::coding::{CodingMode, CodingSession, CodingTarget, FileChange};
 use crate::error::AppError;
+use crate::mcp::{McpServer, McpServerInput};
 use crate::state::AppState;
 use crate::workspace::WorkspaceKind;
 use crate::db::repo::coding_history_repo::{CodingHistoryDetail, CodingHistoryInput, CodingHistorySummary, WorkspaceHistorySnapshot};
@@ -21,6 +24,10 @@ pub struct CodingSessionInfo {
     pub git_repo: bool,
     pub auto_git_commit: bool,
     pub changes: Vec<FileChange>,
+    pub todos: Vec<TodoItem>,
+    /// 本次会话实际读到的项目记忆文件名（`AGENTS.md`/`CLAUDE.md`），前端据此
+    /// 渲染"已加载 XXX"徽标；空数组表示两个文件工作区根目录都没有。
+    pub project_memory_loaded: Vec<String>,
 }
 
 async fn session_info(session: &CodingSession) -> CodingSessionInfo {
@@ -33,6 +40,8 @@ async fn session_info(session: &CodingSession) -> CodingSessionInfo {
         git_repo: session.git_repo,
         auto_git_commit: session.auto_git_commit,
         changes: session.changes.clone(),
+        todos: session.todos.clone(),
+        project_memory_loaded: session.project_memory_loaded.clone(),
     }
 }
 
@@ -104,6 +113,10 @@ pub async fn coding_start(
     // 查询会话状态都重新问一遍；工作区在会话生命周期内也不会突然从"不是仓库"
     // 变成"是仓库"（真发生了，用户重开一次工作区/编程会话就能重新探测到）。
     session.git_repo = crate::coding::git_ops::is_git_repo(&session.target, &session.workspace_root, &state.ssh_pool).await;
+    // 项目记忆（AGENTS.md/CLAUDE.md）和技能发现同样只在会话开始时做一次，
+    // 和上面的 git_repo 探测是同一个时机/理由。
+    session.load_project_memory().await;
+    session.load_skills().await;
     let info = session_info(&session).await;
     state
         .coding_sessions
@@ -172,9 +185,76 @@ pub async fn coding_send_message(
             &state.ssh_pool,
             &state.audit_log,
             &state.command_confirms,
+            &state.permission_rules,
+            &state.question_confirms,
+            &state.mcp_manager,
             &app_handle,
         )
         .await
+}
+
+/// 响应 `coding:question-request`（`question` 工具的结构化提问，见
+/// `coding/session.rs::ask_user`）——和 `coding_confirm_command` 是同一个
+/// oneshot 应答模式，只是这里传回一段文本而不是 bool。
+#[tauri::command]
+pub async fn coding_answer_question(state: State<'_, AppState>, request_id: Uuid, answer: String) -> Result<(), AppError> {
+    state.question_confirms.resolve(request_id, answer).await;
+    Ok(())
+}
+
+// ---- 权限规则（REQUIREMENTS.md §3.7 权限引擎升级）----
+
+#[tauri::command]
+pub async fn permission_rule_list(state: State<'_, AppState>) -> Result<Vec<PermissionRule>, AppError> {
+    state.permission_rules.list()
+}
+
+#[derive(serde::Deserialize)]
+pub struct PermissionRuleInput {
+    pub tool: String,
+    pub pattern: String,
+    pub decision: String,
+}
+
+#[tauri::command]
+pub async fn permission_rule_create(state: State<'_, AppState>, input: PermissionRuleInput) -> Result<PermissionRule, AppError> {
+    let rule = PermissionRule {
+        id: Uuid::new_v4(),
+        tool: input.tool,
+        pattern: input.pattern,
+        decision: Decision::from_str(&input.decision),
+        enabled: true,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    state.permission_rules.create(&rule)?;
+    Ok(rule)
+}
+
+#[tauri::command]
+pub async fn permission_rule_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
+    state.permission_rules.delete(id)
+}
+
+// ---- MCP 服务器管理（REQUIREMENTS.md §3.7"未实现：MCP 客户端"补上的部分）----
+
+#[tauri::command]
+pub async fn mcp_server_list(state: State<'_, AppState>) -> Result<Vec<McpServer>, AppError> {
+    state.mcp_manager.list()
+}
+
+#[tauri::command]
+pub async fn mcp_server_create(state: State<'_, AppState>, input: McpServerInput) -> Result<McpServer, AppError> {
+    state.mcp_manager.create(input).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_update(state: State<'_, AppState>, id: Uuid, input: McpServerInput) -> Result<McpServer, AppError> {
+    state.mcp_manager.update(id, input).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
+    state.mcp_manager.delete(id).await
 }
 
 #[tauri::command]
