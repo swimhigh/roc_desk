@@ -9,6 +9,7 @@ pub mod error;
 pub mod fsops;
 pub mod log;
 pub mod pty;
+pub mod rdp;
 pub mod ssh;
 pub mod state;
 pub mod workspace;
@@ -21,16 +22,19 @@ use tokio::sync::RwLock;
 
 use ai::{AiChatClient, AiProviderManager};
 use coding::CommandConfirmRegistry;
-use connection::ConnectionManager;
+use connection::{ConnectionGroupManager, ConnectionManager};
 use credential::KeyringStore;
 use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
 use db::repo::browser_history_repo::BrowserHistoryRepo;
+use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
+use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
 use pty::LocalPtyManager;
+use rdp::RdpSessionManager;
 use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
 use state::AppState;
 use workspace::WorkspaceManager;
@@ -50,22 +54,66 @@ pub fn run() {
                 .parent()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位可执行文件所在目录"))?
                 .to_path_buf();
-            let app_data_dir = exe_dir.join("data");
+            // 统一应用缓存目录：数据库、日志缓存、编程助手历史等都放在这里。
+            // 使用项目约定的隐藏目录名，避免缓存散落在各个模块或临时目录中。
+            let mut app_data_dir = exe_dir.join(".rock_desk");
+            let legacy_data_dir = exe_dir.join("data");
+            if !app_data_dir.exists() && legacy_data_dir.exists() {
+                // 一次性迁移旧版本数据，保留连接、Provider、日志索引等已有配置。
+                if let Err(error) = std::fs::rename(&legacy_data_dir, &app_data_dir) {
+                    tracing::warn!(%error, "failed to migrate data directory to .rock_desk; using legacy data directory for this run");
+                    app_data_dir = legacy_data_dir;
+                }
+            }
             std::fs::create_dir_all(&app_data_dir)?;
             let db_path = app_data_dir.join("roc_desk.db");
 
             let pool = db::pool::create_pool(&db_path)?;
             {
                 let conn = pool.get()?;
-                db::migrate::run_migrations(&conn)?;
+                db::migrate::run_main_migrations(&conn)?;
+            }
+
+            // 会话（SSH/RDP 连接档案 + 分组 + known_hosts）和工作区数据分别存独立的
+            // 数据库文件，不再和其它业务数据挤在同一个 roc_desk.db 里（用户 2026-08-25
+            // 需求："SESSION和工作区的数据存不同文件夹里"）——两者生命周期和使用场景
+            // 不同：前者是"服务器通讯录"，后者是"某次打开过的项目目录"，分开存也方便
+            // 以后单独备份/同步其中一份。`*_db_is_new` 必须在 `create_pool` 之前算，
+            // 拿到第一个连接就会把文件建出来，晚一步判断永远是 false。
+            let sessions_dir = app_data_dir.join("sessions");
+            std::fs::create_dir_all(&sessions_dir)?;
+            let sessions_db_path = sessions_dir.join("sessions.db");
+            let sessions_db_is_new = !sessions_db_path.exists();
+            let sessions_pool = db::pool::create_pool(&sessions_db_path)?;
+            {
+                let conn = sessions_pool.get()?;
+                db::migrate::run_sessions_migrations(&conn)?;
+                if sessions_db_is_new {
+                    db::migrate::migrate_legacy_data(&db_path, &conn, &["connection_groups", "connections", "known_hosts"])?;
+                }
+            }
+
+            let workspaces_dir = app_data_dir.join("workspaces");
+            std::fs::create_dir_all(&workspaces_dir)?;
+            let workspaces_db_path = workspaces_dir.join("workspaces.db");
+            let workspaces_db_is_new = !workspaces_db_path.exists();
+            let workspaces_pool = db::pool::create_pool(&workspaces_db_path)?;
+            {
+                let conn = workspaces_pool.get()?;
+                db::migrate::run_workspaces_migrations(&conn)?;
+                if workspaces_db_is_new {
+                    db::migrate::migrate_legacy_data(&db_path, &conn, &["workspaces"])?;
+                }
             }
 
             let credential_store: Arc<dyn credential::CredentialStore> = Arc::new(KeyringStore);
 
-            let connections_repo = Arc::new(ConnectionsRepo::new(pool.clone()));
+            let connections_repo = Arc::new(ConnectionsRepo::new(sessions_pool.clone()));
             let connection_manager = Arc::new(ConnectionManager::new(connections_repo, credential_store.clone()));
+            let connection_groups_repo = Arc::new(ConnectionGroupsRepo::new(sessions_pool.clone()));
+            let connection_group_manager = Arc::new(ConnectionGroupManager::new(connection_groups_repo));
 
-            let known_hosts_repo = Arc::new(KnownHostsRepo::new(pool.clone()));
+            let known_hosts_repo = Arc::new(KnownHostsRepo::new(sessions_pool.clone()));
             let trust_prompts = TrustPromptRegistry::default();
             let verifier = Arc::new(KnownHostsVerifier::new(
                 known_hosts_repo,
@@ -73,12 +121,14 @@ pub fn run() {
                 app.handle().clone(),
             ));
             let ssh_pool = Arc::new(SshConnectionPool::new(connection_manager.clone(), verifier));
+            let rdp_sessions = Arc::new(RdpSessionManager::new(connection_manager.clone()));
 
-            let workspace_repo = Arc::new(WorkspaceRepo::new(pool.clone()));
+            let workspace_repo = Arc::new(WorkspaceRepo::new(workspaces_pool.clone()));
             let workspace_manager = Arc::new(WorkspaceManager::new(
                 workspace_repo,
                 connection_manager.clone(),
                 ssh_pool.clone(),
+                workspaces_dir,
             ));
 
             let log_engine = Arc::new(LogSearchEngine::new(pool.clone()));
@@ -89,13 +139,16 @@ pub fn run() {
             let ai_chat_client = Arc::new(AiChatClient::new());
 
             let audit_log = Arc::new(AuditLogRepo::new(pool.clone()));
+            let coding_history = Arc::new(CodingHistoryRepo::new(pool.clone()));
             let browser_history = Arc::new(BrowserHistoryRepo::new(pool.clone()));
 
             app.manage(AppState {
                 db: pool,
                 credential_store,
                 connection_manager,
+                connection_group_manager,
                 ssh_pool,
+                rdp_sessions,
                 trust_prompts,
                 workspace_manager,
                 workspaces: Arc::new(RwLock::new(HashMap::new())),
@@ -106,6 +159,7 @@ pub fn run() {
                 coding_sessions: Arc::new(RwLock::new(HashMap::new())),
                 command_confirms: CommandConfirmRegistry::default(),
                 audit_log,
+                coding_history,
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
@@ -134,13 +188,24 @@ pub fn run() {
             commands::connection::connection_create,
             commands::connection::connection_update,
             commands::connection::connection_delete,
+            commands::connection_group::connection_group_list,
+            commands::connection_group::connection_group_create,
+            commands::connection_group::connection_group_update,
+            commands::connection_group::connection_group_delete,
             commands::ssh::ssh_connect,
             commands::ssh::ssh_open_shell,
             commands::ssh::ssh_write,
             commands::ssh::ssh_resize,
             commands::ssh::ssh_disconnect,
             commands::ssh::ssh_close_channel,
+            commands::ssh::ssh_host_stats,
             commands::ssh::ssh_confirm_host_key,
+            commands::rdp::rdp_connect,
+            commands::rdp::rdp_set_bounds,
+            commands::rdp::rdp_hide,
+            commands::rdp::rdp_show,
+            commands::rdp::rdp_disconnect,
+            commands::rdp::rdp_status,
             commands::sftp::sftp_list_dir,
             commands::sftp::sftp_read_file,
             commands::sftp::sftp_write_file,
@@ -164,7 +229,9 @@ pub fn run() {
             commands::ai::ai_provider_delete,
             commands::ai::ai_chat_send,
             commands::coding::coding_start,
+            commands::coding::coding_new_session,
             commands::coding::coding_set_mode,
+            commands::coding::coding_set_provider,
             commands::coding::coding_set_auto_allow_readonly,
             commands::coding::coding_set_auto_git_commit,
             commands::coding::coding_send_message,
@@ -173,6 +240,11 @@ pub fn run() {
             commands::coding::coding_undo_change,
             commands::coding::coding_redo_change,
             commands::coding::coding_confirm_command,
+            commands::coding::coding_history_list,
+            commands::coding::coding_history_get,
+            commands::coding::coding_history_save,
+            commands::coding::coding_history_rename,
+            commands::coding::coding_history_delete,
             commands::pty::pty_open,
             commands::pty::pty_write,
             commands::pty::pty_resize,

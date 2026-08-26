@@ -72,6 +72,8 @@ export const WorkspacePicker: React.FC = () => {
         group_id: profile.group_id,
         tags: profile.tags,
         jump_host_id: profile.jump_host_id,
+        protocol: profile.protocol,
+        options: profile.options,
       });
       setPasswordPrompt(null);
       await openRemoteWorkspace(profile.id, remotePath);

@@ -9,6 +9,7 @@
     "tauri": "node src-web/node_modules/@tauri-apps/cli/tauri.js",
     "tauri:dev": "npm run tauri -- dev",
     "tauri:build": "npm run tauri -- build",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build-portable.ps1",
     "test:web": "npm run test --prefix src-web",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   }

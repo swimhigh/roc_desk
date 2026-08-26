@@ -41,6 +41,7 @@ pub async fn ai_chat_send(
     provider_id: Uuid,
     messages: Vec<ChatMessage>,
     redact_enabled: bool,
+    web_search_enabled: bool,
 ) -> Result<Uuid, AppError> {
     let provider = state
         .ai_provider_manager
@@ -52,7 +53,15 @@ pub async fn ai_chat_send(
     let client = state.ai_chat_client.clone();
     tokio::spawn(async move {
         client
-            .stream_chat(&provider, api_key.as_deref(), &messages, redact_enabled, app_handle, request_id)
+            .stream_chat(
+                &provider,
+                api_key.as_deref(),
+                &messages,
+                redact_enabled,
+                web_search_enabled,
+                app_handle,
+                request_id,
+            )
             .await;
     });
 

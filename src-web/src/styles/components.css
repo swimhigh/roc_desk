@@ -363,6 +363,46 @@
 .tab-item .tab-dot { width: 6px; height: 6px; border-radius: var(--radius-full); flex-shrink: 0; }
 
 .quick-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 var(--space-2); }
+
+/* AI 能力统一停靠在工作区右侧，布局与 VS Code/Codex 类侧栏一致。 */
+.ai-tools-dock {
+  min-width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.ai-tools-resize-handle {
+  position: relative;
+  width: 4px;
+  flex: 0 0 4px;
+  cursor: col-resize;
+  background: var(--border-default);
+  transition: background 100ms ease;
+}
+.ai-tools-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+.ai-tools-resize-handle:hover,
+.ai-tools-resize-handle:active { background: var(--accent); }
+.ai-tools-dock-header {
+  height: 35px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.ai-tools-dock-header > svg { width: 15px; height: 15px; color: var(--accent); }
+.ai-tools-dock-header .icon-btn { margin-left: auto; }
 .quick-tool-btn {
   width: 26px; height: 26px;
   display: flex; align-items: center; justify-content: center;
@@ -825,7 +865,12 @@
 
 /* === Workspace Picker（DESIGN.md §3.1.1，UI_DESIGN.md §3.1） === */
 .workspace-picker-screen {
-  height: 100vh;
+  /* 用 100% 不用 100vh——现在这个屏幕会嵌在首页右侧面板里（DESIGN.md §3.9，
+     不再总是顶层唯一内容），100vh 是视口高度，不管外层容器实际有多高都按
+     整个窗口高度撑开，会比右侧面板实际可用高度多出顶部标签栏那一截，
+     出现没必要的滚动条；100% 会正确继承父容器高度（#root 链路已经是
+     height:100% 一路传下来的，见 globals.css）。*/
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -883,3 +928,160 @@
 .dirty-dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; background: var(--warning); }
 .tool-call-progress { font-size: var(--text-xs); color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
 .tool-call-progress .spinner { width: 10px; height: 10px; border: 1.5px solid var(--border-default); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.tool-file-ref { padding: 0; color: var(--text-secondary); opacity: 0.8; background: none; font: inherit; cursor: pointer; }
+.tool-file-ref:hover { color: var(--accent); opacity: 1; text-decoration: underline; }
+
+/* === Coding Agent conversation (Codex/OpenCode inspired hierarchy) === */
+.agent-model-select {
+  min-width: 190px;
+  max-width: 320px;
+  height: 26px;
+  font-size: 12px;
+}
+.agent-message {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.agent-user-text { white-space: pre-wrap; }
+.agent-markdown { color: var(--text-primary); }
+.agent-markdown > :first-child { margin-top: 0; }
+.agent-markdown > :last-child { margin-bottom: 0; }
+.agent-markdown p { margin: 0.5em 0; }
+.agent-markdown h1, .agent-markdown h2, .agent-markdown h3,
+.agent-markdown h4, .agent-markdown h5, .agent-markdown h6 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.agent-markdown h1 { font-size: 1.45em; }
+.agent-markdown h2 { font-size: 1.25em; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.25em; }
+.agent-markdown h3 { font-size: 1.1em; }
+.agent-markdown ul, .agent-markdown ol { margin: 0.45em 0; padding-left: 1.65em; }
+.agent-markdown li { margin: 0.2em 0; }
+.agent-markdown blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid var(--border-default); color: var(--text-secondary); }
+.agent-markdown code { font-family: var(--font-mono); font-size: 0.9em; padding: 1px 5px; border-radius: 4px; background: var(--bg-hover); }
+.agent-markdown pre { margin: 0.7em 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-surface); }
+.agent-markdown pre code { padding: 0; background: transparent; }
+.agent-markdown table { width: 100%; margin: 0.6em 0; border-collapse: collapse; }
+.agent-markdown th, .agent-markdown td { padding: 5px 8px; border: 1px solid var(--border-default); text-align: left; }
+.agent-markdown th { background: var(--bg-surface); }
+.agent-markdown table { display: block; overflow-x: auto; }
+.agent-markdown a { color: var(--accent); }
+.agent-markdown .agent-file-ref { color: var(--accent); cursor: pointer; text-decoration: none; }
+.agent-markdown .agent-file-ref:hover { text-decoration: underline; }
+.agent-thinking { margin-left: 30px; color: var(--text-secondary); font-size: 12px; }
+.agent-thinking summary { display: flex; align-items: center; gap: 5px; width: fit-content; cursor: pointer; user-select: none; list-style: none; }
+.agent-thinking summary::-webkit-details-marker { display: none; }
+.agent-thinking summary svg { width: 13px; height: 13px; }
+.agent-thinking-chevron { transition: transform 120ms ease; }
+.agent-thinking[open] .agent-thinking-chevron { transform: rotate(90deg); }
+.agent-thinking-body { margin: 6px 0 2px 6px; padding: 6px 10px; border-left: 2px solid var(--border-subtle); }
+.agent-thinking-body .agent-markdown { color: var(--text-secondary); }
+.agent-composer { margin: 8px; flex-shrink: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface); box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
+.agent-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
+/* 面板纵向空间紧张时，先压缩/滚动输入框，footer（含发送按钮）用 flex-shrink:0 常驻可见——
+   之前输入框和 footer 是普通块级堆叠，空间不够时 footer 会被 .ai-tools-dock 的 overflow:hidden 整段裁掉。 */
+.agent-composer-input { display: block; width: 100%; flex: 1; min-height: 64px; max-height: 260px; padding: 12px 14px 6px; resize: vertical; overflow-y: auto; border: none; outline: none; background: transparent; color: var(--text-primary); font: inherit; line-height: 1.55; }
+.agent-composer-input::placeholder { color: var(--text-disabled); }
+.agent-composer-footer { flex-shrink: 0; min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 4px 6px 6px 12px; }
+.agent-model-meta { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 11px; }
+.agent-model-meta svg { width: 12px; height: 12px; color: var(--accent); flex-shrink: 0; }
+.agent-model-meta strong { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 500; }
+.agent-model-meta span { white-space: nowrap; }
+.agent-input-hint { margin-left: auto; color: var(--text-disabled); font-size: 11px; white-space: nowrap; }
+.agent-send-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; background: var(--accent); color: #fff; }
+.agent-send-btn:hover:not(:disabled) { opacity: 0.9; }
+.agent-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.agent-send-btn svg { width: 15px; height: 15px; }
+.provider-draft-banner { margin-bottom: 10px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-default)); border-radius: var(--radius-sm); background: var(--accent-dim); color: var(--accent); font-size: 12px; }
+.coding-history-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: flex-start; justify-content: flex-end; padding: 54px 18px 18px; background: rgba(0,0,0,.22); }
+.coding-history-dialog { width: min(440px, calc(100vw - 36px)); max-height: calc(100vh - 90px); overflow: hidden; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface-raised); box-shadow: var(--shadow); }
+.coding-history-title { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border-default); font-weight: 600; }
+.coding-history-title svg { width: 14px; height: 14px; }
+.coding-history-list { overflow-y: auto; max-height: calc(100vh - 150px); }
+.coding-history-row { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border-subtle); }
+.coding-history-open { min-width: 0; flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 0; border: 0; background: none; color: var(--text-primary); text-align: left; cursor: pointer; }
+.coding-history-open:hover strong { color: var(--accent); }
+.coding-history-open strong, .coding-history-open span, .coding-history-open time { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coding-history-open span, .coding-history-open time { color: var(--text-secondary); font-size: 11px; }
+.coding-history-empty { padding: 28px 14px; color: var(--text-secondary); font-size: 12px; text-align: center; }
+.coding-history-rename { min-width: 0; flex: 1; height: 30px; }
+.coding-history-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-default); background: var(--accent-dim); color: var(--text-primary); font-size: 12px; }
+.agent-composer-input:disabled { cursor: not-allowed; opacity: .62; }
+.agent-progress-note { display: flex; align-items: flex-start; gap: 7px; max-width: 760px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 4px 8px 8px 4px; background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+
+/* === 远程工具首页（DESIGN.md §3.9）：会话树 / 会话标签 === */
+.session-tree-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 4px var(--space-2); flex-shrink: 0; }
+.session-tree-toolbar span { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.session-tree-add { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; color: var(--text-secondary); }
+.session-tree-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+.session-tree-add svg { width: 14px; height: 14px; }
+.tree-item .tree-status-dot { margin-left: auto; flex-shrink: 0; }
+.tree-item .tree-protocol-badge { flex-shrink: 0; font-size: 9px; padding: 0 4px; border-radius: 3px; color: var(--text-disabled); border: 1px solid var(--border-subtle); }
+
+.remote-tool-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.remote-session-tabs { display: flex; align-items: center; flex-shrink: 0; height: 32px; background: var(--bg-surface); border-bottom: 1px solid var(--border-default); overflow-x: auto; }
+.remote-session-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-right: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.remote-session-tab svg { width: 13px; height: 13px; flex-shrink: 0; }
+.remote-session-tab:hover { color: var(--text-primary); }
+.remote-session-tab.active { background: var(--bg-app); color: var(--text-primary); }
+.remote-session-tab .remote-session-tab-close { width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; opacity: 0; }
+.remote-session-tab:hover .remote-session-tab-close { opacity: 1; }
+.remote-session-tab .remote-session-tab-close:hover { background: var(--bg-hover); }
+.remote-session-tab .remote-session-tab-close svg { width: 11px; height: 11px; }
+.remote-session-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 13px; }
+
+/* 每个 SSH 会话标签下方的资源使用率状态栏（FinalShell 风格，定时轮询刷新） */
+.host-stats-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 26px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-default);
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.host-stats-item { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.host-stats-item svg { width: 12px; height: 12px; flex-shrink: 0; }
+.host-stats-item strong { color: var(--text-primary); font-weight: 500; }
+.host-stats-item.warn strong { color: var(--warning); }
+.host-stats-item.danger strong { color: var(--danger); }
+.host-stats-disks { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.host-stats-disk { display: flex; align-items: center; gap: 3px; }
+.host-stats-disk .mount { color: var(--text-disabled); }
+.host-stats-disk strong { color: var(--text-primary); font-weight: 500; }
+.host-stats-disk.warn strong { color: var(--warning); }
+.host-stats-disk.danger strong { color: var(--danger); }
+
+/* 会话标签内容区顶部的快捷切换条（SSH 终端标签里的"SFTP"按钮、SFTP 标签里的
+ * "终端"按钮——用户 2026-08-25 需求，参照工作区模式"上面有一个 SFTP 的按钮"）。*/
+.remote-session-subbar { display: flex; align-items: center; flex-shrink: 0; height: 28px; padding: 0 var(--space-2); gap: var(--space-1); background: var(--bg-surface); border-bottom: 1px solid var(--border-default); }
+.remote-session-subbar .quick-tool-btn { width: auto; padding: 0 8px; gap: 5px; font-size: 12px; }
+.remote-session-subbar .quick-tool-btn svg { width: 13px; height: 13px; }
+
+/* 多路执行模式（参考 MobaXterm MultiExec，用户 2026-08-25 需求） */
+.multiexec-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); grid-auto-rows: minmax(220px, 1fr); gap: 1px; background: var(--border-default); overflow: auto; }
+.multiexec-cell { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-app); min-height: 0; }
+.multiexec-cell-header { display: flex; align-items: center; gap: 6px; flex-shrink: 0; height: 26px; padding: 0 var(--space-2); background: var(--bg-surface); font-size: 12px; color: var(--text-secondary); }
+.multiexec-cell-header svg { width: 13px; height: 13px; flex-shrink: 0; }
+.multiexec-exclude { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-disabled); cursor: pointer; white-space: nowrap; }
+.agent-progress-note svg { width: 14px; height: 14px; margin-top: 2px; flex-shrink: 0; color: var(--accent); }

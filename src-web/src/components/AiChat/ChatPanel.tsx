@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { Send, Settings, Trash2, Bot, User, ShieldAlert } from "lucide-react";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { ToggleSwitch } from "../shared/ToggleSwitch";
-import { ProviderManagerDialog } from "./ProviderManagerDialog";
+import { ProviderManagerDialog, hasProviderDraft } from "./ProviderManagerDialog";
+import { AgentMarkdown } from "../CodingAgent/AgentMarkdown";
 
 /**
  * AI 问答面板（DESIGN.md §3.6）：与工作区本地/远程无关，始终可用——它只消费
@@ -14,16 +15,19 @@ export const ChatPanel: React.FC = () => {
     activeProviderId,
     messages,
     redactEnabled,
+    webSearchEnabled,
     sending,
     error,
     loadProviders,
     setActiveProvider,
     setRedactEnabled,
+    setWebSearchEnabled,
     sendMessage,
     clearChat,
   } = useAiChatStore();
   const [input, setInput] = useState("");
   const [showProviders, setShowProviders] = useState(false);
+  const [providerDraftPending, setProviderDraftPending] = useState(() => hasProviderDraft());
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,6 +40,7 @@ export const ChatPanel: React.FC = () => {
   }, [messages]);
 
   const activeProvider = providers.find((p) => p.id === activeProviderId);
+  const hasDraft = providerDraftPending || hasProviderDraft();
 
   const handleSend = () => {
     if (!input.trim()) return;
@@ -72,12 +77,22 @@ export const ChatPanel: React.FC = () => {
             <ShieldAlert style={{ width: 12, height: 12 }} />
           </label>
         )}
+        {activeProvider && (
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}
+            title="默认先搜索互联网，再结合搜索结果回答"
+          >
+            <ToggleSwitch checked={webSearchEnabled} onChange={setWebSearchEnabled} label="联网搜索" />
+            联网搜索
+          </label>
+        )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
           <button className="btn ghost sm" onClick={clearChat} title="清空对话">
             <Trash2 style={{ width: 14, height: 14 }} />
           </button>
-          <button className="btn ghost sm" onClick={() => setShowProviders(true)} title="管理 Provider">
+          <button className={`btn ghost sm ${hasDraft ? "active" : ""}`} onClick={() => setShowProviders(true)} title="管理 Provider">
             <Settings style={{ width: 14, height: 14 }} />
+            {hasDraft ? "继续配置" : "模型管理"}
           </button>
         </div>
       </div>
@@ -101,7 +116,7 @@ export const ChatPanel: React.FC = () => {
                 {m.role === "user" ? <User style={{ width: 13, height: 13 }} /> : <Bot style={{ width: 13, height: 13 }} />}
               </div>
               <div style={{ flex: 1, fontSize: 13, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.6 }}>
-                <ChatContent content={m.content} />
+                <AgentMarkdown content={m.content} />
                 {m.streaming && <span className="chat-cursor" />}
                 {m.error && <div style={{ color: "var(--danger)", fontSize: 12, marginTop: 4 }}>出错：{m.error}</div>}
               </div>
@@ -115,8 +130,8 @@ export const ChatPanel: React.FC = () => {
       <div style={{ display: "flex", gap: 8, padding: 8, borderTop: "1px solid var(--border-default)" }}>
         <textarea
           className="form-input"
-          style={{ flex: 1, resize: "none", fontFamily: "inherit" }}
-          rows={2}
+          style={{ flex: 1, resize: "vertical", minHeight: 88, fontFamily: "inherit" }}
+          rows={4}
           placeholder={activeProviderId ? "输入消息，Enter 发送，Shift+Enter 换行" : "先配置一个 Provider"}
           value={input}
           disabled={!activeProviderId}
@@ -133,25 +148,7 @@ export const ChatPanel: React.FC = () => {
         </button>
       </div>
 
-      {showProviders && <ProviderManagerDialog onClose={() => setShowProviders(false)} />}
+      {showProviders && <ProviderManagerDialog onClose={(hasDraft) => { setShowProviders(false); setProviderDraftPending(hasDraft); }} />}
     </div>
-  );
-};
-
-/** 极简 fenced-code-block 渲染：按 ``` 切分，代码块用等宽字体块展示，不引入 markdown 依赖。*/
-const ChatContent: React.FC<{ content: string }> = ({ content }) => {
-  const parts = content.split(/```/);
-  return (
-    <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <pre key={i} className="chat-code-block">
-            <code>{part.replace(/^\w*\n/, "")}</code>
-          </pre>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
-      )}
-    </>
   );
 };

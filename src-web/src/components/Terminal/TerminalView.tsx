@@ -15,6 +15,16 @@ interface TerminalViewProps {
   tab: TerminalTab;
   /** 断线重连时用来重新 cd 进同一个目录（DESIGN.md §3.2 默认工作区目录）。*/
   cwd?: string;
+  /** 断线/重连事件默认写回全局 `terminalStore`（工作区模式底部终端面板的既有行为）。
+   * 远程工具模式的会话标签用的是独立的 `remoteSessionStore`（DESIGN.md §3.9，两套
+   * 标签互不影响），传这两个回调覆盖默认行为，写回正确的 store，而不是复制一份
+   * xterm 渲染逻辑出来。 */
+  onDisconnected?: (id: string) => void;
+  onReconnect?: (id: string, cwd?: string) => void;
+  /** 每次用户在这个终端里敲字符都会额外调一次（在正常写入自己的 Channel 之后）——
+   * 多路执行模式（DESIGN.md §3.9，参考 MobaXterm MultiExec）用它把输入转发给其它
+   * 终端，TerminalView 本身不知道"多路执行"这个概念，只是单纯地上报"这里有输入"。*/
+  onInput?: (id: string, data: Uint8Array) => void;
 }
 
 /**
@@ -22,7 +32,7 @@ interface TerminalViewProps {
  * 差别只在输入往哪个后端命令写、输出监听哪个事件（`ssh:data`/`ssh:status` vs
  * `pty:data`/`pty:status`），两边事件 payload 形状一致所以能共用同一套渲染逻辑。
  */
-export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
+export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconnected, onReconnect, onInput }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
 
@@ -37,10 +47,12 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
     const statusEvent = tab.kind === "ssh" ? "ssh:status" : "pty:status";
 
     const term = new Terminal({
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace",
+      fontFamily: "'Cascadia Mono', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
       fontSize: 14,
-      lineHeight: 1.25,
-      letterSpacing: 0.3,
+      fontWeight: "400",
+      fontWeightBold: "600",
+      lineHeight: 1.22,
+      letterSpacing: 0.15,
       theme: getTerminalTheme(useThemeStore.getState().theme, tab.kind),
       cursorBlink: true,
       cursorStyle: "bar",
@@ -54,7 +66,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
     termRef.current = term;
 
     const onDataDisposable = term.onData((data) => {
-      write(new TextEncoder().encode(data));
+      const bytes = new TextEncoder().encode(data);
+      write(bytes);
+      onInput?.(tab.id, bytes);
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -74,7 +88,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
       if (event.payload.channelId !== tab.id) return;
       if (event.payload.status === "disconnected") {
         term.write("\r\n\x1b[31m[连接已断开]\x1b[0m\r\n");
-        useTerminalStore.getState().markDisconnected(tab.id);
+        (onDisconnected ?? useTerminalStore.getState().markDisconnected)(tab.id);
       }
     });
 
@@ -85,7 +99,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
       unlistenStatusPromise.then((unlisten) => unlisten());
       term.dispose();
     };
-  }, [tab.id, tab.kind, tab.profileId]);
+  }, [tab.id, tab.kind, tab.profileId, onDisconnected, onInput]);
 
   // 主题切换时更新配色但不重建整个终端实例，否则会丢掉当前的 scrollback 历史。
   useEffect(() => {
@@ -96,10 +110,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd }) => {
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%", padding: 8, background: "var(--bg-terminal, #0c0d0e)" }} />
+      <div ref={containerRef} style={{ width: "100%", height: "100%", padding: 8, background: "#20221F" }} />
       {tab.disconnected && (
         <div className="terminal-disconnected-overlay">
-          <button className="btn primary sm" onClick={() => useTerminalStore.getState().reconnectTerminal(tab.id, cwd)}>
+          <button
+            className="btn primary sm"
+            onClick={() => (onReconnect ?? useTerminalStore.getState().reconnectTerminal)(tab.id, cwd)}
+          >
             <RefreshCw style={{ width: 14, height: 14 }} /> 重新连接
           </button>
         </div>

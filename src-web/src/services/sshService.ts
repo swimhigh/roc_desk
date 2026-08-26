@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { HostStats } from "../types/bindings";
 
 export const sshService = {
   connect(profileId: string): Promise<string> {
@@ -21,5 +22,8 @@ export const sshService = {
   },
   confirmHostKey(requestId: string, trust: boolean): Promise<void> {
     return invoke("ssh_confirm_host_key", { requestId, trust });
+  },
+  hostStats(profileId: string): Promise<HostStats> {
+    return invoke("ssh_host_stats", { profileId });
   },
 };

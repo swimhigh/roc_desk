@@ -2,7 +2,7 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::connection::profile::{AuthMethod, ConnectionProfile};
+use crate::connection::profile::{AuthMethod, ConnectionProfile, Protocol};
 use crate::db::DbPool;
 use crate::error::AppError;
 
@@ -19,8 +19,8 @@ impl ConnectionsRepo {
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO connections
-                (id, name, host, port, username, auth_method, credential_ref, group_id, tags, jump_host_id, last_connected_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                (id, name, host, port, username, auth_method, credential_ref, group_id, tags, jump_host_id, protocol, options, last_connected_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 profile.id.to_string(),
                 profile.name,
@@ -32,6 +32,8 @@ impl ConnectionsRepo {
                 profile.group_id.map(|g| g.to_string()),
                 serde_json::to_string(&profile.tags).unwrap_or_default(),
                 profile.jump_host_id.map(|j| j.to_string()),
+                profile.protocol.as_str(),
+                profile.options.as_ref().map(|v| v.to_string()),
                 profile.last_connected_at,
                 profile.created_at,
             ],
@@ -44,7 +46,8 @@ impl ConnectionsRepo {
         conn.execute(
             "UPDATE connections SET
                 name = ?2, host = ?3, port = ?4, username = ?5, auth_method = ?6,
-                credential_ref = ?7, group_id = ?8, tags = ?9, jump_host_id = ?10
+                credential_ref = ?7, group_id = ?8, tags = ?9, jump_host_id = ?10,
+                protocol = ?11, options = ?12
              WHERE id = ?1",
             params![
                 profile.id.to_string(),
@@ -57,6 +60,8 @@ impl ConnectionsRepo {
                 profile.group_id.map(|g| g.to_string()),
                 serde_json::to_string(&profile.tags).unwrap_or_default(),
                 profile.jump_host_id.map(|j| j.to_string()),
+                profile.protocol.as_str(),
+                profile.options.as_ref().map(|v| v.to_string()),
             ],
         )?;
         Ok(())
@@ -76,7 +81,7 @@ impl ConnectionsRepo {
         let result = conn
             .query_row(
                 "SELECT id, name, host, port, username, auth_method, credential_ref,
-                        group_id, tags, jump_host_id, last_connected_at, created_at
+                        group_id, tags, jump_host_id, last_connected_at, created_at, protocol, options
                  FROM connections WHERE id = ?1",
                 params![id.to_string()],
                 Self::map_row,
@@ -90,13 +95,13 @@ impl ConnectionsRepo {
         let mut stmt = if group_id.is_some() {
             conn.prepare(
                 "SELECT id, name, host, port, username, auth_method, credential_ref,
-                        group_id, tags, jump_host_id, last_connected_at, created_at
+                        group_id, tags, jump_host_id, last_connected_at, created_at, protocol, options
                  FROM connections WHERE group_id = ?1 ORDER BY name",
             )?
         } else {
             conn.prepare(
                 "SELECT id, name, host, port, username, auth_method, credential_ref,
-                        group_id, tags, jump_host_id, last_connected_at, created_at
+                        group_id, tags, jump_host_id, last_connected_at, created_at, protocol, options
                  FROM connections ORDER BY name",
             )?
         };
@@ -122,6 +127,8 @@ impl ConnectionsRepo {
         let group_id: Option<String> = row.get(7)?;
         let tags_json: String = row.get(8)?;
         let jump_host_id: Option<String> = row.get(9)?;
+        let protocol: String = row.get(12)?;
+        let options_json: Option<String> = row.get(13)?;
 
         Ok(ConnectionProfile {
             id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
@@ -134,6 +141,8 @@ impl ConnectionsRepo {
             group_id: group_id.and_then(|s| Uuid::parse_str(&s).ok()),
             tags: serde_json::from_str(&tags_json).unwrap_or_default(),
             jump_host_id: jump_host_id.and_then(|s| Uuid::parse_str(&s).ok()),
+            protocol: Protocol::from_str(&protocol),
+            options: options_json.and_then(|s| serde_json::from_str(&s).ok()),
             last_connected_at: row.get(10)?,
             created_at: row.get(11)?,
         })

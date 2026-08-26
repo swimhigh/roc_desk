@@ -53,6 +53,16 @@ export function isAppError(e: unknown): e is AppError {
 }
 
 export type AuthMethod = "password" | "key" | "agent";
+export type Protocol = "ssh" | "rdp";
+
+/** RDP 专属的少量额外字段，存在 ConnectionProfile.options 里（JSON，见后端
+ * connection/profile.rs 注释）；SSH 连接的 options 一般是 null。*/
+export interface RdpOptions {
+  domain?: string;
+  width?: number;
+  height?: number;
+  color_depth?: number;
+}
 
 export interface ConnectionProfile {
   id: string;
@@ -65,6 +75,8 @@ export interface ConnectionProfile {
   group_id: string | null;
   tags: string[];
   jump_host_id: string | null;
+  protocol: Protocol;
+  options: RdpOptions | null;
   last_connected_at: string | null;
   created_at: string;
 }
@@ -79,6 +91,42 @@ export interface ConnectionProfileInput {
   group_id: string | null;
   tags: string[];
   jump_host_id: string | null;
+  protocol: Protocol;
+  options: RdpOptions | null;
+}
+
+/** 会话树的文件夹（远程工具模式，DESIGN.md §3.9）。*/
+export interface ConnectionGroup {
+  id: string;
+  name: string;
+  parent_id: string | null;
+}
+
+export interface ConnectionGroupInput {
+  name: string;
+  parent_id: string | null;
+}
+
+/** 远程主机资源使用率原始采样——只有累计计数器，CPU%/网速由前端拿相邻两次
+ * 采样自己算差（后端 ssh/monitor.rs 顶部注释解释了为什么不在后端做）。*/
+export interface HostStats {
+  hostname: string;
+  uptime_seconds: number;
+  cpu_total: number;
+  cpu_idle: number;
+  mem_total_kb: number;
+  mem_available_kb: number;
+  net_rx_bytes: number;
+  net_tx_bytes: number;
+  disks: DiskUsage[];
+  sampled_at_ms: number;
+}
+
+export interface DiskUsage {
+  mount: string;
+  total_kb: number;
+  used_kb: number;
+  used_percent: number;
 }
 
 export interface HostKeyPromptEvent {
@@ -190,6 +238,7 @@ export interface FileChange {
 
 export interface CodingSessionInfo {
   id: string;
+  provider_id: string;
   mode: CodingMode;
   target: CodingTarget;
   auto_allow_readonly: boolean;
@@ -201,6 +250,35 @@ export interface CodingSessionInfo {
 export interface CodingToolCallEvent {
   sessionId: string;
   tool: string;
+  /** 这次调用在操作什么（文件路径/搜索词等），不是所有工具都有——2026-08-18
+   * 真实复现"看起来在循环"的问题时，只有工具名完全看不出是不是在反复处理
+   * 同一个东西，加上这个字段才能一眼确认是真循环还是正常地一个个探索。 */
+  detail?: string | null;
+}
+
+/** 模型在同一条消息里，工具调用之外顺带写的说明性文字（2026-08-18 需求："编程
+ * 助手的思考过程没有展示出来"）——之前直接丢弃，现在广播出来在时间线里展示。 */
+export interface CodingAssistantNoteEvent {
+  sessionId: string;
+  text: string;
+  kind?: "model" | "status";
+}
+
+export interface CodingHistorySummary {
+  id: string;
+  title: string;
+  provider_label: string;
+  model: string;
+  mode: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CodingHistoryDetail extends CodingHistorySummary {
+  workspace_id: string;
+  provider_id: string;
+  timeline: unknown;
+  changes: unknown;
 }
 
 export interface CodingFileChangeEvent {

@@ -1,6 +1,6 @@
 # roc_desk
 
-集成开发者客户端工具：SSH 终端 + SFTP + 日志搜索 + AI 问答/编程助手，基于 Tauri 2.0（Rust 后端 + React/TS 前端）。
+集成开发者客户端工具：SSH 终端 + SFTP + 日志搜索 + 统一 AI 工具（问答与编程），基于 Tauri 2.0（Rust 后端 + React/TS 前端）。
 
 完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 

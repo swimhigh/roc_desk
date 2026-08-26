@@ -22,6 +22,7 @@ interface AiChatState {
   activeProviderId: string | null;
   messages: DisplayMessage[];
   redactEnabled: boolean;
+  webSearchEnabled: boolean;
   sending: boolean;
   error: string | null;
   pendingRequestId: string | null;
@@ -32,6 +33,7 @@ interface AiChatState {
   deleteProvider: (id: string) => Promise<void>;
   setActiveProvider: (id: string) => void;
   setRedactEnabled: (v: boolean) => void;
+  setWebSearchEnabled: (v: boolean) => void;
   sendMessage: (text: string) => Promise<void>;
   clearChat: () => void;
 }
@@ -43,6 +45,7 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
   activeProviderId: null,
   messages: [],
   redactEnabled: true,
+  webSearchEnabled: true,
   sending: false,
   error: null,
   pendingRequestId: null,
@@ -81,9 +84,10 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
 
   setActiveProvider: (id) => set({ activeProviderId: id }),
   setRedactEnabled: (redactEnabled) => set({ redactEnabled }),
+  setWebSearchEnabled: (webSearchEnabled) => set({ webSearchEnabled }),
 
   sendMessage: async (text) => {
-    const { activeProviderId, messages, redactEnabled } = get();
+    const { activeProviderId, messages, redactEnabled, webSearchEnabled } = get();
     if (!activeProviderId || !text.trim() || get().sending) return;
 
     const userMsg: DisplayMessage = { id: `local-${Date.now()}`, role: "user", content: text };
@@ -92,7 +96,7 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, userMsg], sending: true, error: null }));
 
     try {
-      const requestId = await aiChatService.send(activeProviderId, history, redactEnabled);
+      const requestId = await aiChatService.send(activeProviderId, history, redactEnabled, webSearchEnabled);
       const assistantMsg: DisplayMessage = { id: requestId, role: "assistant", content: "", streaming: true };
       set((s) => ({ messages: [...s.messages, assistantMsg], pendingRequestId: requestId }));
     } catch (e) {

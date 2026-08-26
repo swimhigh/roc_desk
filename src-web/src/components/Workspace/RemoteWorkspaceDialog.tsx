@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { connectionService } from "../../services/connectionService";
+import { connectionGroupService } from "../../services/connectionGroupService";
 import { sftpService } from "../../services/sftpService";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { formatError } from "../../utils/error";
@@ -7,7 +8,7 @@ import { useToastStore } from "../shared/Toast";
 import { ConnectionForm, type ConnectionFormValue } from "../ConnectionManager/ConnectionForm";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
 import { isAppError } from "../../types/bindings";
-import type { ConnectionProfile, FileEntry } from "../../types/bindings";
+import type { ConnectionGroup, ConnectionProfile, FileEntry } from "../../types/bindings";
 
 type Step = "pick" | "new" | "browse";
 
@@ -22,6 +23,7 @@ interface RemoteWorkspaceDialogProps {
 export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ onClose }) => {
   const [step, setStep] = useState<Step>("pick");
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
+  const [groups, setGroups] = useState<ConnectionGroup[]>([]);
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -33,8 +35,18 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
 
   useEffect(() => {
     connectionService.list().then(setProfiles).catch((e) => push("error", formatError(e)));
+    connectionGroupService.list().then(setGroups).catch((e) => push("error", formatError(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 只允许明确的“取消”按钮或 Esc 关闭；点击遮罩不会丢弃已填写的连接信息。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !passwordPromptFor && !savingPassword) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, passwordPromptFor, savingPassword]);
 
   const startBrowsing = async (connectionId: string, path: string) => {
     setActiveConnectionId(connectionId);
@@ -77,6 +89,8 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         group_id: passwordPromptFor.group_id,
         tags: passwordPromptFor.tags,
         jump_host_id: passwordPromptFor.jump_host_id,
+        protocol: passwordPromptFor.protocol,
+        options: passwordPromptFor.options,
       });
       const connectionId = passwordPromptFor.id;
       setPasswordPromptFor(null);
@@ -100,6 +114,8 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         group_id: value.groupId ?? null,
         tags: [],
         jump_host_id: value.jumpHostId ?? null,
+        protocol: "ssh",
+        options: null,
       });
       setProfiles((p) => [...p, created]);
       await startBrowsing(created.id, created.username.startsWith("root") ? "/root" : `/home/${created.username}`);
@@ -119,7 +135,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
   };
 
   return (
-    <div className="dialog-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="dialog-overlay" role="dialog" aria-modal="true">
       <div className="dialog" style={{ minWidth: 480, maxWidth: 560 }}>
         <div className="dialog-title-bar info">
           <span>🖥</span>
@@ -152,7 +168,13 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
           )}
 
           {step === "new" && (
-            <ConnectionForm groups={[]} jumpHostOptions={[]} onCancel={() => setStep("pick")} onSave={handleCreateConnection} />
+            <ConnectionForm
+              groups={groups.map((g) => ({ id: g.id, name: g.name }))}
+              jumpHostOptions={profiles.filter((p) => p.protocol === "ssh").map((p) => ({ id: p.id, name: p.name }))}
+              fixedProtocol="ssh"
+              onCancel={() => setStep("pick")}
+              onSave={handleCreateConnection}
+            />
           )}
 
           {step === "browse" && (

@@ -16,7 +16,7 @@ export const aiChatService = {
     return invoke("ai_provider_delete", { id });
   },
   /** 返回 requestId；增量文本经 ai:chat-chunk/ai:chat-done/ai:chat-error 事件推送。*/
-  send(providerId: string, messages: ChatMessage[], redactEnabled: boolean): Promise<string> {
-    return invoke("ai_chat_send", { providerId, messages, redactEnabled });
+  send(providerId: string, messages: ChatMessage[], redactEnabled: boolean, webSearchEnabled: boolean): Promise<string> {
+    return invoke("ai_chat_send", { providerId, messages, redactEnabled, webSearchEnabled });
   },
 };

@@ -1,6 +1,6 @@
 # roc_desk — 集成开发者客户端工具设计方案
 
-> 一个基于浏览器式界面的集成开发工具，集 SSH 终端、SFTP、日志搜索、网页浏览、AI 问答于一体。
+> 一个基于浏览器式界面的集成开发工具，集 SSH 终端、SFTP、日志搜索、网页浏览、统一 AI工具于一体。
 > 目标平台：Windows（兼容 macOS / Linux）
 
 > **本文档是架构/技术方案，记录"打算怎么做"；逐项功能"实际做到什么程度、用户提过哪些具体要求、踩过哪些真实 bug"见 [REQUIREMENTS.md](REQUIREMENTS.md)，也可以直接跳到本文末尾的[十二、实现状态](#十二实现状态)速览。两份文档职责不同，请勿把实现细节同步写重复。
@@ -131,20 +131,20 @@
 - **连接远程主机并选择目录**：先从已保存的连接档案选择主机（或新建一个），连接成功后弹出一个轻量的远程目录选择器（复用 SFTP 的目录浏览能力，仅用于"选根目录"这一步，不承担完整文件管理），确认后作为工作区根目录。
 - **最近打开的工作区**：本地/远程用不同图标区分（💻/🖥），显示根路径和（远程时）主机名；点击直接重新打开——远程工作区会自动触发 SSH 重连（复用 §3.2.3 的重连策略）。右键可"从列表移除""在新窗口打开"。
 - **切换工作区**：`Ctrl+Shift+O` 或菜单"文件 → 打开工作区"随时可以回到这个选择页；不强制退出应用重来，也支持在新窗口打开第二个工作区（多工作区并行，互不干扰）。
-- **无工作区兜底**：应用支持不打开任何工作区、只用终端/AI 问答等独立工具的场景（比如只是想连一下服务器执行命令），此时顶部快捷工具依然可用，但左侧 Explorer 为空态，提示"打开一个工作区以浏览文件"。
+- **无工作区兜底**：应用支持不打开任何工作区、只用终端/AI工具等独立工具的场景（比如只是想连一下服务器执行命令），此时顶部快捷工具依然可用，但左侧 Explorer 为空态，提示"打开一个工作区以浏览文件"。
 
 #### 3.1.2 进入工作区后的整体布局
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ [my-app ▾]  [🖥 终端] [📄 main.rs] [🤖 编程助手]   [📂][🌐][💬][🛠] [+] │  ← Tab 栏 + 顶部快捷工具
+│ [my-app ▾]  [🖥 终端] [📄 main.rs]                 [📂][🌐][✨] [+] │  ← Tab 栏 + 顶部快捷工具
 ├──────────────┬───────────────────────────────────────────────────────┤
 │  Explorer    │                                                        │
 │  ▾ src/      │              内容区域（按当前 Tab 切换）                │
 │    main.rs ● │                                                        │
 │    api.rs    │   - 终端 (xterm.js)                                   │
 │  ▾ tests/    │   - 代码编辑器 (Monaco，可编辑保存，非只读)             │
-│  Cargo.toml  │   - SFTP 传输管理器 / 网页浏览 / AI 问答 / AI 编程助手  │
+│  Cargo.toml  │   - SFTP 传输管理器 / 网页浏览；右侧停靠 AI工具       │
 │  README.md   │                                                        │
 ├──────────────┴───────────────────────────────────────────────────────┤
 │  🖥 web-01 · 24ms   Explorer: /home/user/app   UTF-8   Ln 12, Col 4  │
@@ -154,12 +154,12 @@
 - **左侧 Sidebar 从"连接树"变为"Explorer 文件树"**：根目录固定为当前工作区根目录，本地工作区走文件系统 API，远程工作区走 SFTP，均懒加载子目录（不会一次性拉全树）。原「连接管理」侧边栏（§3.2.2 的档案 CRUD）改为通过工作区选择页或 Activity Bar 的「服务器」图标单独呼出，不再占用默认侧边栏位置。
 - **Explorer 点击行为对齐 VS Code**：单击文件 → 以"预览标签"（斜体文件名、颜色浅一档）打开，再单击别的文件会复用/替换这个预览标签，避免手滑点一圈文件后开一堆标签；双击 → 转为固定标签。点击的文件默认进入**可编辑**状态（不是早期设计里"仅浏览用只读 Monaco"），支持 `Ctrl+S` 保存（本地直接写文件系统，远程走 SFTP 写回并给出成功/失败反馈）、未保存时标签上出现圆点，关闭前二次确认。
 - **搜索**：`Ctrl+F` 为当前文件内搜索；`Ctrl+Shift+F` 打开"在工作区中搜索"侧栏，本地/远程分别复用 §3.4 日志搜索模块的两套引擎（本地 ripgrep 直接跑，远程 `rg` over SSH），但这是面向代码/文本的通用搜索，与 §3.4 面向日志（时间范围、级别、FTS5 索引）的专门工具是两个独立入口，服用同一套底层搜索能力。
-- **默认打开的 Tab**：进入工作区后自动打开一个终端标签——远程工作区打开该主机的 SSH 终端（自动连接，走 §3.2.1 的指纹校验流程），本地工作区打开本机 Shell（PowerShell/bash，`portable-pty`）。这保证用户进入工作区后立刻有一个可操作的终端，不需要额外点击。
+- **默认打开的 Tab**：进入工作区后自动打开一个终端标签，并展开底部面板——远程工作区打开该主机的 SSH 终端（自动连接，走 §3.2.1 的指纹校验流程），本地工作区打开本机 Shell（PowerShell/bash，`portable-pty`）。
 - **状态栏**：随当前工作区与激活 Tab 变化，左侧显示连接状态（远程）或本地路径（本地），右侧显示当前编辑器的编码/光标位置等上下文信息。
 
 #### 3.1.3 顶部快捷工具与 Tab 复用
 
-Tab 栏右侧固定一排图标（SFTP 传输 📂 / 网页浏览 🌐 / AI 问答 💬 / AI 编程助手 🛠），点击后：
+Tab 栏右侧固定一排图标（SFTP 传输 📂 / 网页浏览 🌐 / AI工具 ✨），点击 AI工具后在工作区右侧打开停靠栏：
 
 1. 若当前工作区**已经**打开过该工具的 Tab → 直接激活已有 Tab（不新开、不丢失该 Tab 内的状态，如对话历史、SFTP 当前目录）。
 2. 若没有 → 在当前工作区下新开一个绑定该工作区的 Tab。
@@ -171,8 +171,9 @@ Tab 栏右侧固定一排图标（SFTP 传输 📂 / 网页浏览 🌐 / AI 问�
 |------|----------------|
 | SFTP 传输管理器 | 不再承担"浏览工作区目录"的职责（已由 Explorer 覆盖），定位收窄为**跨目录自由浏览与批量传输**：查看工作区之外的路径（如 `/etc/nginx`）、大批量上传下载、查看文件权限。远程工作区下默认复用工作区所在主机的连接；本地工作区下若要用 SFTP 需先选择一个已保存的远程连接。 |
 | 网页浏览 | 与工作区类型无关，始终可用。 |
-| AI 问答 | 与工作区类型无关，始终可用，见 §3.6。 |
-| AI 编程助手 | 自动绑定当前工作区（本地/远程、根目录、连接会话），不再需要手动选"目标"，见 §3.8.7 的能力边界说明。 |
+| AI工具 | 统一承载普通问答与编程任务，停靠在工作区右侧；自动绑定当前工作区，Plan 只读分析、Build 可操作文件；两种模式都提供 `web_search` 互联网搜索工具，见 §3.6 与 §3.8。 |
+
+AI工具与中央编辑区之间设置可左右拖动的分隔条，面板宽度持久化；拖动边界同时保证 AI工具和编辑区均保留可操作的最小宽度。
 
 #### 3.1.4 远程文件编辑模型（本地化编辑体验）
 
@@ -724,7 +725,9 @@ impl LogSearchEngine {
 - 若使用 `<iframe>` 内嵌在主 WebView 内，必须设置 `sandbox` 属性（禁用 `allow-same-origin` 与主应用同源）并配置严格的 `Content-Security-Policy`（`frame-src` 白名单），防止内嵌页面通过同源脚本访问宿主页面的 `window.__TAURI__`。
 - 两种方案都应默认拦截页面内的下载/协议跳转（如 `file://`、自定义协议）请求，避免被用作本地文件读取的跳板。
 
-### 3.6 AI 问答模块
+### 3.6 AI工具的问答能力
+
+统一 AI工具不依赖模型“自带联网”。当问题涉及最新新闻、实时事实或外部资料时，Agent 必须调用 `web_search`：后端通过 Bing RSS 获取标题、摘要、发布时间和 URL，作为工具结果追加到对话上下文；模型回答必须优先使用这些结果并引用 URL。搜索失败会明确返回工具错误，禁止模型把未搜索到的内容伪装成实时事实。
 
 **支持的模型/API**：
 - 豆包（字节跳动）API
@@ -822,7 +825,7 @@ end
 register_command("error_stats", analyze_errors)
 ```
 
-### 3.8 AI 编程助手模块（OpenCode 风格）
+### 3.8 AI工具的编程能力（OpenCode 风格）
 
 集成类似 OpenCode / Aider / Codex 的 AI 编程能力，提供可视化 UI 界面，支持本地和远程项目的代码阅读、生成、修改、调试。作为 §3.1.3 定义的顶部快捷工具之一打开，**自动绑定当前工作区**（根目录、本地/远程、连接会话），不再需要用户在打开时手动选择目标。
 
@@ -830,7 +833,7 @@ register_command("error_stats", analyze_errors)
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│  [🖥 终端] [📄 main.rs] [🤖 编程助手]                    [📂][🌐][💬][🛠]│
+│  [🖥 终端] [📄 main.rs]                                [📂][🌐][✨]│
 ├─────────────┬─────────────────────────────────────────────────────────┤
 │             │  ┌─ Plan ─ Build ─┐  目标: web-01(远程) [更改▾]  [模型▼] │
 │  Explorer   │  ├───────────────────────┼─────────────────────────────┤
@@ -1305,6 +1308,46 @@ tree-sitter = "0.24"
 
 ---
 
+### 3.9 远程工具模式（首页会话树 + RDP）
+
+**背景**：早期版本必须先"打开一个工作区"才能连远程主机，SSH/SFTP 能力完全挂在工作区生命周期下。用户希望 roc_desk 同时能当一个 FinalShell/MobaXterm 式的独立远程工具用——保存一批服务器会话，点开就是终端/文件浏览/远程桌面，不需要先设定"工作区"这个概念。
+
+**首页布局**（`components/RemoteTool/HomeShell.tsx`）：用户原话——"首页应该是左边列出所有会话（可以新建），右边和原版本一样列出所有工作区（可以新建）。不需要去选会话模式和工作区模式后再展现"。因此没有走"模式切换开关"的设计：没有工作区打开时（`workspaceStore.current == null`），首页固定是左侧会话树（`SessionTree`）+ 右侧原样的 `WorkspacePicker`，两者一直同时存在；点开一个会话就在标签栏多一个可关闭标签（"工作区"固定占首位、不可关闭），打开工作区后才切到原有的 IDE 布局（§3.1），和会话标签的状态互不影响、互不清空。
+
+**数据模型**：复用现有 `connections`/`connection_groups` 表，不建平行表——`connections` 加两列 `protocol`（`ssh` | `rdp`）和 `options`（JSON，协议相关的少量额外字段：RDP 是 `domain`/`width`/`height`）。一条 SSH 记录既能"打开终端"也能"打开 SFTP"，RDP 记录只能"打开 RDP"。分组（`connection_groups`）支持任意深度嵌套，树在渲染期从扁平列表按 `parent_id`/`group_id` 现算，不单独维护嵌套 state。
+
+**会话标签**（`stores/remoteSessionStore.ts`，仿 `terminalStore.ts` 的"拍平数组 + 全挂载靠 display 切换"结构）：
+
+| Tab 种类 | 复用的组件 | 说明 |
+|------|------|------|
+| `ssh-terminal` | `Terminal/TerminalView.tsx` | 与工作区模式下的终端是同一套渲染逻辑，`sshService.openShell` 只要 `profile_id`，从不要求工作区存在 |
+| `sftp` | `SftpBrowser/SftpBrowser.tsx` | 同样只依赖 `profileId`，`workspaceId` 参数在这里只是本地记忆 key，传连接自己的 `id` 即可 |
+| `rdp` | `RemoteTool/RdpView.tsx` | 见下 |
+
+会话内提供"终端"/"SFTP"快捷跳转按钮（同一 profile 已开的标签直接激活，没有才新开，不会每点一次堆一个新标签）。
+
+**MultiExec 广播输入**（参考 MobaXterm 的 MultiExec）：打开时，任意一个未被排除的 SSH 终端标签收到键盘输入，会广播到其余所有未排除的 SSH 终端标签（`remoteSessionStore.broadcastInput`），用于同时对多台主机敲同一批命令；单个标签可以临时排除在广播范围之外。
+
+#### 3.9.1 RDP 远程桌面
+
+**不自己实现协议**——完整的坑与最终方案见 `src-tauri/src/rdp/mod.rs` 顶部注释，这里只记结论：
+
+三次方向调整的根因分别是：①`rustls` 只支持现代 TLS1.2/1.3 前向保密套件，遇到 SChannel 策略较老的服务器会被直接 RST；②当时的 `IronRDP` 协议库没有实现"并发会话数超限时弹出选择/踢人界面"这个能力（查过源码，`ironrdp-session` 收到 `ServerSetErrorInfo` 就直接断线，没有渲染成 UI 给用户选的路径）；③退而求其次拉起系统自带 `mstsc.exe` 再 `SetParent` 嵌入，可行但 `mstsc.exe` 一个进程生命周期里会先后创建好几个顶层窗口（证书警告 → 可能的会话选择 → 真正桌面），只在连接发起时探测一次窗口的做法会在窗口切换时卡住。
+
+最终方案（用户原话："能改成和MobaXterm一样就改成和它一样的搞法"、"直接上 ActiveX 完整方案"，查证过 MobaXterm 自己也是这条路）：以 ActiveX 就地激活的方式承载 Windows 自带的 RDP 客户端控件（`mstscax.dll` 的 `MsTscAx`/`IMsRdpClient`）——这正是 `mstsc.exe` 内部渲染桌面用的同一个控件。控件的 COM 接口不在 `windows` crate 的预生成绑定里（那份绑定只覆盖 Win32 核心 API），是照着 MSVC `#import` 生成的权威类型库头文件手抄的（`src-tauri/src/rdp/mstscax.rs`）；就地激活所需的最小 OLE 容器（`IOleClientSite`/`IOleInPlaceSite`/`IOleInPlaceFrame`）见 `src-tauri/src/rdp/ole_container.rs`。每个会话背后是一个独立 STA 线程：`CoInitializeEx` → 创建控件 → 就地激活 → 设置 `Server`/`UserName`/`ClearTextPassword` 等属性 → `Connect()` → 跑 `GetMessage`/`DispatchMessage` 消息循环直到收到我们发的 `WM_QUIT`。控件从创建到断开只有一个真实子窗口，不会重演③的"中途换窗口"问题；密码经 `IMsTscNonScriptable::put_ClearTextPassword` 直接设置，不再需要像 mstsc.exe 方案那样借道 Windows 凭据管理器（`cmdkey`）。
+
+**第 4 个坑（真机联调发现）：`CoCreateInstance` 报 `REGDB_E_CLASSNOTREG`（0x80040154）**——`mstscax.dll` 文件在 `System32`/`SysWOW64` 都存在，但测试机上注册表 `HKCR\CLSID\{1FB464C8-...}` 两边都是空的，从没跑过 `regsvr32`。让用户在能用 RDP 前先手动以管理员身份注册系统 DLL 是不可接受的门槛，也不是全局系统级改动该由 roc_desk 触发的事。参照 MobaXterm 单文件绿色版不需要这类前置步骤即可用 RDP 的路子，改用 Windows 的"免注册 COM"（Registration-Free COM）机制：运行时生成一份声明 `clsid → mstscax.dll → threadingModel="Apartment"` 映射的清单（manifest）XML，`CreateActCtxW`/`ActivateActCtx` 把它压进激活上下文栈顶，`CoCreateInstance` 会先查激活上下文再查注册表——查到了就直接用，完全不碰注册表、不需要管理员权限，也不管这台机器上这个系统 DLL 有没有被注册过。实现见 `src-tauri/src/rdp/actctx.rs`。
+
+**宿主窗口层**：控件不直接挂在 roc_desk 主窗口下，中间隔一层自己创建的宿主窗口（`create_host_window`）——控件永远铺满宿主客户区、坐标恒为 `(0,0,w,h)`，要挪位置就挪宿主。这是标准 ActiveX 宿主做法（ATL 的 `CAxWindow` 同理），一次解决三件事：坐标系不再有歧义（不用把"在整个界面里的绝对位置"这种控件不该关心的信息传给它）、显示/隐藏/Z 序由我们自己的窗口说了算、控件窗口与其父窗口同在一个 STA 线程上使消息路由更规矩。
+
+**黑屏可诊断性**：黑屏这个现象本身分不清是"根本没连上"还是"连上了但窗口摆错位置/被 WebView 盖住"。`rdp_status` 因此额外返回一行体检文本（宿主窗口和控件窗口各自的句柄有效性、可见性、实际屏幕矩形，以及控件自报的 `Connected` 原始值），前端直接显示出来。注意这行状态条渲染在原生窗口矩形**之外**（不是叠在上面）——内嵌的是原生窗口，会盖住其矩形范围内的一切网页内容，叠上去的提示根本看不见。
+
+状态反馈：新增 `rdp_status` 命令，由 STA 消息循环每 250ms 轮询一次 `IMsRdpClient.get_Connected` 与 `get_ExtendedDisconnectReason`（存进 `RdpSession` 上的原子变量），前端 `RdpView.tsx` 定时拉取，从”盲目乐观地认为 connected”变成能看到真实的 connecting/connected/error 状态和断线原因码。完整 `IMsTscAxEvents` 事件下沉仍未实现（DISPID 需要硬猜或运行时 `ITypeInfo` 反射，风险/工作量都不小），轮询是权衡后的替代方案，有 250ms 级别的检测延迟。
+
+没做事件下沉还有个更隐蔽的后果：控件遇到需要用户确认身份的服务器（比如自签名证书）时，正常会触发 `OnReceivedTSPublicKey` 事件问容器”要不要继续”——没有事件接收者，控件可能静默卡在这一步，表现为”连接调用全部成功、不报错，但一直黑屏”。这台测试服务器（10.203.0.111）已知会触发这个流程，于是在 `activate_control` 里把 `IMsRdpClientAdvancedSettings2::AuthenticationLevel` 设成 0（”直接连接，不做身份校验”），从根上避开这条没有接收者的死路。这个属性挂在一个巨大到不值得手抄整条 vtable 的 dual interface 上（继承链上光基类 `IMsTscAdvancedSettings` 就有几十个属性，手抄错一个就是内存越界），改用 `IDispatch` 晚绑定（`GetIDsOfNames`+`Invoke`，VBScript/JScript 里 `obj.Prop = val` 底层走的就是这条路）设置这一个属性，不需要知道接口除 `IDispatch` 之外的任何 vtable 布局。只在 Windows 上能用，但 roc_desk 本来就是 Windows 专属客户端。
+
+---
+
 ## 四、项目目录结构
 
 > 本节是概览；完整目录树、每个文件的职责、类型签名、Command/Event 目录见 [docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)（随 §3.1 工作区模型改版同步更新，新增 `workspace/`、`fsops/` 等模块）。
@@ -1607,8 +1650,7 @@ thiserror = "2"
 | 编辑器（Monaco、多 Tab、GBK/UTF-16 等编码自动探测+手动切换、Explorer 右键菜单、Markdown 预览、Makefile 语法高亮） | 已实现 |
 | 全局搜索（左侧目录树，跨文件全文搜索+替换，参考 VS Code） | 已实现 |
 | 日志搜索（本地 FTS5 索引 + 远程实时 rg/grep） | 已实现 |
-| AI 问答（OpenAI 兼容 API、SSE 流式、发送前脱敏） | 已实现 |
-| AI 编程助手（Plan/Build、Tool Calling、Diff 待确认、run_command 安全机制、Git 自动提交） | 已实现 |
+| AI工具（统一右侧入口；OpenAI 兼容 API、Plan/Build、Tool Calling、Diff、安全机制） | 已实现 |
 | 网页浏览（主窗口内嵌子 WebView，IPC 隔离 + 历史记录持久化） | 已实现 |
 | 打包部署（单 exe、自定义产物目录、数据目录与 exe 同级） | 已实现 |
 | Lua 插件 / MCP 客户端 | 未开始 |

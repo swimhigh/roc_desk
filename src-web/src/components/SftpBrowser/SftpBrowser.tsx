@@ -42,13 +42,22 @@ interface SftpBrowserProps {
   /** 用来记住"这个工作区上次 SFTP 浏览时本地一侧停在哪个目录"（2026-08-18 需求，
    * 见下面 localStorage 那段注释），不是后端标识，纯前端记忆用的 key。*/
   workspaceId: string;
-  /** 默认远程目录，就是当前工作区根目录（DESIGN.md §3.3，用户要求"默认的远程目录为当前工作区目录"）。*/
+  /** 默认远程目录——工作区模式下就是当前工作区根目录（DESIGN.md §3.3，"默认的远程
+   * 目录为当前工作区目录"），只在没有记忆或记忆的目录打不开时才会用到。*/
   initialRemotePath: string;
+  /** 远程一侧要不要也按 `workspaceId` 记忆上次停留的目录（2026-08-25 需求，远程工具
+   * 模式下"两边目录需要按远程会话记忆，下次进入时自动恢复"）——工作区模式故意不开
+   * 这个，那边的"默认回到工作区根目录"是有意为之的设计，不能被记忆覆盖掉。*/
+  rememberRemotePath?: boolean;
   onOpenFile: (entry: FileEntry) => void;
 }
 
 function localPathStorageKey(workspaceId: string): string {
   return `roc_desk-sftp-local-path-${workspaceId}`;
+}
+
+function remotePathStorageKey(id: string): string {
+  return `roc_desk-sftp-remote-path-${id}`;
 }
 
 /**
@@ -63,7 +72,13 @@ function localPathStorageKey(workspaceId: string): string {
  * `workspaceId`），不是后端 SQLite——这是纯前端会话便利性状态，不是需要备份/跨机器
  * 同步的业务数据，和侧边栏宽度记忆是同一类东西，犯不上为它加一次数据库迁移。
  */
-export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, workspaceId, initialRemotePath, onOpenFile }) => {
+export const SftpBrowser: React.FC<SftpBrowserProps> = ({
+  profileId,
+  workspaceId,
+  initialRemotePath,
+  rememberRemotePath,
+  onOpenFile,
+}) => {
   const remote = useSftpStore();
   const local = useLocalFsStore();
   const push = useToastStore((s) => s.push);
@@ -74,7 +89,15 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, workspaceId
   const [editValue, setEditValue] = useState("");
 
   useEffect(() => {
-    remote.navigate(profileId, initialRemotePath);
+    (async () => {
+      const rememberedRemote = rememberRemotePath ? localStorage.getItem(remotePathStorageKey(workspaceId)) : null;
+      await remote.navigate(profileId, rememberedRemote ?? initialRemotePath);
+      // 记住的目录可能已经被删除/改名，或者这台机器第一次用 SFTP 还没有记忆——
+      // 两种情况都退回调用方给的默认目录，不留在一个报错状态里死等用户手动处理。
+      if (rememberedRemote && useSftpStore.getState().error) {
+        await remote.navigate(profileId, initialRemotePath);
+      }
+    })();
 
     (async () => {
       const remembered = localStorage.getItem(localPathStorageKey(workspaceId));
@@ -96,6 +119,12 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({ profileId, workspaceId
     if (!local.cwd) return;
     localStorage.setItem(localPathStorageKey(workspaceId), local.cwd);
   }, [workspaceId, local.cwd]);
+
+  // 远程一侧同理（只在 rememberRemotePath 打开时才存，工作区模式不受影响）。
+  useEffect(() => {
+    if (!rememberRemotePath || !remote.cwd) return;
+    localStorage.setItem(remotePathStorageKey(workspaceId), remote.cwd);
+  }, [rememberRemotePath, workspaceId, remote.cwd]);
 
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;

@@ -11,6 +11,8 @@ interface ConfirmDialogProps {
   actions: React.ReactNode;
   /** 高危确认类弹窗不响应 Esc / 点击遮罩关闭（UI_DESIGN.md §4.1、§十二）*/
   dismissible?: boolean;
+  /** Whether clicking the backdrop dismisses the dialog. Escape still follows `dismissible`. */
+  closeOnBackdropClick?: boolean;
   onDismiss?: () => void;
 }
 
@@ -26,6 +28,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   children,
   actions,
   dismissible = true,
+  closeOnBackdropClick = dismissible,
   onDismiss,
 }) => {
   React.useEffect(() => {
@@ -45,7 +48,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     <div
       className="dialog-overlay"
       onClick={(e) => {
-        if (dismissible && e.target === e.currentTarget) onDismiss?.();
+        if (closeOnBackdropClick && e.target === e.currentTarget) onDismiss?.();
       }}
     >
       <div className="dialog" role="alertdialog" aria-modal="true">

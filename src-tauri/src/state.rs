@@ -6,13 +6,15 @@ use uuid::Uuid;
 
 use crate::ai::{AiChatClient, AiProviderManager};
 use crate::coding::{CodingSession, CommandConfirmRegistry};
-use crate::connection::ConnectionManager;
+use crate::connection::{ConnectionGroupManager, ConnectionManager};
 use crate::credential::CredentialStore;
 use crate::db::repo::audit_log_repo::AuditLogRepo;
+use crate::db::repo::coding_history_repo::CodingHistoryRepo;
 use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
 use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
 use crate::pty::LocalPtyManager;
+use crate::rdp::RdpSessionManager;
 use crate::ssh::{SshConnectionPool, TrustPromptRegistry};
 use crate::workspace::{WorkspaceHandle, WorkspaceManager};
 
@@ -24,7 +26,9 @@ pub struct AppState {
     pub db: DbPool,
     pub credential_store: Arc<dyn CredentialStore>,
     pub connection_manager: Arc<ConnectionManager>,
+    pub connection_group_manager: Arc<ConnectionGroupManager>,
     pub ssh_pool: Arc<SshConnectionPool>,
+    pub rdp_sessions: Arc<RdpSessionManager>,
     pub trust_prompts: TrustPromptRegistry,
     pub workspace_manager: Arc<WorkspaceManager>,
     /// 当前窗口内已打开的工作区句柄，key 为 WorkspaceProfile.id
@@ -38,6 +42,7 @@ pub struct AppState {
     pub coding_sessions: Arc<RwLock<HashMap<Uuid, Arc<Mutex<CodingSession>>>>>,
     pub command_confirms: CommandConfirmRegistry,
     pub audit_log: Arc<AuditLogRepo>,
+    pub coding_history: Arc<CodingHistoryRepo>,
     pub local_pty: Arc<LocalPtyManager>,
     pub browser_history: Arc<BrowserHistoryRepo>,
     /// 当前正在跑的 Explorer 全文搜索请求 id（`fs_search_stream`）——新搜索开始时

@@ -116,7 +116,7 @@ devhub/
 │       │   ├── providers.rs             # Provider 枚举与适配（OpenAI 兼容 / Ollama / 豆包）
 │       │   └── redaction.rs             # 发送前敏感信息脱敏（DESIGN.md §3.6）
 │       │
-│       ├── coding/                      # AI 编程助手模块（依赖 fsops，不再自带 file_ops）
+│       ├── coding/                      # AI工具的编程能力（依赖 fsops，不再自带 file_ops）
 │       │   ├── mod.rs
 │       │   ├── session.rs               # CodingSession：对话+变更历史+undo/redo，target 自动继承工作区
 │       │   ├── tools.rs                 # AgentTool 定义 + 工具执行分发（依赖 fsops::FileOps，不再自带）
@@ -195,7 +195,7 @@ devhub/
 │   │   ├── components/
 │   │   │   ├── Layout/
 │   │   │   │   ├── TabBar.tsx           # Tab 列表 + 右侧顶部快捷工具图标簇（DESIGN.md §3.1.3）
-│   │   │   │   ├── QuickToolsBar.tsx    # 📂SFTP / 🌐浏览器 / 💬AI问答 / 🛠AI编程，find-or-create 打开逻辑
+│   │   │   │   ├── QuickToolsBar.tsx    # 📂SFTP / 🌐浏览器 / ✨AI工具；AI工具控制右侧停靠栏
 │   │   │   │   ├── Sidebar.tsx          # Activity Bar 容器（Explorer/Search/Servers/Settings 图标）
 │   │   │   │   ├── StatusBar.tsx
 │   │   │   │   └── SplitPane.tsx        # react-resizable-panels 封装
@@ -636,7 +636,11 @@ CREATE TABLE workspaces (
 | `sshStore` | 每个终端 Channel 的缓冲区引用（xterm 实例由组件自持，store 只存元数据） | `channels: Map<channelId, ChannelMeta>` |
 | `sftpStore` | SFTP 快捷工具当前目录、选中项、传输队列（不再是 Explorer 的数据源） | `cwd`, `selection`, `transfers: TransferTask[]` |
 | `logSearchStore` | 搜索条件、结果、分页游标 | `query`, `results`, `mode: 'live'\|'index'` |
-| `aiChatStore` | 各 Provider 的会话历史 | `sessions: Map<providerId, ChatSession>` |
+| `aiChatStore` | 统一 AI工具的 Provider 与会话历史 | `sessions: Map<providerId, ChatSession>` |
+
+AI工具停靠栏宽度由 `App.tsx` 的 UI 状态维护，拖动左侧分隔条时限制为 300–800px，并依据窗口与 Explorer 宽度为中央编辑区预留至少 320px；最终宽度保存到 `localStorage` 的 `roc_desk-ai-tools-width`。
+
+Coding Agent 的只读工具列表包含 `web_search(query)`。该工具调用 `ai::search_web_results` 的 Bing RSS 实现，返回可供模型引用的标题、摘要和 URL；它与工作区内的 `search_files` 是两个独立工具，Plan/Build 均可用。
 | `codingStore` | Coding Agent 的 mode/messages/changes/undo 栈/当前目标 | 与后端 `CodingSession` 字段对齐，前端只读，写操作一律经 `codingService` |
 | `settingsStore` | 主题、快捷键、脱敏开关等本地偏好 | 持久化到 `tauri-plugin-store`（非敏感数据） |
 | `uiStore` | 面板宽度、侧边栏折叠等纯 UI 状态 | 不落库，随窗口生命周期 |
@@ -698,6 +702,6 @@ plugin     ──depends on (trait only)──▶  log::LogSearchEngine, ssh::Ss
 | Rust 单元测试 | `cargo test` | `CommandGuard::evaluate`、`KnownHosts` 比对逻辑、FTS5 查询构造、Diff 生成/应用 |
 | Rust 集成测试 | `cargo test --test integration` + 本地 sshd 容器 | SSH 连接池复用、SFTP 大文件分页 |
 | 前端单元测试 | Vitest + Testing Library | store reducer、组件纯逻辑（如 `isTextViewable`） |
-| 端到端 | `tauri-driver` + WebDriver | 关键路径：打开远程工作区（含指纹校验）→ 默认终端 Tab → Explorer 打开并编辑保存远程文件（含冲突场景）→ AI 编程助手 Apply/Reject |
+| 端到端 | `tauri-driver` + WebDriver | 关键路径：打开远程工作区（含指纹校验）→ 默认终端 Tab → Explorer 编辑保存远程文件 → 右侧 AI工具问答 → Build Apply/Reject |
 
 CI 建议从 Phase 1 起就跑 `cargo test` + `npm run test`（Lint + 单测），端到端在 Phase 3 落地 Coding Agent 后补齐。

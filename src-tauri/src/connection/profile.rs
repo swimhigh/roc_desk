@@ -16,8 +16,37 @@ pub struct ConnectionProfile {
     pub group_id: Option<Uuid>,
     pub tags: Vec<String>,
     pub jump_host_id: Option<Uuid>,
+    /// SSH 还是 RDP（远程工具模式会话树，DESIGN.md §3.9）——两者共用这一张表和同一套
+    /// 分组，只是可用的动作不同：SSH 能开终端/SFTP，RDP 只能开远程桌面。
+    pub protocol: Protocol,
+    /// 协议相关的少量额外字段，目前只有 RDP 用（domain/width/height/color_depth），
+    /// 犯不上为这几个字段单独开列，JSON 存。
+    pub options: Option<serde_json::Value>,
     pub last_connected_at: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Ssh,
+    Rdp,
+}
+
+impl Protocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Protocol::Ssh => "ssh",
+            Protocol::Rdp => "rdp",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "rdp" => Protocol::Rdp,
+            _ => Protocol::Ssh,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,4 +88,14 @@ pub struct ConnectionProfileInput {
     pub group_id: Option<Uuid>,
     pub tags: Vec<String>,
     pub jump_host_id: Option<Uuid>,
+    #[serde(default)]
+    pub protocol: Protocol,
+    #[serde(default)]
+    pub options: Option<serde_json::Value>,
+}
+
+impl Default for Protocol {
+    fn default() -> Self {
+        Protocol::Ssh
+    }
 }

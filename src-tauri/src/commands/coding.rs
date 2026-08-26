@@ -9,10 +9,12 @@ use crate::coding::{CodingMode, CodingSession, CodingTarget, FileChange};
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::workspace::WorkspaceKind;
+use crate::db::repo::coding_history_repo::{CodingHistoryDetail, CodingHistoryInput, CodingHistorySummary, WorkspaceHistorySnapshot};
 
 #[derive(Serialize)]
 pub struct CodingSessionInfo {
     pub id: Uuid,
+    pub provider_id: Uuid,
     pub mode: CodingMode,
     pub target: CodingTarget,
     pub auto_allow_readonly: bool,
@@ -24,6 +26,7 @@ pub struct CodingSessionInfo {
 async fn session_info(session: &CodingSession) -> CodingSessionInfo {
     CodingSessionInfo {
         id: session.id,
+        provider_id: session.provider_id,
         mode: session.mode,
         target: session.target.clone(),
         auto_allow_readonly: session.auto_allow_readonly,
@@ -33,6 +36,20 @@ async fn session_info(session: &CodingSession) -> CodingSessionInfo {
     }
 }
 
+#[tauri::command]
+pub async fn coding_set_provider(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    provider_id: Uuid,
+) -> Result<(), AppError> {
+    if state.ai_provider_manager.get(provider_id)?.is_none() {
+        return Err(AppError::NotFound(format!("ai provider not found: {provider_id}")));
+    }
+    let session = get_session(&state, workspace_id).await?;
+    session.lock().await.provider_id = provider_id;
+    Ok(())
+}
+
 /// 自动绑定当前工作区打开（或复用已有的）编程助手会话（DESIGN.md §3.8.1）。
 #[tauri::command]
 pub async fn coding_start(
@@ -40,8 +57,8 @@ pub async fn coding_start(
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
-    if let Some(existing) = state.coding_sessions.read().await.get(&workspace_id) {
-        return Ok(session_info(&*existing.lock().await).await);
+    if state.ai_provider_manager.get(provider_id)?.is_none() {
+        return Err(AppError::NotFound(format!("ai provider not found: {provider_id}")));
     }
 
     let workspaces = state.workspaces.read().await;
@@ -51,6 +68,26 @@ pub async fn coding_start(
     let profile = handle.profile.clone();
     let file_ops = handle.file_ops.clone();
     drop(workspaces);
+
+    if let Some(existing) = state.coding_sessions.read().await.get(&workspace_id).cloned() {
+        let guard = existing.lock().await;
+        let target_matches = match (&guard.target, profile.kind, profile.connection_id) {
+            (CodingTarget::Local, WorkspaceKind::Local, None) => true,
+            (CodingTarget::Remote { connection_id, .. }, WorkspaceKind::Remote, Some(expected)) => *connection_id == expected,
+            _ => false,
+        };
+        if target_matches && guard.workspace_root == profile.root_path {
+            if state.ai_provider_manager.get(guard.provider_id)?.is_some() {
+                return Ok(session_info(&guard).await);
+            }
+            drop(guard);
+            let mut guard = existing.lock().await;
+            guard.provider_id = provider_id;
+            return Ok(session_info(&guard).await);
+        }
+        drop(guard);
+        state.coding_sessions.write().await.remove(&workspace_id);
+    }
 
     let target = match profile.kind {
         WorkspaceKind::Local => CodingTarget::Local,
@@ -74,6 +111,16 @@ pub async fn coding_start(
         .await
         .insert(workspace_id, Arc::new(Mutex::new(session)));
     Ok(info)
+}
+
+#[tauri::command]
+pub async fn coding_new_session(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    provider_id: Uuid,
+) -> Result<CodingSessionInfo, AppError> {
+    state.coding_sessions.write().await.remove(&workspace_id);
+    coding_start(state, workspace_id, provider_id).await
 }
 
 #[tauri::command]
@@ -178,4 +225,74 @@ async fn get_session(state: &State<'_, AppState>, workspace_id: Uuid) -> Result<
         .get(&workspace_id)
         .cloned()
         .ok_or_else(|| AppError::NotFound(format!("no coding session for workspace {workspace_id}, call coding_start first")))
+}
+
+#[tauri::command]
+pub async fn coding_history_save(state: State<'_, AppState>, input: CodingHistoryInput) -> Result<(), AppError> {
+    state.coding_history.save(&input)?;
+    if let Some(detail) = state.coding_history.get(input.id)? {
+        let snapshot = WorkspaceHistorySnapshot { input: input.clone(), created_at: detail.summary.created_at, updated_at: detail.summary.updated_at };
+        if let Some(handle) = state.workspaces.read().await.get(&input.workspace_id).cloned() {
+            let dir = format!("{}/.rock_desk/sessions", handle.profile.root_path.trim_end_matches(['/', '\\']));
+            let path = format!("{dir}/{}.json", input.id);
+            let _ = handle.file_ops.create_dir(&format!("{}/.rock_desk", handle.profile.root_path.trim_end_matches(['/', '\\']))).await;
+            let _ = handle.file_ops.create_dir(&dir).await;
+            if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
+                if let Err(error) = handle.file_ops.write_file(&path, &json, None).await {
+                    tracing::warn!(%error, %path, "failed to mirror coding history into workspace cache");
+                    let fallback = handle.fallback_cache_dir.join("sessions");
+                    if std::fs::create_dir_all(&fallback).is_ok() {
+                        let _ = std::fs::write(fallback.join(format!("{}.json", input.id)), json);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn coding_history_list(state: State<'_, AppState>, workspace_id: Uuid) -> Result<Vec<CodingHistorySummary>, AppError> {
+    if let Some(handle) = state.workspaces.read().await.get(&workspace_id).cloned() {
+        let dir = format!("{}/.rock_desk/sessions", handle.profile.root_path.trim_end_matches(['/', '\\']));
+        if let Ok(entries) = handle.file_ops.list_dir(&dir).await {
+            for entry in entries.into_iter().filter(|entry| !entry.is_dir && entry.name.ends_with(".json")) {
+                if let Ok(file) = handle.file_ops.read_file(&entry.path).await {
+                    if let Ok(snapshot) = serde_json::from_str::<WorkspaceHistorySnapshot>(&file.text) {
+                        if snapshot.input.workspace_id == workspace_id {
+                            let _ = state.coding_history.import_snapshot(&snapshot);
+                        }
+                    }
+                }
+            }
+        }
+        let fallback = handle.fallback_cache_dir.join("sessions");
+        if let Ok(entries) = std::fs::read_dir(fallback) {
+            for entry in entries.flatten() {
+                if let Ok(bytes) = std::fs::read(entry.path()) {
+                    if let Ok(snapshot) = serde_json::from_slice::<WorkspaceHistorySnapshot>(&bytes) {
+                        if snapshot.input.workspace_id == workspace_id {
+                            let _ = state.coding_history.import_snapshot(&snapshot);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state.coding_history.list(workspace_id)
+}
+
+#[tauri::command]
+pub async fn coding_history_get(state: State<'_, AppState>, id: Uuid) -> Result<Option<CodingHistoryDetail>, AppError> {
+    state.coding_history.get(id)
+}
+
+#[tauri::command]
+pub async fn coding_history_rename(state: State<'_, AppState>, id: Uuid, title: String) -> Result<(), AppError> {
+    state.coding_history.rename(id, title.trim())
+}
+
+#[tauri::command]
+pub async fn coding_history_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
+    state.coding_history.delete(id)
 }

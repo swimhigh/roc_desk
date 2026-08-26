@@ -2,6 +2,8 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::ssh::monitor::{parse_probe_output, PROBE_SCRIPT};
+use crate::ssh::HostStats;
 use crate::state::AppState;
 
 /// 建连或复用连接池中的连接（DESIGN.md §3.2.2 多路复用）。返回值就是 `profile_id`
@@ -78,6 +80,23 @@ pub async fn ssh_close_channel(
         .await
         .ok_or_else(|| AppError::NotFound(format!("no active ssh session for {profile_id}")))?;
     session.close_channel(channel_id).await
+}
+
+/// 远程主机资源使用率探针，供远程工具模式的 SSH 会话状态栏定时轮询（前端每隔几秒
+/// 调一次，自己算相邻两次采样的差得到 CPU%/网速，见 `ssh/monitor.rs` 顶部注释）。
+#[tauri::command]
+pub async fn ssh_host_stats(state: State<'_, AppState>, profile_id: Uuid) -> Result<HostStats, AppError> {
+    let session = state
+        .ssh_pool
+        .get(profile_id)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("no active ssh session for {profile_id}")))?;
+    let output = session.exec(PROBE_SCRIPT).await?;
+    let sampled_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(parse_probe_output(&output, sampled_at_ms))
 }
 
 /// 响应 TOFU / 指纹变化弹窗（DESIGN.md §3.2.1）。

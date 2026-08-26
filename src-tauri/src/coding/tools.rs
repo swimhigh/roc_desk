@@ -52,6 +52,18 @@ pub fn tool_schema() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "web_search",
+                "description": "访问互联网搜索最新网页、新闻和公开资料。用户询问今天、最新、新闻、股价或需要外部事实时必须优先调用；结果包含标题、摘要和 URL，回答时引用 URL。",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "query": { "type": "string", "description": "互联网搜索关键词，尽量包含公司、主题和时间范围" } },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "write_file",
                 "description": "创建新文件或整体覆盖已有文件的内容；只在 Build 模式下可用，改动会生成 Diff 等待用户确认后才真正落盘",
                 "parameters": {
@@ -100,6 +112,7 @@ pub enum ToolCall {
     ReadFile { path: String },
     ListDirectory { path: String },
     SearchFiles { pattern: String, path: String },
+    WebSearch { query: String },
     WriteFile { path: String, content: String },
     EditFile { path: String, old_text: String, new_text: String },
     RunCommand { command: String },
@@ -111,6 +124,8 @@ struct ReadFileArgs { path: String }
 struct ListDirectoryArgs { path: String }
 #[derive(Deserialize)]
 struct SearchFilesArgs { pattern: String, path: String }
+#[derive(Deserialize)]
+struct WebSearchArgs { query: String }
 #[derive(Deserialize)]
 struct WriteFileArgs { path: String, content: String }
 #[derive(Deserialize)]
@@ -132,6 +147,10 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         "search_files" => {
             let a: SearchFilesArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
             Ok(ToolCall::SearchFiles { pattern: a.pattern, path: a.path })
+        }
+        "web_search" => {
+            let a: WebSearchArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::WebSearch { query: a.query })
         }
         "write_file" => {
             let a: WriteFileArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;

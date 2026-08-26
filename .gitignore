@@ -16,6 +16,8 @@ dist-ssr
 # 但 cargo check/test 默认还是写 src-tauri/target/，两处都要排除）
 /build
 /src-tauri/target
+# 本地便携版输出（由 scripts/build-portable.ps1 生成）
+/bin
 
 # Claude Code 个人本地设置（不随项目共享）
 .claude/settings.local.json
