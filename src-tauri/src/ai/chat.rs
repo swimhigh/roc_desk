@@ -184,6 +184,44 @@ impl AiChatClient {
     async fn search_web(&self, query: &str) -> Result<String, AppError> {
         search_web_results(&self.client, query).await
     }
+
+    /// 一次性非流式请求：不追加进任何会话历史，只要一个改写/总结结果就返回——
+    /// "优化输入"（把用户草稿改写成更清晰的提示词）用的就是这条路径，复用
+    /// Provider/API Key 解析，但刻意不接触 `CodingSession.messages`，避免污染
+    /// 正式对话上下文。
+    pub async fn complete_once(
+        &self,
+        provider: &AiProvider,
+        api_key: Option<&str>,
+        system_prompt: &str,
+        user_text: &str,
+    ) -> Result<String, AppError> {
+        let url = format!("{}/chat/completions", provider.api_base.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": provider.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_text },
+            ],
+            "stream": false,
+        });
+        let mut req = self.client.post(&url).json(&body);
+        if let Some(key) = api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Connection(format!("HTTP {status}: {body}")));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        let text = body["choices"][0]["message"]["content"].as_str().unwrap_or_default().trim().to_string();
+        if text.is_empty() {
+            return Err(AppError::Internal("模型没有返回改写结果".into()));
+        }
+        Ok(text)
+    }
 }
 
 /// 供统一 AI工具的 function-calling 使用的互联网搜索入口。这里与旧版问答面板

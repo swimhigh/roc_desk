@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Process -Name roc_desk -ErrorAction SilentlyContinue)",
+      "Bash(xxd scripts/build-portable.ps1)",
+      "PowerShell(cd F:\\\\code\\\\wuyou\\\\roc_desk; powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build-portable.ps1 2>&1 | Select-Object -Last 60)",
+      "PowerShell(cd F:\\\\code\\\\wuyou\\\\roc_desk; powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build-portable.ps1 2>&1 | Select-Object -Last 30)",
+      "PowerShell(cd F:\\\\code\\\\wuyou\\\\roc_desk; powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build-portable.ps1 2>&1 | Select-Object -Last 20)",
+      "PowerShell(Get-Process roc_desk -ErrorAction SilentlyContinue)",
+      "PowerShell(Copy-Item -LiteralPath \"F:\\\\code\\\\wuyou\\\\roc_desk\\\\build\\\\release\\\\roc_desk.exe\" -Destination \"F:\\\\code\\\\wuyou\\\\roc_desk\\\\bin\\\\roc_desk.exe\" -Force)",
+      "Bash(grep -n -i \"vendor\\\\|bin/\\\\|^bin$\" .gitignore)",
+      "Bash(git add *)",
+      "Bash(git restore *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git tag *)",
+      "Bash(gh run *)",
+      "PowerShell(gh run list --repo swimhigh/roc_desk --limit 5 2>&1)"
+    ]
+  }
+}

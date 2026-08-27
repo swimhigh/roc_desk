@@ -1025,6 +1025,21 @@
 .agent-composer-input:disabled { cursor: not-allowed; opacity: .62; }
 .agent-progress-note { display: flex; align-items: flex-start; gap: 7px; max-width: 760px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 4px 8px 8px 4px; background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
 
+/* === 编程助手：输入优化 / 附件（DESIGN.md §3.8 附件与提示词优化）=== */
+.agent-composer-icon-btn { width: 26px; height: 26px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--text-secondary); background: transparent; }
+.agent-composer-icon-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.agent-composer-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.agent-composer-icon-btn svg { width: 15px; height: 15px; }
+.agent-icon-spin { animation: agent-icon-spin 900ms linear infinite; }
+@keyframes agent-icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.agent-pending-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
+.agent-pending-attachment { position: relative; display: inline-flex; }
+.agent-pending-attachment-remove { position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--bg-surface-raised); border: 1px solid var(--border-default); color: var(--text-secondary); }
+.agent-pending-attachment-remove:hover { color: var(--danger); border-color: var(--danger); }
+.agent-attachment-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.agent-attachment-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-default); }
+.agent-attachment-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border-default); background: var(--bg-hover); color: var(--text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* === 远程工具首页（DESIGN.md §3.9）：会话树 / 会话标签 === */
 .session-tree-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 4px var(--space-2); flex-shrink: 0; }
 .session-tree-toolbar span { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }

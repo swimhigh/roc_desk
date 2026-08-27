@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CodingHistoryDetail, CodingHistorySummary, CodingMode, CodingSessionInfo } from "../types/bindings";
+import type { ChatAttachment, CodingHistoryDetail, CodingHistorySummary, CodingMode, CodingSessionInfo } from "../types/bindings";
 
 /** IPC 边界（CODE_DESIGN.md §一分层原则）：AI 编程助手会话（DESIGN.md §3.8）。*/
 export const codingService = {
@@ -8,6 +8,10 @@ export const codingService = {
   },
   newSession(workspaceId: string, providerId: string): Promise<CodingSessionInfo> {
     return invoke("coding_new_session", { workspaceId, providerId });
+  },
+  /** 释放一个工作区的常驻会话（有界保活的 LRU 淘汰时调用，见 codingStore.switchWorkspace）。*/
+  closeSession(workspaceId: string): Promise<void> {
+    return invoke("coding_close", { workspaceId });
   },
   setMode(workspaceId: string, mode: CodingMode): Promise<void> {
     return invoke("coding_set_mode", { workspaceId, mode });
@@ -21,8 +25,12 @@ export const codingService = {
   setAutoGitCommit(workspaceId: string, enabled: boolean): Promise<void> {
     return invoke("coding_set_auto_git_commit", { workspaceId, enabled });
   },
-  sendMessage(workspaceId: string, text: string): Promise<string> {
-    return invoke("coding_send_message", { workspaceId, text });
+  sendMessage(workspaceId: string, text: string, attachments?: ChatAttachment[]): Promise<string> {
+    return invoke("coding_send_message", { workspaceId, text, attachments: attachments?.length ? attachments : null });
+  },
+  /** "优化输入"：用当前会话绑定的 Provider 把草稿改写一遍，不进入对话历史。 */
+  optimizePrompt(workspaceId: string, text: string): Promise<string> {
+    return invoke("coding_optimize_prompt", { workspaceId, text });
   },
   acceptChange(workspaceId: string, changeId: string): Promise<void> {
     return invoke("coding_accept_change", { workspaceId, changeId });

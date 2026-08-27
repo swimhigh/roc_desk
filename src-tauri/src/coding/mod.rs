@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
-pub use session::{ChangeStatus, CodingMode, CodingSession, CodingTarget, FileChange};
+pub use session::{ChangeStatus, ChatAttachment, CodingMode, CodingSession, CodingTarget, FileChange};
 
 /// 等待前端响应的 `run_command` 确认请求（DESIGN.md §3.8.2.1），和
 /// `ssh::known_hosts::TrustPromptRegistry` 是同一套 oneshot 模式，分开建一个类型

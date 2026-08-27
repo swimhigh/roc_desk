@@ -45,6 +45,18 @@ pub enum ChangeStatus {
     Undone,
 }
 
+/// 用户随消息一起发的附件（DESIGN.md §3.8 输入优化/附件需求）：图片走 OpenAI
+/// 兼容的 `image_url` 多模态 content parts，模型需要支持 vision 才能"看到"；
+/// 文本类文件直接把内容拼进消息正文，不需要模型支持多模态就能读。前端负责把
+/// 本地文件读成 base64/文本再传过来——后端不碰用户的本地文件系统，天然对齐
+/// "远程工作区也能用附件"（附件来自用户本机，不是工作区所在的主机）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatAttachment {
+    Image { name: String, mime: String, data_base64: String },
+    File { name: String, content: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
     pub id: Uuid,
@@ -209,6 +221,7 @@ impl CodingSession {
     pub async fn send_message(
         &mut self,
         user_text: &str,
+        attachments: &[ChatAttachment],
         providers: &AiProviderManager,
         ssh_pool: &SshConnectionPool,
         audit: &AuditLogRepo,
@@ -218,7 +231,7 @@ impl CodingSession {
         mcp_manager: &McpServerManager,
         app_handle: &AppHandle,
     ) -> Result<String, AppError> {
-        self.messages.push(json!({ "role": "user", "content": user_text }));
+        self.messages.push(json!({ "role": "user", "content": user_message_content(user_text, attachments) }));
         // 规则改动（比如刚点了"允许并记住"）只需要下一条消息生效，不需要额外的
         // 缓存失效通知——这里每条用户消息都重新从数据库现取一份规则快照。
         let permission_engine = PermissionEngine::load(permission_rules)?;
@@ -819,6 +832,34 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
             )
         }
     }
+}
+
+/// 把用户输入和附件拼成一条 user 消息的 `content`：没有附件时保持纯字符串
+/// （和改动前完全一致，不打扰不用附件的既有场景/历史数据格式）；有附件时才
+/// 切成 OpenAI 兼容的多模态 parts 数组——文本类附件直接拼进文字正文（模型不需要
+/// 支持 vision 也能读），图片作为独立的 `image_url` part（需要模型支持 vision
+/// 才"看得到"，不支持的模型会按各家实现忽略或报错，这里不做能力探测，交给用户
+/// 自己判断当前 Provider 是否支持）。
+fn user_message_content(user_text: &str, attachments: &[ChatAttachment]) -> serde_json::Value {
+    if attachments.is_empty() {
+        return json!(user_text);
+    }
+    let mut text = user_text.to_string();
+    for attachment in attachments {
+        if let ChatAttachment::File { name, content } = attachment {
+            text.push_str(&format!("\n\n--- 附件文件: {name} ---\n{content}"));
+        }
+    }
+    let mut parts = vec![json!({ "type": "text", "text": text })];
+    for attachment in attachments {
+        if let ChatAttachment::Image { mime, data_base64, .. } = attachment {
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime};base64,{data_base64}") }
+            }));
+        }
+    }
+    serde_json::Value::Array(parts)
 }
 
 /// OpenAI function-calling 的工具名要求匹配 `^[a-zA-Z0-9_-]+$`，MCP 服务器/工具名

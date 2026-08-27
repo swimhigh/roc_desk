@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle } from "lucide-react";
+import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X } from "lucide-react";
 import { useCodingStore } from "../../stores/codingStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { SegmentedControl } from "../shared/SegmentedControl";
@@ -78,6 +78,11 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     setAutoAllowReadonly,
     setAutoGitCommit,
     sendMessage,
+    attachments,
+    addAttachments,
+    removeAttachment,
+    optimizing,
+    optimizePrompt,
     acceptChange,
     rejectChange,
     undoChange,
@@ -102,6 +107,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showPermissionRules, setShowPermissionRules] = useState(false);
   const [showMcpServers, setShowMcpServers] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const restoredWorkspaceRef = useRef<string | null>(null);
 
@@ -150,9 +156,21 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   };
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    if (!input.trim() && attachments.length === 0) return;
     sendMessage(input);
     setInput("");
+  };
+
+  const handleOptimize = async () => {
+    if (!input.trim() || optimizing) return;
+    const optimized = await optimizePrompt(input);
+    setInput(optimized);
+  };
+
+  const handleFilesSelected = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    addAttachments(Array.from(files));
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   if (!sessionInfo) {
@@ -304,7 +322,26 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
                     {entry.kind === "user" ? <User style={{ width: 13, height: 13 }} /> : <Bot style={{ width: 13, height: 13 }} />}
                   </div>
                   <div className={`agent-message ${entry.kind}`}>
-                    {entry.kind === "assistant" ? <AgentMarkdown content={entry.text} onOpenFile={onOpenFile} /> : <div className="agent-user-text">{entry.text}</div>}
+                    {entry.kind === "assistant" ? (
+                      <AgentMarkdown content={entry.text} onOpenFile={onOpenFile} />
+                    ) : (
+                      <>
+                        {entry.text && <div className="agent-user-text">{entry.text}</div>}
+                        {entry.attachments && entry.attachments.length > 0 && (
+                          <div className="agent-attachment-list">
+                            {entry.attachments.map((att, idx) =>
+                              att.kind === "image" && att.previewUrl ? (
+                                <img key={idx} src={att.previewUrl} alt={att.name} className="agent-attachment-thumb" title={att.name} />
+                              ) : (
+                                <span key={idx} className="agent-attachment-chip" title={att.name}>
+                                  <Paperclip style={{ width: 11, height: 11 }} /> {att.name}
+                                </span>
+                              )
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -367,6 +404,24 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
       {error && <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}
 
       <div className="agent-composer">
+        {attachments.length > 0 && (
+          <div className="agent-pending-attachments">
+            {attachments.map((att) => (
+              <div key={att.id} className="agent-pending-attachment">
+                {att.kind === "image" && att.previewUrl ? (
+                  <img src={att.previewUrl} alt={att.name} className="agent-attachment-thumb" title={att.name} />
+                ) : (
+                  <span className="agent-attachment-chip" title={att.name}>
+                    <Paperclip style={{ width: 11, height: 11 }} /> {att.name}
+                  </span>
+                )}
+                <button className="agent-pending-attachment-remove" onClick={() => removeAttachment(att.id)} title="移除附件">
+                  <X style={{ width: 10, height: 10 }} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           className="agent-composer-input"
           rows={3}
@@ -389,7 +444,36 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             <span>· {sessionInfo.mode === "plan" ? "Plan" : "Build"}</span>
           </div>
           <span className="agent-input-hint">Enter 发送 · Shift+Enter 换行</span>
-          <button className="agent-send-btn" onClick={handleSend} disabled={sending || Boolean(viewingHistoryId) || !input.trim()} title="发送">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.css,.html,.yaml,.yml,.toml,.csv,.log,.sh"
+            style={{ display: "none" }}
+            onChange={(e) => handleFilesSelected(e.target.files)}
+          />
+          <button
+            className="agent-composer-icon-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={Boolean(viewingHistoryId)}
+            title="添加图片/文件附件"
+          >
+            <Paperclip />
+          </button>
+          <button
+            className="agent-composer-icon-btn"
+            onClick={handleOptimize}
+            disabled={optimizing || sending || Boolean(viewingHistoryId) || !input.trim()}
+            title="优化输入：用当前模型把草稿改写成更清晰的提示词"
+          >
+            <Wand2 className={optimizing ? "agent-icon-spin" : undefined} />
+          </button>
+          <button
+            className="agent-send-btn"
+            onClick={handleSend}
+            disabled={sending || Boolean(viewingHistoryId) || (!input.trim() && attachments.length === 0)}
+            title="发送"
+          >
             <Send />
           </button>
         </div>

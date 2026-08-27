@@ -59,7 +59,6 @@ function App() {
   const terminalTabs = useTerminalStore((s) => s.tabs);
   const openTerminal = useTerminalStore((s) => s.openTerminal);
   const togglePanel = useTerminalStore((s) => s.togglePanel);
-  const resetTerminals = useTerminalStore((s) => s.reset);
   const [aiToolsOpen, setAiToolsOpen] = useState(false);
   const [aiToolsWidth, setAiToolsWidth] = useState(() => {
     const stored = Number(localStorage.getItem("roc_desk-ai-tools-width"));
@@ -96,18 +95,25 @@ function App() {
   }, []);
 
   useEffect(() => {
-    resetTerminals();
     // 切换工作区（含"返回工作区选择页再打开另一个"）时，上一个工作区打开的编辑器
     // 标签必须一起清掉——editorStore 是全局 Zustand store，不会因为 App 组件内部
     // 切换 WorkspacePicker/主界面这两棵 JSX 子树而自动重置（App 组件实例本身没
     // 卸载，只是子树切换），之前只重置了终端，编辑器标签被遗漏（真实 bug，
-    // 2026-08-18 用户报告"打开新的工作区时，老工作区的编辑TAB未关闭"）。
+    // 2026-08-18 用户报告"打开新的工作区时，老工作区的编辑TAB未关闭"）。编辑器
+    // 标签的会话保留不在本次改造范围内（用户明确只要求终端和 AI 工具保活）。
     useEditorStore.getState().reset();
     if (!current) return;
-    // VS Code 风格：进入工作区后自动创建并显示一个可用终端。
+    // 终端改为有界保活（terminalStore.switchWorkspace，2026-08-27 需求：切工作区
+    // 时终端会话不应该被销毁）——最近用过的几个工作区各自的 Tab/Channel 原样
+    // 保留，只有真正被 LRU 淘汰的工作区才会关闭其 PTY/SSH Channel；只有"这个
+    // 工作区第一次打开、或者已经被淘汰过"时 `tabs` 才会是空的，此时才需要按
+    // VS Code 的习惯自动起一个默认终端。
     let terminalCancelled = false;
     void (async () => {
       try {
+        await useTerminalStore.getState().switchWorkspace(current.id);
+        if (terminalCancelled) return;
+        if (useTerminalStore.getState().tabs.length > 0) return;
         if (current.kind === "remote" && current.connection_id) {
           await sshService.connect(current.connection_id);
           if (!terminalCancelled) await openTerminal({ kind: "ssh", profileId: current.connection_id, cwd: current.root_path });
@@ -448,11 +454,21 @@ function App() {
           </div>
           {/* 终端停靠在编辑器/SFTP/日志搜索下方，和 VS Code 的底部面板一致——不是和编辑器
               互斥切换的"视图"，是常驻的独立面板，可同时看到代码和终端输出
-              （DESIGN.md §3.1.2 的多路复用体现在 UI 上）。 */}
-          {isRemote && current.connection_id ? (
-            <TerminalPanel target={{ kind: "ssh", profileId: current.connection_id, cwd: current.root_path }} />
-          ) : !isRemote ? (
-            <TerminalPanel target={{ kind: "local", cwd: current.root_path }} />
+              （DESIGN.md §3.1.2 的多路复用体现在 UI 上）。
+              必须是同一个 `<TerminalPanel>` 元素、只是 `target` 这个 prop 随
+              本地/远程变化——之前是按 `isRemote` 二选一渲染两个不同位置的
+              `<TerminalPanel>`，本地/远程工作区之间切换时 React 会把整个组件
+              连同它内部保活的所有工作区的终端一起卸载重建，是"终端会话保持"
+              功能实际复现的另一半 bug（`terminalStore.ts` 的 `allTabs` 有界保活
+              机制本身没问题，但组件树都被换掉了，state 再对也没用）。 */}
+          {(isRemote && current.connection_id) || !isRemote ? (
+            <TerminalPanel
+              target={
+                isRemote && current.connection_id
+                  ? { kind: "ssh", profileId: current.connection_id, cwd: current.root_path }
+                  : { kind: "local", cwd: current.root_path }
+              }
+            />
           ) : null}
           </div>
           {aiToolsOpen && (

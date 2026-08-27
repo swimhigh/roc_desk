@@ -136,6 +136,17 @@ pub async fn coding_new_session(
     coding_start(state, workspace_id, provider_id).await
 }
 
+/// 释放一个工作区的常驻编程助手会话（前端有界保活策略的 LRU 淘汰、或工作区
+/// 彻底关闭时调用）。会话内存直接丢弃——对话内容早已在每次
+/// `sendMessage`/`acceptChange` 等操作后通过 `saveCurrentHistory` 落库，
+/// 不需要在这里补一次"关闭前保存"。找不到对应会话（从未打开过，或已经被
+/// 释放过）不算错误，幂等处理。
+#[tauri::command]
+pub async fn coding_close(state: State<'_, AppState>, workspace_id: Uuid) -> Result<(), AppError> {
+    state.coding_sessions.write().await.remove(&workspace_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn coding_set_mode(state: State<'_, AppState>, workspace_id: Uuid, mode: CodingMode) -> Result<(), AppError> {
     let session = get_session(&state, workspace_id).await?;
@@ -175,12 +186,14 @@ pub async fn coding_send_message(
     app_handle: AppHandle,
     workspace_id: Uuid,
     text: String,
+    attachments: Option<Vec<crate::coding::ChatAttachment>>,
 ) -> Result<String, AppError> {
     let session = get_session(&state, workspace_id).await?;
     let mut session = session.lock().await;
     session
         .send_message(
             &text,
+            &attachments.unwrap_or_default(),
             &state.ai_provider_manager,
             &state.ssh_pool,
             &state.audit_log,
@@ -190,6 +203,29 @@ pub async fn coding_send_message(
             &state.mcp_manager,
             &app_handle,
         )
+        .await
+}
+
+/// "输入优化"按钮（DESIGN.md §3.8 附件/优化输入需求）：用当前会话绑定的
+/// Provider 把用户还没发出去的草稿改写一遍，只返回改写结果，不进入对话历史
+/// （复用 `AiChatClient::complete_once`，见其文档）。
+const OPTIMIZE_PROMPT_SYSTEM: &str =
+    "你是一个提示词优化助手，任务是把用户写给 AI 编程助手的草稿指令改写得更清晰、具体、可执行。\
+     要求：1) 保留用户的原始意图，不要编造用户没提到的具体文件名/路径/技术选型等事实性细节；\
+     2) 把模糊的描述具体化，必要时补充\"预期效果\"\"验收标准\"这类结构，让编程助手能一次理解到位；\
+     3) 只输出改写后的指令本身，不要输出任何解释、前后缀说明或引号。";
+
+#[tauri::command]
+pub async fn coding_optimize_prompt(state: State<'_, AppState>, workspace_id: Uuid, text: String) -> Result<String, AppError> {
+    let session = get_session(&state, workspace_id).await?;
+    let provider_id = session.lock().await.provider_id;
+    let provider = state
+        .ai_provider_manager
+        .get(provider_id)?
+        .ok_or_else(|| AppError::NotFound(format!("ai provider not found: {provider_id}")))?;
+    let api_key = state.ai_provider_manager.resolve_api_key(&provider).await?;
+    crate::ai::chat::AiChatClient::new()
+        .complete_once(&provider, api_key.as_deref(), OPTIMIZE_PROMPT_SYSTEM, &text)
         .await
 }
 
