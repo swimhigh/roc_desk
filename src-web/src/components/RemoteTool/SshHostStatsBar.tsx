@@ -103,12 +103,19 @@ export const SshHostStatsBar: React.FC<SshHostStatsBarProps> = ({ profileId, act
   const memUsedKb = stats.mem_total_kb - stats.mem_available_kb;
   const memPercent = stats.mem_total_kb > 0 ? (memUsedKb / stats.mem_total_kb) * 100 : 0;
 
+  // 利用率三档着色（用户 2026-08-27 需求："利用率小的展示成绿色，高的为红色或橙色"）：
+  // 低于 warn 阈值——用得少，绿色，一眼看出"这项没问题"；warn~danger 之间——
+  // 橙色提醒；danger 及以上——红色警示。之前只有 warn/danger 两档有颜色，正常值
+  // 沿用文字默认色，看不出"低利用率=健康"这层含义，这次补上第三档。
+  const levelClass = (percent: number, warnAt: number, dangerAt: number) =>
+    percent >= dangerAt ? "danger" : percent >= warnAt ? "warn" : "ok";
+
   return (
     <div className="host-stats-bar">
-      <div className={`host-stats-item ${rates && rates.cpuPercent >= 90 ? "danger" : rates && rates.cpuPercent >= 70 ? "warn" : ""}`}>
+      <div className={`host-stats-item ${rates ? levelClass(rates.cpuPercent, 70, 90) : ""}`}>
         <Cpu /> CPU <strong>{rates ? `${rates.cpuPercent.toFixed(0)}%` : "—"}</strong>
       </div>
-      <div className={`host-stats-item ${memPercent >= 90 ? "danger" : memPercent >= 75 ? "warn" : ""}`}>
+      <div className={`host-stats-item ${levelClass(memPercent, 75, 90)}`}>
         <MemoryStick /> 内存 <strong>{formatKb(memUsedKb)} / {formatKb(stats.mem_total_kb)}</strong>
       </div>
       <div className="host-stats-item">
@@ -124,7 +131,7 @@ export const SshHostStatsBar: React.FC<SshHostStatsBarProps> = ({ profileId, act
         <div className="host-stats-disks">
           <HardDrive style={{ width: 12, height: 12, flexShrink: 0 }} />
           {stats.disks.map((d) => (
-            <span key={d.mount} className={`host-stats-disk ${d.used_percent >= 90 ? "danger" : d.used_percent >= 75 ? "warn" : ""}`}>
+            <span key={d.mount} className={`host-stats-disk ${levelClass(d.used_percent, 75, 90)}`}>
               <span className="mount">{d.mount}</span>
               <strong>{d.used_percent}%</strong>
             </span>

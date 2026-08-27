@@ -19,6 +19,10 @@ export const workspaceService = {
     return invoke("workspace_remove_recent", { id });
   },
 
+  updatePath(id: string, newPath: string): Promise<WorkspaceProfile> {
+    return invoke("workspace_update_path", { id, newPath });
+  },
+
   close(id: string): Promise<void> {
     return invoke("workspace_close", { id });
   },

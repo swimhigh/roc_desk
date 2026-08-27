@@ -77,6 +77,19 @@ impl WorkspaceRepo {
         Ok(result)
     }
 
+    pub fn find_by_id(&self, id: Uuid) -> Result<Option<WorkspaceProfile>, AppError> {
+        let conn = self.pool.get()?;
+        let result = conn
+            .query_row(
+                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+                 FROM workspaces WHERE id = ?1",
+                params![id.to_string()],
+                Self::map_row,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
     pub fn list_recent(&self, limit: usize) -> Result<Vec<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(

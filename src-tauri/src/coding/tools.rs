@@ -56,7 +56,7 @@ pub fn tool_schema() -> serde_json::Value {
                 "description": "访问互联网搜索最新网页、新闻和公开资料。用户询问今天、最新、新闻、股价或需要外部事实时必须优先调用；结果包含标题、摘要和 URL，回答时引用 URL。",
                 "parameters": {
                     "type": "object",
-                    "properties": { "query": { "type": "string", "description": "互联网搜索关键词，尽量包含公司、主题和时间范围" } },
+                    "properties": { "query": { "type": "string", "description": "互联网搜索关键词，用空格分隔，尽量包含公司、主题和时间范围；不要直接照抄用户的整句提问（如“你能搜索一下…吗”），否则搜索引擎会按虚词分词导致结果不相关" } },
                     "required": ["query"]
                 }
             }

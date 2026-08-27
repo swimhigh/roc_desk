@@ -1,7 +1,7 @@
 {
   "name": "roc_desk",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "roc_desk — 根目录构建入口，实际前端在 src-web/，后端在 src-tauri/",
   "scripts": {
     "dev": "npm run dev --prefix src-web",

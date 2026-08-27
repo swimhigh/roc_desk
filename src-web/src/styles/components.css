@@ -992,7 +992,10 @@
 .agent-thinking[open] .agent-thinking-chevron { transform: rotate(90deg); }
 .agent-thinking-body { margin: 6px 0 2px 6px; padding: 6px 10px; border-left: 2px solid var(--border-subtle); }
 .agent-thinking-body .agent-markdown { color: var(--text-secondary); }
-.agent-composer { margin: 8px; flex-shrink: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface); box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
+/* flex-shrink:0 —— 输入框上面现在是独立的滚动区（见 CodingAgentPanel.tsx 顶部工具栏
+   注释），composer 不再需要跟它抢空间；固定按自身内容大小渲染，永远完整可见，不会被
+   挤扁或被 .ai-tools-dock 的 overflow:hidden 切掉底部的发送按钮。 */
+.agent-composer { margin: 8px; flex-shrink: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface); box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
 .agent-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
 /* 面板纵向空间紧张时，先压缩/滚动输入框，footer（含发送按钮）用 flex-shrink:0 常驻可见——
    之前输入框和 footer 是普通块级堆叠，空间不够时 footer 会被 .ai-tools-dock 的 overflow:hidden 整段裁掉。 */
@@ -1003,8 +1006,13 @@
 .agent-model-meta svg { width: 12px; height: 12px; color: var(--accent); flex-shrink: 0; }
 .agent-model-meta strong { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 500; }
 .agent-model-meta span { white-space: nowrap; }
-.agent-input-hint { margin-left: auto; color: var(--text-disabled); font-size: 11px; white-space: nowrap; }
-.agent-send-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; background: var(--accent); color: #fff; }
+/* min-width:0 + ellipsis —— AI 工具面板拖窄时，这行（型号名 + 提示文字 + 3 个按钮）
+   原来 hint 是 white-space:nowrap 又没给收缩空间，撑爆一整行还缩不了，结果是最右边
+   的发送按钮被 .agent-composer 的 overflow:hidden 直接切没、点不到（用户反馈"右下角
+   出了屏幕"——上一版只修了纵向被挤出去的那种情况，这次是横向）。改成能截断成省略号
+   而不是硬撑；发送/回形针/优化按钮显式 flex-shrink:0，保证它们永远不会被挤没。 */
+.agent-input-hint { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-disabled); font-size: 11px; white-space: nowrap; }
+.agent-send-btn { width: 28px; height: 28px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; background: var(--accent); color: #fff; }
 .agent-send-btn:hover:not(:disabled) { opacity: 0.9; }
 .agent-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .agent-send-btn svg { width: 15px; height: 15px; }
@@ -1090,12 +1098,17 @@
 .host-stats-item { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .host-stats-item svg { width: 12px; height: 12px; flex-shrink: 0; }
 .host-stats-item strong { color: var(--text-primary); font-weight: 500; }
+/* 利用率三档着色：低=绿（健康）、中=橙（警惕）、高=红（告警）——比"只有高利用率
+   才有颜色、正常时和网速/运行时长这类非百分比指标一样是默认文字色"更容易一眼
+   判断状态，不用逐个数字去读。 */
+.host-stats-item.ok strong { color: var(--success); }
 .host-stats-item.warn strong { color: var(--warning); }
 .host-stats-item.danger strong { color: var(--danger); }
 .host-stats-disks { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .host-stats-disk { display: flex; align-items: center; gap: 3px; }
 .host-stats-disk .mount { color: var(--text-disabled); }
 .host-stats-disk strong { color: var(--text-primary); font-weight: 500; }
+.host-stats-disk.ok strong { color: var(--success); }
 .host-stats-disk.warn strong { color: var(--warning); }
 .host-stats-disk.danger strong { color: var(--danger); }
 

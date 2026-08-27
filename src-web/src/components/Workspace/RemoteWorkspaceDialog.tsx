@@ -14,28 +14,40 @@ type Step = "pick" | "new" | "browse";
 
 interface RemoteWorkspaceDialogProps {
   onClose: () => void;
+  /** 传入时表示"编辑已存在的工作区目录"，而不是新建工作区：跳过连接选择步骤，
+   * 直接用这条已保存记录的连接打开目录浏览器，确认时改路径而不是新开一个工作区
+   * （用户反馈：远程工作区目录配错了之前也只能删除重加）。连接本身不允许在编辑
+   * 模式里更换——跨主机已经不是"改目录"的语义了，要换连接应该走"移除 + 重新添加"。 */
+  editWorkspace?: { id: string; connectionId: string; initialPath: string };
 }
 
 /**
  * "连接远程主机并选择目录"入口的三步流程（DESIGN.md §3.1.1）：
  * 选/建连接档案 → 轻量远程目录浏览器（只做单选目录，不含上传下载） → 确认打开工作区。
  */
-export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ onClose }) => {
-  const [step, setStep] = useState<Step>("pick");
+export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ onClose, editWorkspace }) => {
+  const [step, setStep] = useState<Step>(editWorkspace ? "browse" : "pick");
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [groups, setGroups] = useState<ConnectionGroup[]>([]);
-  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
-  const [cwd, setCwd] = useState("/");
+  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(editWorkspace?.connectionId ?? null);
+  const [cwd, setCwd] = useState(editWorkspace?.initialPath ?? "/");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [browsing, setBrowsing] = useState(false);
   const [passwordPromptFor, setPasswordPromptFor] = useState<ConnectionProfile | null>(null);
   const [savingPassword, setSavingPassword] = useState(false);
   const push = useToastStore((s) => s.push);
   const openRemoteWorkspace = useWorkspaceStore((s) => s.openRemoteWorkspace);
+  const updatePath = useWorkspaceStore((s) => s.updatePath);
 
   useEffect(() => {
     connectionService.list().then(setProfiles).catch((e) => push("error", formatError(e)));
     connectionGroupService.list().then(setGroups).catch((e) => push("error", formatError(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!editWorkspace) return;
+    startBrowsing(editWorkspace.connectionId, editWorkspace.initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -127,10 +139,15 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
   const handleConfirm = async () => {
     if (!activeConnectionId) return;
     try {
-      await openRemoteWorkspace(activeConnectionId, cwd);
+      if (editWorkspace) {
+        await updatePath(editWorkspace.id, cwd);
+        push("success", "工作区目录已更新");
+      } else {
+        await openRemoteWorkspace(activeConnectionId, cwd);
+      }
       onClose();
     } catch (e) {
-      push("error", `打开工作区失败：${formatError(e)}`);
+      push("error", `${editWorkspace ? "更新工作区目录" : "打开工作区"}失败：${formatError(e)}`);
     }
   };
 
@@ -139,7 +156,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
       <div className="dialog" style={{ minWidth: 480, maxWidth: 560 }}>
         <div className="dialog-title-bar info">
           <span>🖥</span>
-          <span>连接远程主机并选择目录</span>
+          <span>{editWorkspace ? "修改工作区目录" : "连接远程主机并选择目录"}</span>
         </div>
         <div className="dialog-body">
           {step === "pick" && (
@@ -211,7 +228,9 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         <div className="dialog-actions">
           <button className="btn ghost sm" onClick={onClose}>取消</button>
           {step === "browse" && (
-            <button className="btn primary sm" onClick={handleConfirm}>选定此目录作为工作区</button>
+            <button className="btn primary sm" onClick={handleConfirm}>
+              {editWorkspace ? "保存新目录" : "选定此目录作为工作区"}
+            </button>
           )}
         </div>
       </div>

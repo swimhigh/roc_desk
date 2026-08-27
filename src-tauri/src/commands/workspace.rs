@@ -45,6 +45,16 @@ pub async fn workspace_remove_recent(state: State<'_, AppState>, id: Uuid) -> Re
     state.workspace_manager.remove_from_recent(id)
 }
 
+/// 修改"最近工作区"里一条记录的目录（用户反馈：目录配错了之前只能删除重加）。
+#[tauri::command]
+pub async fn workspace_update_path(
+    state: State<'_, AppState>,
+    id: Uuid,
+    new_path: String,
+) -> Result<WorkspaceProfile, AppError> {
+    state.workspace_manager.update_path(id, &new_path).await
+}
+
 #[tauri::command]
 pub async fn workspace_close(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     state.workspaces.write().await.remove(&id);

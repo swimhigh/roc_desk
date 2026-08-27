@@ -110,7 +110,10 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%", padding: 8, background: "#20221F" }} />
+      {/* 背景色必须和 terminalTheme.ts 里 Dracula 主题的 background 完全一致——
+          这层 padding 容器是 xterm 画布外的留白，颜色对不上会在边缘露出一圈
+          不一样的深色。 */}
+      <div ref={containerRef} style={{ width: "100%", height: "100%", padding: 8, background: "#282A36" }} />
       {tab.disconnected && (
         <div className="terminal-disconnected-overlay">
           <button

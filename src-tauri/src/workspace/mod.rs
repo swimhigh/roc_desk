@@ -162,6 +162,78 @@ impl WorkspaceManager {
         Ok(WorkspaceHandle { profile, file_ops, metadata, fallback_cache_dir })
     }
 
+    /// 修改一条已保存工作区的目录（用户反馈："工作区目录配错了后无法修改，只能删除"）。
+    /// 只改 `root_path`（远程顺带用新路径重算 `display_name` 的目录名部分），不改
+    /// `kind`/`connection_id`——跨类型或者要换一台远程主机，语义已经不是"修目录"了，
+    /// 应该走"移除 + 重新添加"。这里编辑的是"最近工作区"列表里尚未打开的记录，不碰
+    /// `state.workspaces` 里的运行时 handle；真正打开时 `open_local`/`open_remote`
+    /// 会用新路径重新建 handle。
+    ///
+    /// 目录/连接校验用的是和 `open_local`/`open_remote` 相同的规则（本地 `is_dir`、
+    /// 远程 `list_dir` 探测可达性），但目标目录里的 `.rock_desk/workspace.json`
+    /// 元数据文件写入统一降级成 best-effort——纯改路径这个操作不应该因为新目录恰好
+    /// 只读就整个失败（这一点和 `open_local` 对本地目录严格要求可写不同，是有意的
+    /// 取舍：打开工作区要用元数据文件保身份，改路径只是改一条数据库记录）。
+    pub async fn update_path(&self, id: Uuid, new_path: &str) -> Result<WorkspaceProfile, AppError> {
+        let mut profile = self
+            .repo
+            .find_by_id(id)?
+            .ok_or_else(|| AppError::NotFound(format!("workspace not found: {id}")))?;
+
+        match profile.kind {
+            WorkspaceKind::Local => {
+                let root = Path::new(new_path);
+                if !root.is_dir() {
+                    return Err(AppError::NotFound(format!("目录不存在: {new_path}")));
+                }
+                if let Some(existing) = self.repo.find_by_local_path(new_path)? {
+                    if existing.id != id {
+                        return Err(AppError::Conflict(format!("该目录已经是另一个工作区：{}", existing.display_name)));
+                    }
+                }
+                profile.display_name = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| new_path.to_string());
+                profile.root_path = new_path.to_string();
+            }
+            WorkspaceKind::Remote => {
+                let connection_id = profile.connection_id.ok_or_else(|| {
+                    AppError::Internal("remote workspace missing connection_id".to_string())
+                })?;
+                let connection = self
+                    .connection_manager
+                    .get(connection_id)?
+                    .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
+                let session = self.ssh_pool.get_or_connect(connection_id).await?;
+                let file_ops = RemoteFileOps::new(session);
+                let trimmed = new_path.trim_end_matches('/');
+                let trimmed = if trimmed.is_empty() { "/" } else { trimmed };
+                file_ops
+                    .list_dir(trimmed)
+                    .await
+                    .map_err(|_| AppError::NotFound(format!("远程目录不存在或不可访问: {trimmed}")))?;
+                if let Some(existing) = self.repo.find_by_remote(connection_id, trimmed)? {
+                    if existing.id != id {
+                        return Err(AppError::Conflict(format!("该目录已经是另一个工作区：{}", existing.display_name)));
+                    }
+                }
+                profile.display_name = format!(
+                    "{} ({}@{})",
+                    trimmed.rsplit('/').next().unwrap_or(trimmed),
+                    connection.username,
+                    connection.host
+                );
+                profile.root_path = trimmed.to_string();
+            }
+        }
+
+        self.repo.upsert(&profile)?;
+        let metadata = metadata_for(&profile);
+        let _ = self.write_fallback_metadata(&metadata);
+        Ok(profile)
+    }
+
     pub fn list_recent(&self, limit: usize) -> Result<Vec<WorkspaceProfile>, AppError> {
         self.repo.list_recent(limit)
     }

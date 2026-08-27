@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { Code2, FolderOpen, Server, Laptop } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Code2, FolderOpen, Server, Laptop, Pencil } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { RemoteWorkspaceDialog } from "./RemoteWorkspaceDialog";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
@@ -8,18 +9,47 @@ import { formatError } from "../../utils/error";
 import { useToastStore } from "../shared/Toast";
 import { ThemeToggle } from "../shared/ThemeToggle";
 import { isAppError } from "../../types/bindings";
-import type { ConnectionProfile } from "../../types/bindings";
+import type { ConnectionProfile, WorkspaceProfile } from "../../types/bindings";
 
 /** 应用入口（DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）：打开本地文件夹 / 连接远程主机 / 最近工作区。*/
 export const WorkspacePicker: React.FC = () => {
-  const { recent, loading, error, loadRecent, openLocalFolder, openLocalPath, openRemoteWorkspace, removeFromRecent } =
-    useWorkspaceStore();
+  const {
+    recent,
+    loading,
+    error,
+    loadRecent,
+    openLocalFolder,
+    openLocalPath,
+    openRemoteWorkspace,
+    removeFromRecent,
+    updatePath,
+  } = useWorkspaceStore();
   const [showRemoteDialog, setShowRemoteDialog] = useState(false);
+  const [editRemote, setEditRemote] = useState<WorkspaceProfile | null>(null);
   const [passwordPrompt, setPasswordPrompt] = useState<{ profile: ConnectionProfile; remotePath: string } | null>(
     null,
   );
   const [savingPassword, setSavingPassword] = useState(false);
   const push = useToastStore((s) => s.push);
+
+  /** 目录配错了不用"移除再重新打开"——本地直接弹原生目录选择器改路径；远程复用
+   * "连接远程主机并选择目录"里的目录浏览步骤，只是确认时改路径而不是新建工作区
+   * （见 RemoteWorkspaceDialog 的 editWorkspace 分支）。 */
+  const handleEdit = async (w: WorkspaceProfile) => {
+    if (w.kind === "remote") {
+      if (!w.connection_id) return;
+      setEditRemote(w);
+      return;
+    }
+    const selected = await open({ directory: true, multiple: false, defaultPath: w.root_path });
+    if (!selected || Array.isArray(selected)) return;
+    try {
+      await updatePath(w.id, selected);
+      push("success", "工作区目录已更新");
+    } catch (e) {
+      push("error", `更新工作区目录失败：${formatError(e)}`);
+    }
+  };
 
   useEffect(() => {
     loadRecent();
@@ -120,6 +150,16 @@ export const WorkspacePicker: React.FC = () => {
                 <span className="wp-path">{w.root_path}</span>
                 <button
                   className="btn ghost sm"
+                  title="修改工作区目录"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEdit(w);
+                  }}
+                >
+                  <Pencil size={13} /> 编辑
+                </button>
+                <button
+                  className="btn ghost sm"
                   onClick={(e) => {
                     e.stopPropagation();
                     removeFromRecent(w.id);
@@ -134,6 +174,12 @@ export const WorkspacePicker: React.FC = () => {
       </div>
 
       {showRemoteDialog && <RemoteWorkspaceDialog onClose={() => setShowRemoteDialog(false)} />}
+      {editRemote && editRemote.connection_id && (
+        <RemoteWorkspaceDialog
+          onClose={() => setEditRemote(null)}
+          editWorkspace={{ id: editRemote.id, connectionId: editRemote.connection_id, initialPath: editRemote.root_path }}
+        />
+      )}
       {passwordPrompt && (
         <PasswordPromptDialog
           open

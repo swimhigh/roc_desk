@@ -15,6 +15,7 @@ interface WorkspaceState {
   openLocalPath: (path: string) => Promise<void>;
   openRemoteWorkspace: (connectionId: string, remotePath: string) => Promise<void>;
   removeFromRecent: (id: string) => Promise<void>;
+  updatePath: (id: string, newPath: string) => Promise<WorkspaceProfile>;
   backToPicker: () => void;
 }
 
@@ -69,6 +70,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   removeFromRecent: async (id: string) => {
     await workspaceService.removeRecent(id);
     await get().loadRecent();
+  },
+
+  /** 目录配错了不用删了重加——直接改这条"最近工作区"记录的 root_path。如果改的
+   * 正好是当前已打开的工作区，也同步一下 `current`，虽然实际上目前只有还没打开的
+   * 记录（工作区选择页）才会走到编辑入口。 */
+  updatePath: async (id: string, newPath: string) => {
+    const profile = await workspaceService.updatePath(id, newPath);
+    set((state) => ({
+      current: state.current?.id === id ? profile : state.current,
+    }));
+    await get().loadRecent();
+    return profile;
   },
 
   backToPicker: () => {

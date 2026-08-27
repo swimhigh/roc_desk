@@ -182,6 +182,7 @@ pub fn run() {
             commands::workspace::workspace_open_local,
             commands::workspace::workspace_open_remote,
             commands::workspace::workspace_remove_recent,
+            commands::workspace::workspace_update_path,
             commands::workspace::workspace_close,
             commands::fs::fs_list_dir,
             commands::fs::fs_read_file,

@@ -208,7 +208,20 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const hasDraft = providerDraftPending || hasProviderDraft();
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      {/* 根节点不能用 height:"100%"——实测（headless Chrome 量出精确像素）发现它在
+          flex 列（.ai-tools-dock: header 35px + 本节点）里不会按"剩余空间"收缩：
+          height:100% 只是把 .ai-tools-dock 的整高当基准，不会减去旁边 header 的
+          35px，于是整个面板往下多出 35px，正好把最下面 .agent-composer 的发送
+          按钮挤出 .ai-tools-dock 的可视区（overflow:hidden 直接切掉，够不着）——
+          这才是截图反馈"右下角出了屏幕"的真正原因，前两轮改 CSS 换行/收缩逻辑
+          都只是治标。flex:1 + minHeight:0 才是 flex 列里"占满剩余空间、允许被
+          兄弟元素挤压收缩"的正确写法。
+
+          顶部工具栏按钮多、面板窄时会换行到 2~3 行；工具栏和消息列表包在下面同一个
+          flex:1 + overflow-y:auto 的滚动区里，换行再多也只是这个区域自己滚动，
+          不会挤占 .agent-composer 的空间，输入框固定在底部、永远完整可见。 */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
       <div className="editor-toolbar" style={{ gap: 12, flexWrap: "wrap", height: "auto", minHeight: 32 }}>
         <SegmentedControl
           value={sessionInfo.mode}
@@ -301,7 +314,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         <button className="btn primary sm" onClick={() => newSession(activeProvider?.id ?? selectedProviderId ?? sessionInfo.provider_id)}>返回新会话</button>
       </div>}
 
-      <div ref={listRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div ref={listRef} style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
         {timeline.length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 13, marginTop: 24 }}>
             {sessionInfo.mode === "plan" ? "直接提问或描述任务；Plan 模式不会修改文件" : "提问，或描述你想做的改动"}
@@ -399,6 +412,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             );
           })
         )}
+      </div>
       </div>
 
       {error && <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}

@@ -28,6 +28,13 @@ static SEARCH_DESCRIPTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<description>(.*?)</description>").unwrap());
 static XML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 
+/// 把用户的整句提问浓缩成搜索引擎关键词（见 `run_stream` 里联网搜索那段的说明）。
+const QUERY_REWRITE_SYSTEM: &str =
+    "你是一个搜索关键词提取助手。把用户的提问改写成适合传给搜索引擎的关键词，\
+     去掉“你能”“帮我”“搜索一下”“吗”“呢”之类的语气词和无关文字，保留人名、公司名、\
+     产品名、时间等实质信息；如果用户提到“今天”“最新”，可以保留或替换成具体年份。\
+     只输出关键词本身，用空格分隔，不要输出任何解释、前后缀说明或标点符号。";
+
 /// 发送前的轻量脱敏 pass（DESIGN.md §3.6"数据出境风险"）：只覆盖高置信度的几类
 /// 敏感信息——AWS Access Key、PEM 私钥块、`password=xxx` 形式的键值对——不追求
 /// 识别所有可能的密钥格式，那需要一个专门的密钥扫描器，超出这里的范围。
@@ -119,9 +126,19 @@ impl AiChatClient {
             if !recent_user_messages.is_empty() {
                 // Include recent user turns so follow-ups such as “它的财报呢” retain
                 // the company/topic from the previous question.
-                let query = recent_user_messages.join("\n");
-                let query = query.chars().rev().take(800).collect::<String>().chars().rev().collect::<String>();
-                let context = self.search_web(&redact(&query)).await?;
+                let raw_query = recent_user_messages.join("\n");
+                let raw_query =
+                    raw_query.chars().rev().take(800).collect::<String>().chars().rev().collect::<String>();
+                let raw_query = redact(&raw_query);
+                // Bing 按整句分词，直接把“你能搜索下金证股份今天的新闻吗”这类整句
+                // 甩过去，权重会落在“你”这种高频虚词上，搜出来的全是不相关结果。
+                // 先用模型把问题浓缩成搜索关键词，再去检索；改写失败就退回原句，
+                // 不让这一步阻断搜索。
+                let query = match self.complete_once(provider, api_key, QUERY_REWRITE_SYSTEM, &raw_query).await {
+                    Ok(rewritten) if !rewritten.trim().is_empty() => rewritten,
+                    _ => raw_query,
+                };
+                let context = self.search_web(&query).await?;
                 outgoing.insert(0, ChatMessage {
                     role: "system".into(),
                     content: format!(

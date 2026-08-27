@@ -3,45 +3,49 @@ import type { ITheme } from "@xterm/xterm";
 export type TerminalKind = "ssh" | "local";
 
 /**
- * WindTerm-like high contrast palette. The application chrome may be light,
- * but the terminal canvas deliberately stays dark, matching common WindTerm
- * layouts and keeping ANSI output consistent between app themes.
+ * 真实的 Dracula 主题官方 ANSI 数值（WindTerm 官方主题列表里 `dracula/windterm`
+ * 仓库 `dracula/scheme.theme` 用的就是这一份，draculatheme.com 的规范色号也是
+ * 同一套）——2026-08-27 用户要求"字体配色多参考 WindTerm"：之前这里是自己按
+ * "看着顺眼"调的一套近似色（背景 #20221F、前景 #F2F2EE 等，不是任何真实主题的
+ * 数值），拿真实 Dracula 数值替换掉，不再是"风格上像"而是就是这一份主题。
+ * 应用主界面可能是浅色主题，但终端画布本身固定深色，不随应用亮/暗切换——这是
+ * WindTerm 等专业终端工具常见的做法，也让 ANSI 输出颜色在两种应用主题下保持一致。
  */
-const windTermTheme: ITheme = {
-  background: "#20221F",
-  foreground: "#F2F2EE",
-  cursorAccent: "#20221F",
-  selectionBackground: "rgba(108, 99, 160, 0.42)",
-  selectionInactiveBackground: "rgba(108, 99, 160, 0.22)",
+const draculaTheme: ITheme = {
+  background: "#282A36",
+  foreground: "#F8F8F2",
+  cursorAccent: "#282A36",
+  selectionBackground: "rgba(68, 71, 90, 0.75)", // Dracula Selection #44475A
+  selectionInactiveBackground: "rgba(68, 71, 90, 0.4)",
 
-  // Normal ANSI colors are saturated enough for prompts and diagnostics.
-  black: "#2A2D28",
-  red: "#E5484D",
-  green: "#3FC97A",
-  yellow: "#E0B23D",
-  blue: "#4C93F8",
-  magenta: "#C15FE0",
-  cyan: "#22C3D6",
-  white: "#D9DAD5",
+  black: "#21222C",
+  red: "#FF5555",
+  green: "#50FA7B",
+  yellow: "#F1FA8C",
+  blue: "#BD93F9", // Dracula 规范里 ANSI blue 槽位就是这支紫色，不是常见的蓝色
+  magenta: "#FF79C6",
+  cyan: "#8BE9FD",
+  white: "#F8F8F2",
 
-  // Bright colors are intentionally distinct, not merely pale variants. These
-  // exact hex values are reused verbatim as the --shell-* tokens in theme.css
-  // so command syntax highlighting in the AI panel visually matches the
-  // terminal — keep both in sync if you retune this palette.
-  brightBlack: "#7A7E76",
-  brightRed: "#FF5C72",
-  brightGreen: "#7CF23A",
-  brightYellow: "#FFDD57",
-  brightBlue: "#74A6FF",
-  brightMagenta: "#D98CFF",
-  brightCyan: "#4FF0FF",
+  // Bright 系列同样是 Dracula 官方数值，不是苍白版的 normal 色。这些精确的十六
+  // 进制值原样复用为 theme.css 里的 --shell-* 令牌，让 AI 工具面板展示的命令
+  // 和真正的终端用同一套颜色——重新调这份调色板时两处必须一起改。
+  brightBlack: "#6272A4",
+  brightRed: "#FF6E6E",
+  brightGreen: "#69FF94",
+  brightYellow: "#FFFFA5",
+  brightBlue: "#D6ACFF",
+  brightMagenta: "#FF92DF",
+  brightCyan: "#A4FFFF",
   brightWhite: "#FFFFFF",
 };
 
 export function getTerminalTheme(_mode: "dark" | "light", kind: TerminalKind = "local"): ITheme {
   return {
-    ...windTermTheme,
-    // Orange immediately distinguishes an SSH input caret from a local shell.
-    cursor: kind === "ssh" ? "#FFB000" : "#F2F2EE",
+    ...draculaTheme,
+    // 本地/远程光标用不同颜色一眼分清当前敲的命令发去哪——本地跟随前景色，
+    // 远程固定橙色（同一个真实细节取自 WindTerm 主题文件里的
+    // line.caret.local/line.caret.remote，不是随手挑的颜色）。
+    cursor: kind === "ssh" ? "#FFB000" : "#F8F8F2",
   };
 }
