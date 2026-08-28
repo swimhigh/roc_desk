@@ -401,6 +401,13 @@ function App() {
                   useSearchStore.getState().setScope(path, relativePath || path);
                   setSidebarMode("search");
                 }}
+                onCompare={(leftPath, rightPath) => {
+                  useEditorStore
+                    .getState()
+                    .openDiff(current.id, leftPath, rightPath)
+                    .catch((e) => pushToast("error", `对比失败：${formatError(e)}`));
+                  setActiveView("editor");
+                }}
               />
             ) : (
               <SearchPanel

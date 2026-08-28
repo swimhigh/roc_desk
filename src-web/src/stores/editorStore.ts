@@ -12,8 +12,27 @@ import {
   type PreviewKind,
   type ExcelSheet,
 } from "../utils/previewFile";
+import { detectLanguage } from "../utils/language";
 import type { BinaryInfo, JarInfo } from "../types/bindings";
 import { formatError } from "../utils/error";
+
+/** diff 标签页的 id 前缀——真实文件路径不可能长这样（Windows 盘符是单字母+冒号，
+ * Unix/远程路径以 `/` 开头），用来在同一个 `order` 数组里区分"这一项是文件 buffer
+ * 还是对比标签"，不用另起一个和 buffers 平行、还要单独维护顺序的列表。 */
+const DIFF_ID_PREFIX = "diff:";
+export const isDiffId = (id: string) => id.startsWith(DIFF_ID_PREFIX);
+
+/** 工作区文本文件对比（参考 VS Code 的 "Select for Compare" / "Compare with Selected"）：
+ * 两侧都是只读快照，不是可编辑 buffer——对比结果本身不该被保存，要改内容回去改
+ * 原文件、重新打开一次对比。 */
+export interface DiffBuffer {
+  id: string;
+  leftPath: string;
+  rightPath: string;
+  leftContent: string;
+  rightContent: string;
+  language: string;
+}
 
 export interface EditorBuffer {
   path: string;
@@ -77,6 +96,11 @@ export interface PendingReveal {
 
 interface EditorState {
   buffers: Record<string, EditorBuffer>;
+  /** diff 标签页，key 是上面的 `diff:` 前缀 id，和 buffers 平级但分开存——一个 diff
+   * 涉及两个路径、没有单一的 mtime/dirty 语义，套不进 EditorBuffer 的形状。 */
+  diffs: Record<string, DiffBuffer>;
+  /** 标签栏的展示顺序，元素是文件路径或 diff id，混在一起——Tab 关闭/排序这些操作
+   * 天然就该对两种标签一视同仁。 */
   order: string[];
   activePath: string | null;
   conflict: SaveConflict | null;
@@ -86,6 +110,9 @@ interface EditorState {
 
   /** 单击文件：复用/替换预览标签，而不是无限开新标签 */
   openPreview: (workspaceId: string, path: string) => Promise<void>;
+  /** 打开一个对比标签（Explorer 右键"选择进行比较"→"与所选文件比较"）。同一对路径
+   * 已经开过就直接激活那个标签，不重复读盘。 */
+  openDiff: (workspaceId: string, leftPath: string, rightPath: string) => Promise<void>;
   /** 双击文件：转为固定标签 */
   pin: (path: string) => void;
   setActive: (path: string) => void;
@@ -115,6 +142,7 @@ interface EditorState {
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   buffers: {},
+  diffs: {},
   order: [],
   activePath: null,
   conflict: null,
@@ -234,6 +262,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const { text, mtime, encoding, total_size, truncated } = await fsService.readFile(workspaceId, path);
     addBuffer({ path, content: text, mtime, dirty: false, isPreview: false, encoding, totalSize: total_size, truncated, kind: "text" });
+  },
+
+  openDiff: async (workspaceId, leftPath, rightPath) => {
+    const already = Object.values(get().diffs).find((d) => d.leftPath === leftPath && d.rightPath === rightPath);
+    if (already) {
+      set({ activePath: already.id });
+      return;
+    }
+    const [left, right] = await Promise.all([
+      fsService.readFile(workspaceId, leftPath),
+      fsService.readFile(workspaceId, rightPath),
+    ]);
+    const id = `${DIFF_ID_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const diff: DiffBuffer = {
+      id,
+      leftPath,
+      rightPath,
+      leftContent: left.text,
+      rightContent: right.text,
+      language: detectLanguage(rightPath),
+    };
+    set((s) => ({
+      diffs: { ...s.diffs, [id]: diff },
+      order: [...s.order, id],
+      activePath: id,
+    }));
   },
 
   pin: (path) => {
@@ -357,10 +411,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   close: (path) => {
     set((s) => {
       const buffers = { ...s.buffers };
+      const diffs = { ...s.diffs };
       delete buffers[path];
+      delete diffs[path];
       const order = s.order.filter((p) => p !== path);
       const activePath = s.activePath === path ? order[order.length - 1] ?? null : s.activePath;
-      return { buffers, order, activePath };
+      return { buffers, diffs, order, activePath };
     });
   },
 
@@ -368,11 +424,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (!s.order.includes(path)) return s;
       const buffers = s.buffers[path] ? { [path]: s.buffers[path] } : {};
-      return { buffers, order: [path], activePath: path };
+      const diffs = s.diffs[path] ? { [path]: s.diffs[path] } : {};
+      return { buffers, diffs, order: [path], activePath: path };
     });
   },
 
-  closeAll: () => set({ buffers: {}, order: [], activePath: null }),
+  closeAll: () => set({ buffers: {}, diffs: {}, order: [], activePath: null }),
 
   closeToLeft: (path) => {
     set((s) => {
@@ -381,9 +438,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const closed = new Set(s.order.slice(0, idx));
       const order = s.order.filter((p) => !closed.has(p));
       const buffers = { ...s.buffers };
-      closed.forEach((p) => delete buffers[p]);
+      const diffs = { ...s.diffs };
+      closed.forEach((p) => {
+        delete buffers[p];
+        delete diffs[p];
+      });
       const activePath = s.activePath && closed.has(s.activePath) ? path : s.activePath;
-      return { buffers, order, activePath };
+      return { buffers, diffs, order, activePath };
     });
   },
 
@@ -394,14 +455,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const closed = new Set(s.order.slice(idx + 1));
       const order = s.order.filter((p) => !closed.has(p));
       const buffers = { ...s.buffers };
-      closed.forEach((p) => delete buffers[p]);
+      const diffs = { ...s.diffs };
+      closed.forEach((p) => {
+        delete buffers[p];
+        delete diffs[p];
+      });
       const activePath = s.activePath && closed.has(s.activePath) ? path : s.activePath;
-      return { buffers, order, activePath };
+      return { buffers, diffs, order, activePath };
     });
   },
 
   revealLine: (path, line, highlights) => set({ pendingReveal: { path, line, highlights } }),
   clearReveal: () => set({ pendingReveal: null }),
 
-  reset: () => set({ buffers: {}, order: [], activePath: null, conflict: null, pendingReveal: null }),
+  reset: () => set({ buffers: {}, diffs: {}, order: [], activePath: null, conflict: null, pendingReveal: null }),
 }));

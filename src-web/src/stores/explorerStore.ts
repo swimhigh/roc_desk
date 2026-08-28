@@ -9,6 +9,10 @@ interface ExplorerState {
   expanded: Set<string>;
   loading: Set<string>;
   selectedPath: string | null;
+  /** 右键"选择进行比较"记下的源文件路径（参考 VS Code 的 Select for Compare/Compare
+   * with Selected 两步式对比）——放在 store 里而不是 ExplorerTree 组件本地 state，
+   * 是因为它要跨越两次独立的右键菜单交互存活，组件重渲染/滚动不应该把它清掉。 */
+  compareSource: string | null;
   /** 根目录加载失败时的错误信息——之前这里静默吞掉异常，界面上和"空文件夹"完全
    * 看不出区别，用户没法知道要不要重试还是工作区本身就是空的（真实 bug：重新打开
    * 最近工作区时后端 handle 没注册，Explorer 一直显示"空"，但其实是请求失败了）。 */
@@ -19,6 +23,7 @@ interface ExplorerState {
   /** 重命名/删除之后强制重新拉取某个目录的子项，忽略缓存（右键菜单用）。*/
   reloadDir: (workspaceId: string, path: string) => Promise<void>;
   select: (path: string) => void;
+  setCompareSource: (path: string | null) => void;
   reset: () => void;
 }
 
@@ -27,6 +32,7 @@ export const useExplorerStore = create<ExplorerState>((set, get) => ({
   expanded: new Set(),
   loading: new Set(),
   selectedPath: null,
+  compareSource: null,
   rootError: null,
 
   loadRoot: async (workspaceId, rootPath) => {
@@ -80,6 +86,8 @@ export const useExplorerStore = create<ExplorerState>((set, get) => ({
   },
 
   select: (path) => set({ selectedPath: path }),
+  setCompareSource: (path) => set({ compareSource: path }),
 
-  reset: () => set({ children: {}, expanded: new Set(), loading: new Set(), selectedPath: null, rootError: null }),
+  reset: () =>
+    set({ children: {}, expanded: new Set(), loading: new Set(), selectedPath: null, compareSource: null, rootError: null }),
 }));

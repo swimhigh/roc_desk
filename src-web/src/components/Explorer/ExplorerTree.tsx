@@ -10,6 +10,7 @@ import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { formatError } from "../../utils/error";
+import { classifyPreview } from "../../utils/previewFile";
 import type { FileEntry } from "../../types/bindings";
 
 /** 常见脚本类型 → 运行命令（右键"运行脚本"，DESIGN.md §3.2 终端面板复用）。
@@ -35,11 +36,18 @@ interface ExplorerTreeProps {
   onOpenFile: (path: string, opts?: { pin?: boolean }) => void;
   /** 右键目录 →"在此文件夹中搜索"（2026-08-18 需求），把搜索范围收窄到这个子目录。 */
   onSearchInFolder: (path: string, relativePath: string) => void;
+  /** 右键"与所选文件比较"：打开一个对比标签，并把编辑器区域切到前台
+   * （App.tsx 里对应把 activeView 切回 "editor"）。 */
+  onCompare: (leftPath: string, rightPath: string) => void;
 }
 
 function parentOf(path: string): string {
   const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return idx >= 0 ? path.slice(0, idx) : path;
+}
+
+function baseName(path: string): string {
+  return path.split(/[/\\]/).filter(Boolean).pop() ?? path;
 }
 
 /**
@@ -54,8 +62,9 @@ function parentOf(path: string): string {
  * 额外有"导入到本地搜索引擎"（同日需求），一步把这个文件送进日志搜索模块的 FTS5
  * 索引，不用先切到日志搜索面板再找一遍文件。
  */
-export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPath, onOpenFile, onSearchInFolder }) => {
-  const { children, expanded, loadRoot, toggleDir, reloadDir, selectedPath, select, rootError } = useExplorerStore();
+export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPath, onOpenFile, onSearchInFolder, onCompare }) => {
+  const { children, expanded, loadRoot, toggleDir, reloadDir, selectedPath, select, compareSource, setCompareSource, rootError } =
+    useExplorerStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -197,6 +206,15 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     });
     if (clipboard) {
       items.push({ label: "粘贴", onClick: () => pasteInto(entry.is_dir ? entry.path : parentOf(entry.path)) });
+    }
+    // 对比（参考 VS Code 的 "Select for Compare" / "Compare with Selected"）：只对文本类
+    // 文件开放——图片/PDF/可执行文件等走 Monaco 对比没有意义，classifyPreview 已经有
+    // 现成的分类可以复用。
+    if (!entry.is_dir && classifyPreview(entry.path) === "text") {
+      items.push({ label: "选择进行比较", onClick: () => setCompareSource(entry.path), separatorBefore: true });
+      if (compareSource && compareSource !== entry.path && classifyPreview(compareSource) === "text") {
+        items.push({ label: `与"${baseName(compareSource)}"比较`, onClick: () => onCompare(compareSource, entry.path) });
+      }
     }
     items.push(
       { label: "复制路径", onClick: () => navigator.clipboard.writeText(entry.path), separatorBefore: true },

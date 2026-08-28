@@ -1,7 +1,7 @@
 import React from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { DiffEditor } from "@monaco-editor/react";
 import { KeyCode, KeyMod, Range } from "monaco-editor";
-import { Save, Search, X, Eye, EyeOff, ExternalLink } from "lucide-react";
+import { Save, Search, X, Eye, EyeOff, ExternalLink, GitCompare } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { ConflictDialog } from "./ConflictDialog";
 import { EncodingMenu } from "./EncodingMenu";
@@ -35,6 +35,7 @@ interface CodeEditorProps {
 export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceName, rootPath }) => {
   const {
     buffers,
+    diffs,
     order,
     activePath,
     setActive,
@@ -63,8 +64,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   // Tab 右键菜单（参考 VS Code："关闭其他"/"关闭所有"/"关闭左侧的标签页"/
   // "关闭右侧的标签页"，2026-08-29 需求）。
   const [tabMenu, setTabMenu] = React.useState<{ x: number; y: number; path: string } | null>(null);
+  // 底部状态栏的光标位置（参考 VS Code 右下角 "行, 列"）——diff.path 换了（切标签/
+  // Monaco 实例因 key={active.path} 重新挂载）时清空，避免残留上一个文件的坐标。
+  const [cursorPos, setCursorPos] = React.useState<{ line: number; column: number } | null>(null);
 
   const active = activePath ? buffers[activePath] : null;
+  const activeDiff = activePath ? diffs[activePath] : null;
+  React.useEffect(() => setCursorPos(null), [active?.path]);
   const isImage = active?.kind === "image";
   const isPdf = active?.kind === "pdf";
   const isWord = active?.kind === "word";
@@ -185,21 +191,24 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     <div className="editor-tabs">
       {order.map((path) => {
         const buf = buffers[path];
-        if (!buf) return null;
+        const diff = diffs[path];
+        if (!buf && !diff) return null;
+        const label = diff ? `${fileName(diff.leftPath)} ↔ ${fileName(diff.rightPath)}` : fileName(path);
         return (
           <div
             key={path}
-            className={`editor-tab ${path === activePath ? "active" : ""} ${buf.isPreview ? "preview" : ""}`}
-            title={path}
+            className={`editor-tab ${path === activePath ? "active" : ""} ${buf?.isPreview ? "preview" : ""}`}
+            title={diff ? `${diff.leftPath}  ↔  ${diff.rightPath}` : path}
             onClick={() => setActive(path)}
-            onDoubleClick={() => pin(path)}
+            onDoubleClick={() => buf && pin(path)}
             onContextMenu={(e) => {
               e.preventDefault();
               setTabMenu({ x: e.clientX, y: e.clientY, path });
             }}
           >
-            <span className="editor-tab-name">{fileName(path)}</span>
-            {buf.dirty && <span className="dirty-dot" />}
+            {diff && <GitCompare className="editor-tab-diff-icon" />}
+            <span className="editor-tab-name">{label}</span>
+            {buf?.dirty && <span className="dirty-dot" />}
             <button
               className="editor-tab-close"
               title="关闭"
@@ -233,7 +242,41 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     </div>
   );
 
+  const relOf = (p: string) => (p.startsWith(rootPath) ? p.slice(rootPath.length).replace(/^[/\\]/, "") : p);
+
   if (!active) {
+    if (activeDiff) {
+      return (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          {tabStrip}
+          <div className="editor-toolbar">
+            <div className="breadcrumb">
+              <span className="crumb">{relOf(activeDiff.leftPath)}</span>
+              <span className="sep" style={{ margin: "0 8px" }}>⇄</span>
+              <span className="crumb current">{relOf(activeDiff.rightPath)}</span>
+            </div>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <DiffEditor
+              language={activeDiff.language}
+              original={activeDiff.leftContent}
+              modified={activeDiff.rightContent}
+              theme={monacoTheme}
+              options={{
+                readOnly: true,
+                renderSideBySide: true,
+                fontSize: 13,
+                fontFamily: "var(--font-mono)",
+                wordWrap: "on",
+                automaticLayout: true,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
         {tabStrip}
@@ -253,10 +296,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     );
   }
 
-  const relativePath = active.path.startsWith(rootPath)
-    ? active.path.slice(rootPath.length).replace(/^[/\\]/, "")
-    : active.path;
-  const segments = [workspaceName, ...relativePath.split(/[/\\]/).filter(Boolean)];
+  const segments = [workspaceName, ...relOf(active.path).split(/[/\\]/).filter(Boolean)];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -279,24 +319,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           )}
           {!isPreviewOnly && (
             <>
-              <EncodingMenu
-                current={active.encoding}
-                onReopen={async (enc) => {
-                  try {
-                    await reopenWithEncoding(workspaceId, active.path, enc);
-                  } catch (e) {
-                    push("error", `重新打开失败：${formatError(e)}`);
-                  }
-                }}
-                onSaveAs={async (enc) => {
-                  try {
-                    await saveWithEncoding(workspaceId, active.path, enc);
-                    push("success", `已以 ${enc} 编码保存`);
-                  } catch (e) {
-                    push("error", `保存失败：${formatError(e)}`);
-                  }
-                }}
-              />
               <button
                 className="btn ghost sm"
                 title="搜索 (Ctrl+F)"
@@ -406,6 +428,12 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
               // （下一帧）再手动调一次 layout() 强制重新测量，避免赶上这个繁忙窗口。
               requestAnimationFrame(() => editor.layout());
 
+              const pos = editor.getPosition();
+              if (pos) setCursorPos({ line: pos.lineNumber, column: pos.column });
+              editor.onDidChangeCursorPosition((e) => {
+                setCursorPos({ line: e.position.lineNumber, column: e.position.column });
+              });
+
               editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
                 handleSave();
               });
@@ -469,6 +497,43 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           </div>
         )}
       </div>
+      )}
+      {/* 底部状态栏（参考 VS Code 右下角编码/语言/光标位置徽标）：文件编码之前只是
+          工具栏里一个不起眼的小按钮，容易被当成普通图标划过去（2026-08-29 用户反馈
+          "要在某个地方能看到文件编码"）——挪到固定可见的状态栏，不需要点开任何东西
+          就能看到当前编码，点击仍然能唤出"重新打开为"/"保存为"两组动作。 */}
+      {!isPreviewOnly && (
+        <div className="editor-status-bar">
+          <div className="status-left">
+            <EncodingMenu
+              current={active.encoding}
+              onReopen={async (enc) => {
+                try {
+                  await reopenWithEncoding(workspaceId, active.path, enc);
+                } catch (e) {
+                  push("error", `重新打开失败：${formatError(e)}`);
+                }
+              }}
+              onSaveAs={async (enc) => {
+                try {
+                  await saveWithEncoding(workspaceId, active.path, enc);
+                  push("success", `已以 ${enc} 编码保存`);
+                } catch (e) {
+                  push("error", `保存失败：${formatError(e)}`);
+                }
+              }}
+            />
+            <span className="status-item">{language}</span>
+          </div>
+          <div className="status-right">
+            {cursorPos && (
+              <span className="status-item">
+                第 {cursorPos.line} 行，第 {cursorPos.column} 列
+              </span>
+            )}
+            <span className="status-item">{formatBytes(active.totalSize || active.content.length)}</span>
+          </div>
+        </div>
       )}
       {conflict && (
         <ConflictDialog
