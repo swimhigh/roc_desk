@@ -63,3 +63,7 @@ npm run tauri:build            # 在仓库根目录执行
 ## 推荐 IDE 配置
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri 插件](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+
+## 许可证
+
+[MIT](LICENSE) + [Commons Clause](https://commonsclause.com/)：可以自由使用、修改、分发（包括商业环境内部使用），唯一的限制是不能把本软件本身直接拿去卖钱或作为收费服务对外提供（即"不能直接商用"，其余不受限）。完整条款见 [LICENSE](LICENSE)。

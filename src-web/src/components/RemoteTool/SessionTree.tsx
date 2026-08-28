@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { Folder, FolderOpen, Terminal as TerminalIcon, Monitor, FolderCog, Plus } from "lucide-react";
 import { useSessionTreeStore } from "../../stores/sessionTreeStore";
 import { useRemoteSessionStore } from "../../stores/remoteSessionStore";
@@ -37,6 +38,16 @@ export const SessionTree: React.FC = () => {
   useEffect(() => {
     load().catch((e) => push("error", `加载会话列表失败：${formatError(e)}`));
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 应用版本来自 Cargo.toml（tauri.conf.json 未写 version，Tauri 缺省读它，
+  // RELEASING.md 里定的唯一权威来源），运行时用 getVersion() 取，不在前端另存一份
+  // 容易和 Cargo.toml 脱节的版本号。
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
   }, []);
 
   const childGroups = useMemo(() => {
@@ -218,6 +229,10 @@ export const SessionTree: React.FC = () => {
             {rootConnections.map((c) => renderConnection(c, 0))}
           </>
         )}
+      </div>
+
+      <div className="session-tree-footer" title={`roc_desk v${appVersion ?? "?"}，构建于 ${__APP_BUILD_DATE__}`}>
+        roc_desk v{appVersion ?? "…"} · {__APP_BUILD_DATE__}
       </div>
 
       {addMenu && (

@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.1.1",
   "description": "roc_desk — 根目录构建入口，实际前端在 src-web/，后端在 src-tauri/",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "npm run dev --prefix src-web",
     "build:web": "npm run build --prefix src-web",

@@ -1054,6 +1054,7 @@
 .session-tree-add { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; color: var(--text-secondary); }
 .session-tree-add:hover { background: var(--bg-hover); color: var(--text-primary); }
 .session-tree-add svg { width: 14px; height: 14px; }
+.session-tree-footer { flex-shrink: 0; padding: 6px var(--space-2); font-size: 11px; color: var(--text-secondary); border-top: 1px solid var(--border-default); text-align: center; user-select: text; }
 .tree-item .tree-status-dot { margin-left: auto; flex-shrink: 0; }
 .tree-item .tree-protocol-badge { flex-shrink: 0; font-size: 9px; padding: 0 4px; border-radius: 3px; color: var(--text-disabled); border: 1px solid var(--border-subtle); }
 
