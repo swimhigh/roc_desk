@@ -39,6 +39,10 @@ interface SearchState {
   setScope: (path: string | null, label: string | null) => void;
   toggleCollapsed: (path: string) => void;
   runSearch: (workspaceId: string) => Promise<void>;
+  /** 手动停止正在跑的搜索（2026-08-29 用户反馈："搜索功能不能停止，需要有停止
+   * 功能"）——之前只有"输入新关键词发起下一次搜索"会顺带取消上一次，没有单独的
+   * 停止入口，慢搜索（尤其是远程 SFTP 大目录）只能干等跑完或出错。*/
+  stopSearch: () => void;
   replaceAll: (workspaceId: string) => Promise<void>;
   replaceInFile: (workspaceId: string, path: string) => Promise<void>;
   clear: () => void;
@@ -96,6 +100,17 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         set({ loading: false, error: formatError(e) });
       }
     }
+  },
+
+  stopSearch: () => {
+    const { requestId, loading } = get();
+    if (!requestId || !loading) return;
+    // 立即把 UI 切回"未在搜索"，不等后端的 search:done 事件——本地场景取消几乎
+    // 瞬时，但远程 SFTP 场景每个目录之间才检查一次取消标记，可能有明显延迟，
+    // 点了"停止"却半天没反应会让人怀疑没点中。已经在途的结果事件仍然按
+    // requestId 匹配正常写入 results（不算错误，只是"停止前最后一批"）。
+    set({ loading: false });
+    fsService.cancelSearch(requestId).catch(() => {});
   },
 
   replaceAll: async (workspaceId) => {

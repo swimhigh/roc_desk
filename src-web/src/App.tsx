@@ -394,6 +394,7 @@ function App() {
                   // 双击固定：等 openPreview 落地（buffer 出现在 store 里）之后再 pin，
                   // 否则 pin 会因为 buffer 还不存在而静默失效（ExplorerTree.tsx 同款注释）。
                   if (opts?.pin) opened.then(() => pinFile(path));
+                  opened.catch((e) => pushToast("error", `打开失败：${formatError(e)}`));
                   setActiveView("editor");
                 }}
                 onSearchInFolder={(path, relativePath) => {
@@ -405,9 +406,11 @@ function App() {
               <SearchPanel
                 workspaceId={current.id}
                 onOpenResult={(path, line, highlights) => {
-                  openPreview(current.id, path).then(() => {
-                    useEditorStore.getState().revealLine(path, line, highlights);
-                  });
+                  openPreview(current.id, path)
+                    .then(() => {
+                      useEditorStore.getState().revealLine(path, line, highlights);
+                    })
+                    .catch((e) => pushToast("error", `打开失败：${formatError(e)}`));
                   setActiveView("editor");
                 }}
               />
@@ -483,7 +486,9 @@ function App() {
                     const isAbsolute = /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/");
                     const separator = current.root_path.includes("\\") ? "\\" : "/";
                     const resolvedPath = isAbsolute ? path : `${current.root_path.replace(/[\\/]$/, "")}${separator}${path.replace(/^[./\\]+/, "")}`;
-                    openPreview(current.id, resolvedPath).then(() => { if (line) useEditorStore.getState().revealLine(resolvedPath, line); });
+                    openPreview(current.id, resolvedPath)
+                      .then(() => { if (line) useEditorStore.getState().revealLine(resolvedPath, line); })
+                      .catch((e) => pushToast("error", `打开失败：${formatError(e)}`));
                   }}
                 />
               </aside>

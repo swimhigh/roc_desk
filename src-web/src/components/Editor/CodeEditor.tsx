@@ -1,15 +1,25 @@
 import React from "react";
 import Editor from "@monaco-editor/react";
 import { KeyCode, KeyMod, Range } from "monaco-editor";
-import { Save, Search, X, Eye, EyeOff } from "lucide-react";
+import { Save, Search, X, Eye, EyeOff, ExternalLink } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { ConflictDialog } from "./ConflictDialog";
 import { EncodingMenu } from "./EncodingMenu";
+import { ExcelPreview } from "./ExcelPreview";
+import { PdfPreview } from "./PdfPreview";
+import { UnsupportedBinaryPanel } from "./UnsupportedBinaryPanel";
+import { BinaryInfoPanel } from "./BinaryInfoPanel";
+import { JarInfoPanel } from "./JarInfoPanel";
+import { LegacyOfficePreview } from "./LegacyOfficePreview";
+import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { useToastStore } from "../shared/Toast";
 import { detectLanguage } from "../../utils/language";
 import { formatError } from "../../utils/error";
 import { renderMarkdown } from "../../utils/markdown";
 import { useThemeStore } from "../../stores/themeStore";
+import { formatBytes } from "../../utils/format";
+import { inlineHtmlResources } from "../../utils/inlineHtmlResources";
+import { fsService } from "../../services/fsService";
 
 interface CodeEditorProps {
   workspaceId: string;
@@ -30,6 +40,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     setActive,
     pin,
     close,
+    closeOthers,
+    closeAll,
+    closeToLeft,
+    closeToRight,
     updateContent,
     save,
     conflict,
@@ -46,15 +60,70 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   const editorRef = React.useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
   const highlightDecorationsRef = React.useRef<import("monaco-editor").editor.IEditorDecorationsCollection | null>(null);
   const [previewOpen, setPreviewOpen] = React.useState(false);
+  // Tab 右键菜单（参考 VS Code："关闭其他"/"关闭所有"/"关闭左侧的标签页"/
+  // "关闭右侧的标签页"，2026-08-29 需求）。
+  const [tabMenu, setTabMenu] = React.useState<{ x: number; y: number; path: string } | null>(null);
 
   const active = activePath ? buffers[activePath] : null;
+  const isImage = active?.kind === "image";
+  const isPdf = active?.kind === "pdf";
+  const isWord = active?.kind === "word";
+  const isExcel = active?.kind === "excel";
+  const isExecutable = active?.kind === "executable";
+  const isJar = active?.kind === "jar";
+  const isLegacyOffice = active?.kind === "legacy-office";
+  const isUnsupportedBinary = active?.kind === "unsupported-binary";
+  // 这几种都是只读展示，不进 Monaco——编码菜单/搜索/Markdown 预览/保存这些跟文本
+  // 编辑相关的工具栏按钮对它们没意义。
+  const isPreviewOnly = isImage || isPdf || isWord || isExcel || isExecutable || isJar || isLegacyOffice || isUnsupportedBinary;
   const language = active ? detectLanguage(active.path) : "plaintext";
   const isMarkdown = language === "markdown";
+  // HTML 文件预览（2026-08-29 需求）：和 Markdown 预览共用同一套"编辑/预览切换"
+  // 交互（Ctrl+Shift+V、同一块区域互斥展示），只是渲染方式不同——Markdown 渲染出的
+  // 是一段 HTML 片段，用 dangerouslySetInnerHTML 塞进当前页面就行；用户打开的
+  // *.html 文件本身是一份完整文档（可能带 <style>/<script>/<meta charset>），
+  // 必须用 <iframe> 给它一个独立的文档上下文才能正确渲染，不能直接扔进
+  // dangerouslySetInnerHTML（那样会当成 body 片段解析，<head> 里的东西全部丢失，
+  // <script> 也不会执行）。
+  const isHtml = language === "html";
+  const canPreview = isMarkdown || isHtml;
   // 只在预览真正打开时才解析，避免每次敲字符都跑一遍 marked（非 Markdown 文件更是完全不需要）。
   const previewHtml = React.useMemo(
     () => (isMarkdown && previewOpen && active ? renderMarkdown(active.content) : ""),
     [isMarkdown, previewOpen, active?.content],
   );
+
+  // HTML 预览的 srcDoc 内容——不能直接用 active.content：iframe srcdoc 里的相对路径
+  // 资源引用（<link href>/<script src>/<img src>）默认相对宿主页面（roc_desk 自己
+  // 的地址）解析，会 404，引用了外部 CSS/JS 的页面预览出来一片白屏（2026-08-28
+  // 用户反馈）。打开预览时异步把这些资源抓下来内联成 data URL 再喂给 iframe，见
+  // `utils/inlineHtmlResources.ts`。转换过程中先显示原始内容（没有外部资源的简单
+  // 页面本来就能正常显示，不用等），转换完成后再替换成内联版本。
+  const [htmlPreviewSrc, setHtmlPreviewSrc] = React.useState<string | null>(null);
+  const [inliningResources, setInliningResources] = React.useState(false);
+  React.useEffect(() => {
+    if (!isHtml || !previewOpen || !active) {
+      setHtmlPreviewSrc(null);
+      return;
+    }
+    let cancelled = false;
+    setInliningResources(true);
+    const baseDir = active.path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+    inlineHtmlResources(active.content, baseDir, (p) => fsService.readBinaryPreview(workspaceId, p)).then(
+      (html) => {
+        if (cancelled) return;
+        setHtmlPreviewSrc(html);
+        setInliningResources(false);
+      },
+      () => {
+        if (cancelled) return;
+        setInliningResources(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [isHtml, previewOpen, active?.path, active?.content, workspaceId]);
 
   // 搜索面板点一个匹配行之后要求跳转（DESIGN.md 左侧目录树搜索功能）：这里统一处理
   // "文件已经打开、只是切换 active" 和 "editor 实例刚挂载" 两种情况——后者靠
@@ -100,6 +169,16 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, activePath]);
 
+  const handleOpenExternally = React.useCallback(async () => {
+    if (!activePath) return;
+    try {
+      await fsService.openExternally(workspaceId, activePath);
+    } catch (e) {
+      push("error", `打开失败：${formatError(e)}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, activePath]);
+
   const fileName = (path: string) => path.split(/[/\\]/).filter(Boolean).pop() ?? path;
 
   const tabStrip = order.length > 0 && (
@@ -114,6 +193,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
             title={path}
             onClick={() => setActive(path)}
             onDoubleClick={() => pin(path)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTabMenu({ x: e.clientX, y: e.clientY, path });
+            }}
           >
             <span className="editor-tab-name">{fileName(path)}</span>
             {buf.dirty && <span className="dirty-dot" />}
@@ -130,6 +213,23 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           </div>
         );
       })}
+      {tabMenu && (
+        <ContextMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          items={(() => {
+            const { path } = tabMenu;
+            const idx = order.indexOf(path);
+            const items: ContextMenuItem[] = [{ label: "关闭", onClick: () => close(path) }];
+            if (order.length > 1) items.push({ label: "关闭其他", onClick: () => closeOthers(path) });
+            if (idx > 0) items.push({ label: "关闭左侧的标签页", onClick: () => closeToLeft(path) });
+            if (idx >= 0 && idx < order.length - 1) items.push({ label: "关闭右侧的标签页", onClick: () => closeToRight(path) });
+            items.push({ label: "关闭所有", onClick: () => closeAll(), separatorBefore: true });
+            return items;
+          })()}
+          onClose={() => setTabMenu(null)}
+        />
+      )}
     </div>
   );
 
@@ -172,45 +272,110 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           {active.dirty && <span className="dirty-dot" style={{ marginLeft: 6 }} title="未保存" />}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
-          <EncodingMenu
-            current={active.encoding}
-            onReopen={async (enc) => {
-              try {
-                await reopenWithEncoding(workspaceId, active.path, enc);
-              } catch (e) {
-                push("error", `重新打开失败：${formatError(e)}`);
-              }
-            }}
-            onSaveAs={async (enc) => {
-              try {
-                await saveWithEncoding(workspaceId, active.path, enc);
-                push("success", `已以 ${enc} 编码保存`);
-              } catch (e) {
-                push("error", `保存失败：${formatError(e)}`);
-              }
-            }}
-          />
-          <button
-            className="btn ghost sm"
-            title="搜索 (Ctrl+F)"
-            onClick={() => editorRef.current?.trigger("toolbar", "actions.find", null)}
-          >
-            <Search style={{ width: 14, height: 14 }} />
-          </button>
-          {isMarkdown && (
-            <button
-              className={`btn ghost sm ${previewOpen ? "active" : ""}`}
-              onClick={() => setPreviewOpen((v) => !v)}
-              title="Markdown 预览 (Ctrl+Shift+V)"
-            >
-              {previewOpen ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />} 预览
+          {isPreviewOnly && (
+            <button className="btn ghost sm" onClick={handleOpenExternally} title="用系统默认程序打开">
+              <ExternalLink style={{ width: 14, height: 14 }} /> 用系统程序打开
             </button>
           )}
-          <button className="btn ghost sm" onClick={handleSave} title="保存 (Ctrl+S)">
-            <Save style={{ width: 14, height: 14 }} /> 保存
-          </button>
+          {!isPreviewOnly && (
+            <>
+              <EncodingMenu
+                current={active.encoding}
+                onReopen={async (enc) => {
+                  try {
+                    await reopenWithEncoding(workspaceId, active.path, enc);
+                  } catch (e) {
+                    push("error", `重新打开失败：${formatError(e)}`);
+                  }
+                }}
+                onSaveAs={async (enc) => {
+                  try {
+                    await saveWithEncoding(workspaceId, active.path, enc);
+                    push("success", `已以 ${enc} 编码保存`);
+                  } catch (e) {
+                    push("error", `保存失败：${formatError(e)}`);
+                  }
+                }}
+              />
+              <button
+                className="btn ghost sm"
+                title="搜索 (Ctrl+F)"
+                onClick={() => editorRef.current?.trigger("toolbar", "actions.find", null)}
+              >
+                <Search style={{ width: 14, height: 14 }} />
+              </button>
+              {canPreview && (
+                <button
+                  className={`btn ghost sm ${previewOpen ? "active" : ""}`}
+                  onClick={() => setPreviewOpen((v) => !v)}
+                  title={`${isHtml ? "HTML" : "Markdown"} 预览 (Ctrl+Shift+V)`}
+                >
+                  {previewOpen ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />} 预览
+                </button>
+              )}
+              <button
+                className="btn ghost sm"
+                onClick={handleSave}
+                disabled={active.truncated}
+                title={active.truncated ? "文件过大，当前只是只读预览，无法保存" : "保存 (Ctrl+S)"}
+              >
+                <Save style={{ width: 14, height: 14 }} /> 保存
+              </button>
+            </>
+          )}
         </div>
       </div>
+      {active.truncated && (
+        <div className="editor-large-file-banner">
+          文件过大（{formatBytes(active.totalSize)}），仅预览前 {formatBytes(active.content.length)}，只读模式，无法编辑保存。
+        </div>
+      )}
+      {isImage ? (
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "auto",
+            background: "var(--bg-base)",
+          }}
+        >
+          <img src={active.content} alt={active.path} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+        </div>
+      ) : isPdf ? (
+        <PdfPreview base64={active.content.split(",")[1] ?? ""} />
+      ) : isWord ? (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--bg-base)" }}>
+          <div className="office-word-preview" dangerouslySetInnerHTML={{ __html: active.content }} />
+        </div>
+      ) : isExcel ? (
+        <ExcelPreview sheets={active.sheets ?? []} />
+      ) : isExecutable ? (
+        <BinaryInfoPanel
+          path={active.path}
+          info={active.binaryInfo ?? null}
+          error={active.binaryInfoError ?? null}
+          onOpenExternally={handleOpenExternally}
+        />
+      ) : isJar ? (
+        <JarInfoPanel
+          path={active.path}
+          info={active.jarInfo ?? null}
+          error={active.jarInfoError ?? null}
+          onOpenExternally={handleOpenExternally}
+        />
+      ) : isLegacyOffice ? (
+        <LegacyOfficePreview
+          path={active.path}
+          content={active.content}
+          error={active.legacyOfficeError}
+          onOpenExternally={handleOpenExternally}
+        />
+      ) : isUnsupportedBinary ? (
+        <UnsupportedBinaryPanel path={active.path} onOpenExternally={handleOpenExternally} />
+      ) : (
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         {/* 参考 VS Code 默认的 Ctrl+Shift+V"打开预览"（不是 Ctrl+K V 那种分栏预览）：
             预览会整体替换掉编辑区域，不是和源码并排——两者占同一块区域，用 display
@@ -228,16 +393,30 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
               // 新文件挂载了一个全新的 Monaco 实例，旧的 decorations collection 对象
               // 属于已经销毁的上一个实例，不能带过来复用。
               highlightDecorationsRef.current = null;
+
+              // 重启 roc_desk 后重新进工作区时，标签页恢复（App.tsx 的 localStorage
+              // 恢复逻辑）会连续挂载好几个 Editor 实例，还会和"自动打开一个终端"的
+              // 副作用并发抢布局——2026-08-29 用户反馈"重启再进工作区，一部分可编辑
+              // 文件显示不出来"，用 CDP 远程调试连进实际渲染的页面查过：内容其实一直
+              // 是对的（`fs_read_file` 返回正确文本），问题是 Monaco 自己的根节点在
+              // 那个繁忙的挂载瞬间把容器测量成了 5x5 像素（父级 flex 容器当时还没
+              // 完全撑开），`automaticLayout` 的 ResizeObserver 之后没有再纠正回来，
+              // 切一下标签页（强制卸载重挂载 Monaco，此时布局已经稳定）就会恢复正常，
+              // 证实是挂载时机问题，不是数据问题。等浏览器完成当前这轮布局/绘制后
+              // （下一帧）再手动调一次 layout() 强制重新测量，避免赶上这个繁忙窗口。
+              requestAnimationFrame(() => editor.layout());
+
               editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
                 handleSave();
               });
-              if (isMarkdown) {
+              if (canPreview) {
                 editor.addCommand(KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyV, () => {
                   setPreviewOpen((v) => !v);
                 });
               }
             }}
             options={{
+              readOnly: active.truncated,
               fontSize: 13,
               fontFamily: "var(--font-mono)",
               minimap: { enabled: true },
@@ -254,7 +433,43 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
             dangerouslySetInnerHTML={{ __html: previewHtml }}
           />
         )}
+        {isHtml && previewOpen && (
+          <div style={{ position: "relative", width: "100%", height: "100%" }}>
+            {inliningResources && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  right: 8,
+                  zIndex: 1,
+                  fontSize: 11,
+                  padding: "3px 8px",
+                  borderRadius: "var(--radius-sm)",
+                  background: "var(--bg-surface-raised)",
+                  color: "var(--text-secondary)",
+                  boxShadow: "var(--shadow)",
+                }}
+              >
+                正在加载页面引用的外部资源…
+              </div>
+            )}
+            <iframe
+              // key 换成 active.path：切换到另一个 html 文件时强制换一个全新的
+              // iframe，避免上一个文档残留的全局状态（比如它自己的定时器/DOM 引用）
+              // 泄漏进下一份预览。
+              key={active.path}
+              title={`${active.path} 预览`}
+              srcDoc={htmlPreviewSrc ?? active.content}
+              // 特意不给 allow-same-origin：预览的是用户自己打开的文件，允许里面的
+              // <script> 跑起来（这就是"预览"的意义，和浏览器直接打开这个文件行为一致），
+              // 但不给它同源权限去摸这个 Tauri 应用自身的 window/IPC 桥。
+              sandbox="allow-scripts allow-forms allow-modals allow-popups"
+              style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
+            />
+          </div>
+        )}
       </div>
+      )}
       {conflict && (
         <ConflictDialog
           open

@@ -186,6 +186,115 @@ impl FileOps for RemoteFileOps {
         .await
     }
 
+    async fn file_size(&self, path: &str) -> Result<u64, AppError> {
+        let path = path.to_string();
+        self.with_sftp(move |sftp| {
+            Box::pin(async move {
+                let attrs = sftp
+                    .metadata(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
+                Ok(attrs.size.unwrap_or(0))
+            })
+        })
+        .await
+    }
+
+    async fn read_file_raw_bounded(&self, path: &str, max_bytes: u64) -> Result<(Vec<u8>, i64), AppError> {
+        let path = path.to_string();
+        self.with_sftp(move |sftp| {
+            Box::pin(async move {
+                let attrs = sftp
+                    .metadata(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
+                let file = sftp
+                    .open(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("open {path} failed: {e}")))?;
+                let mut buf = Vec::new();
+                file.take(max_bytes)
+                    .read_to_end(&mut buf)
+                    .await
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                Ok((buf, mtime_of(&attrs)))
+            })
+        })
+        .await
+    }
+
+    async fn download_to_local_file(&self, path: &str, local_path: &str) -> Result<(), AppError> {
+        // 复用已有的流式下载（SFTP 快捷工具批量传输那条路径），不走 trait 默认实现的
+        // "整篇读进内存再写盘"，大文件也不会把内存吃满。
+        self.download_to_local(path, local_path).await
+    }
+
+    /// 覆盖 trait 默认实现——默认版本是 `file_size()` 和 `read_file_raw()`/
+    /// `read_file_raw_bounded()` 各自独立调用，对本地文件系统只是多两次系统调用，
+    /// 但对 SFTP 意味着每次打开文件都要多一趟 stat 往返（`with_sftp` 各自加锁/解锁一次）。
+    /// 2026-08-28 用户反馈"远程 SSH 工作区用着用着一些文本文件打开无内容"——大概率是
+    /// 这个新增的额外 stat 往返把原本单次的 SFTP 交互变成两次，在这台服务器/连接上
+    /// 触发了某种时序问题。这里合并回一次 `with_sftp`（一次 metadata + 一次 open/read），
+    /// 和改动前的 `read_file_raw` 完全同构，从根上去掉这个新增的往返。
+    async fn read_bytes_for_editor(&self, path: &str) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
+        let path = path.to_string();
+        self.with_sftp(move |sftp| {
+            Box::pin(async move {
+                let attrs = sftp
+                    .metadata(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
+                let total_size = attrs.size.unwrap_or(0);
+                let truncated = total_size > super::EDITOR_PREVIEW_THRESHOLD_BYTES;
+
+                let mut file = sftp
+                    .open(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("open {path} failed: {e}")))?;
+                let mut buf = Vec::new();
+                if truncated {
+                    file.take(super::EDITOR_PREVIEW_MAX_BYTES)
+                        .read_to_end(&mut buf)
+                        .await
+                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                } else {
+                    file.read_to_end(&mut buf).await.map_err(|e| AppError::Internal(e.to_string()))?;
+                }
+                Ok((buf, mtime_of(&attrs), total_size, truncated))
+            })
+        })
+        .await
+    }
+
+    /// 和 `read_bytes_for_editor` 同样的理由：合并成一次 `with_sftp`，不走 trait 默认的
+    /// "先 file_size() 再 read_file_raw()" 两趟往返。
+    async fn read_binary_for_preview(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+        let path = path.to_string();
+        self.with_sftp(move |sftp| {
+            Box::pin(async move {
+                let attrs = sftp
+                    .metadata(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
+                let total_size = attrs.size.unwrap_or(0);
+                if total_size > max_bytes {
+                    return Err(AppError::Internal(format!(
+                        "文件过大（{:.1}MB），无法预览",
+                        total_size as f64 / 1024.0 / 1024.0
+                    )));
+                }
+                let mut file = sftp
+                    .open(&path)
+                    .await
+                    .map_err(|e| AppError::NotFound(format!("open {path} failed: {e}")))?;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).await.map_err(|e| AppError::Internal(e.to_string()))?;
+                Ok(buf)
+            })
+        })
+        .await
+    }
+
     async fn write_file_bytes(
         &self,
         path: &str,

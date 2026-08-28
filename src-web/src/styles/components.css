@@ -977,6 +977,56 @@
 .shell-op { color: var(--shell-op); }
 .shell-comment { color: var(--shell-comment); font-style: italic; }
 .shell-arg { color: var(--shell-fg); opacity: 0.92; }
+
+/* === 导出符号 / JAR 条目 可搜索彩色列表（BinaryInfoPanel/JarInfoPanel，2026-08-28） === */
+.sym-color-0 { color: var(--sym-1); }
+.sym-color-1 { color: var(--sym-2); }
+.sym-color-2 { color: var(--sym-3); }
+.sym-color-3 { color: var(--sym-4); }
+.sym-color-4 { color: var(--sym-5); }
+.sym-color-5 { color: var(--sym-6); }
+.sym-list-search {
+  height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 120px;
+}
+.sym-list-search:focus { outline: none; border-color: var(--accent); }
+.sym-list-count { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.sym-list-groups { display: flex; flex-wrap: wrap; gap: 4px; margin: var(--space-2) 0; }
+.sym-list-group-badge {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.sym-list-group-badge:hover { border-color: var(--accent); }
+.sym-list-group-badge.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.sym-list-rows {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  max-height: 320px;
+  overflow: auto;
+}
+.sym-list-row {
+  padding: 4px var(--space-3);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border-bottom: 1px solid var(--border-subtle);
+  word-break: break-all;
+}
+.sym-list-row:last-child { border-bottom: none; }
+.sym-list-row:hover { background: var(--bg-hover); }
+.sym-list-empty { padding: var(--space-3); font-size: 12px; color: var(--text-secondary); }
 .agent-markdown table { width: 100%; margin: 0.6em 0; border-collapse: collapse; }
 .agent-markdown th, .agent-markdown td { padding: 5px 8px; border: 1px solid var(--border-default); text-align: left; }
 .agent-markdown th { background: var(--bg-surface); }
@@ -1017,6 +1067,13 @@
 .agent-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .agent-send-btn svg { width: 15px; height: 15px; }
 .provider-draft-banner { margin-bottom: 10px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-default)); border-radius: var(--radius-sm); background: var(--accent-dim); color: var(--accent); font-size: 12px; }
+.editor-large-file-banner { flex-shrink: 0; padding: 6px 12px; font-size: 12px; color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-default)); }
+.excel-preview-table { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.excel-preview-table td { border: 1px solid var(--border-default); padding: 3px 8px; }
+.office-word-preview { padding: 24px 32px; max-width: 900px; margin: 0 auto; font-size: 14px; line-height: 1.6; color: var(--text-primary); }
+.office-word-preview img { max-width: 100%; }
+.office-word-preview table { border-collapse: collapse; }
+.office-word-preview table td, .office-word-preview table th { border: 1px solid var(--border-default); padding: 4px 8px; }
 .coding-history-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: flex-start; justify-content: flex-end; padding: 54px 18px 18px; background: rgba(0,0,0,.22); }
 .coding-history-dialog { width: min(440px, calc(100vw - 36px)); max-height: calc(100vh - 90px); overflow: hidden; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface-raised); box-shadow: var(--shadow); }
 .coding-history-title { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border-default); font-weight: 600; }

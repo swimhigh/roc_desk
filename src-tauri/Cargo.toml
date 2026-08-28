@@ -43,7 +43,11 @@ r2d2_sqlite = "0.25"
 
 # 日志
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 落盘日志（lib.rs::init_logging）：windows_subsystem = "windows" 的发布版没有控制台，
+# tracing_subscriber::fmt::init() 只写 stdout 等于日志直接消失——panic/异常发生时
+# 除了崩溃窗口消失什么都留不下（2026-08-28 用户反馈"程序有可能会自动退出不见了"）。
+tracing-appender = "0.2"
 
 # 其他
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -73,6 +77,20 @@ futures-util = "0.3"
 
 # AI 编程助手：文件变更 Diff 生成（DESIGN.md §3.8.3）
 similar = "2"
+
+# 编辑器图片预览：整份读入的二进制编码成 base64 交给前端拼 data URL 展示
+# （2026-08-28 用户反馈图片在编辑器里被当文本打开、显示一堆乱码）。
+base64 = "0.22"
+
+# 解析 EXE/DLL（PE）、SO（ELF）等可执行文件的基本信息与依赖库列表（2026-08-28
+# 需求：打开这类不可编辑的可执行文件时直接展示这些信息，而不是尝试当文本打开）。
+# 纯 Rust 实现，只读取头部结构，不加载/执行文件本身。
+goblin = "0.9"
+
+# 解析 JAR 包（本质是 ZIP + META-INF/MANIFEST.MF，2026-08-28 需求：查看 JAR 的
+# 基本信息/依赖库列表 + 内部条目）。只开 "deflate"——JAR 里绝大多数条目要么不压缩
+# （STORED）要么用标准 Deflate，不需要 bzip2/zstd/lzma 这些少见编解码器拖累编译时间。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 # RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——依次踩了 rustls 套件受限、

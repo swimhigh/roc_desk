@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { ChevronDown, ChevronRight, FileSearch, Loader2, Replace, ReplaceAll, Search as SearchIcon, X } from "lucide-react";
+import { ChevronDown, ChevronRight, FileSearch, Loader2, Replace, ReplaceAll, Search as SearchIcon, Square, X } from "lucide-react";
 import { useSearchStore } from "../../stores/searchStore";
 import type { PendingHighlight } from "../../stores/editorStore";
 import type { SearchMode, SearchOptions } from "../../types/bindings";
@@ -69,6 +69,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ workspaceId, onOpenRes
     setScope,
     toggleCollapsed,
     runSearch,
+    stopSearch,
     replaceAll,
     replaceInFile,
     clear,
@@ -195,10 +196,18 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ workspaceId, onOpenRes
       </div>
 
       <div style={{ padding: "0 12px 6px" }}>
-        <button className="btn primary sm" onClick={() => runSearch(workspaceId)} disabled={loading || !query.trim()}>
-          {loading ? <Loader2 style={{ width: 14, height: 14 }} className="spin" /> : <SearchIcon style={{ width: 14, height: 14 }} />}
-          {loading ? "搜索中…" : "搜索"}
-        </button>
+        {loading ? (
+          <button className="btn ghost sm" onClick={stopSearch} title="停止搜索">
+            <Square style={{ width: 14, height: 14 }} />
+            停止
+            <Loader2 style={{ width: 12, height: 12, marginLeft: 4 }} className="spin" />
+          </button>
+        ) : (
+          <button className="btn primary sm" onClick={() => runSearch(workspaceId)} disabled={!query.trim()}>
+            <SearchIcon style={{ width: 14, height: 14 }} />
+            搜索
+          </button>
+        )}
       </div>
 
       {error && <div style={{ padding: "0 12px 6px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}

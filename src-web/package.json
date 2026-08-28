@@ -18,10 +18,13 @@
     "@xterm/xterm": "^5.5",
     "dompurify": "^3.4.13",
     "lucide-react": "^0.469",
+    "mammoth": "^1.12.1",
     "marked": "^18.0.10",
     "monaco-editor": "^0.52",
+    "pdfjs-dist": "^5.7.284",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "xlsx": "^0.18.5",
     "zustand": "^5"
   },
   "devDependencies": {

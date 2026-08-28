@@ -43,33 +43,94 @@ use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
 use state::AppState;
 use workspace::WorkspaceManager;
 
+/// 数据库/日志等可变内容放在 exe 同级的 `.rock_desk` 子目录，不用系统 AppData——
+/// 便于整个安装目录整体迁移/备份，也符合便携部署的预期（不打包进 exe 本身，是运行时
+/// 在旁边生成的独立目录）。从 `run()` 顶层提出来（而不是留在 `.setup()` 闭包里）是
+/// 因为 `init_logging` 也要用这个目录，必须在 `tauri::Builder` 跑起来之前就拿到手，
+/// 这样从进程启动的第一行代码开始所有日志/panic 都能落盘，不留"最初这段时间出的错
+/// 没记录"的空档。
+fn resolve_app_data_dir() -> std::io::Result<std::path::PathBuf> {
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位可执行文件所在目录"))?
+        .to_path_buf();
+    let mut app_data_dir = exe_dir.join(".rock_desk");
+    let legacy_data_dir = exe_dir.join("data");
+    if !app_data_dir.exists() && legacy_data_dir.exists() {
+        // 一次性迁移旧版本数据，保留连接、Provider、日志索引等已有配置。这一步还在
+        // tracing 初始化之前，迁移失败时没有日志系统可用，只能眼下 eprintln 一句
+        // （windowed 发布版没有控制台，这行基本只有开发模式下能看见，但不影响后面
+        // 用 legacy_data_dir 兜底继续跑）。
+        if let Err(error) = std::fs::rename(&legacy_data_dir, &app_data_dir) {
+            eprintln!("failed to migrate data directory to .rock_desk: {error}; using legacy data directory for this run");
+            app_data_dir = legacy_data_dir;
+        }
+    }
+    std::fs::create_dir_all(&app_data_dir)?;
+    Ok(app_data_dir)
+}
+
+/// 日志落盘（同时保留 stdout，开发模式下 `cargo tauri dev` 挂着控制台还是照常能看）。
+/// 用阻塞写入的 `RollingFileAppender`（不是 `tracing_appender::non_blocking` 那种
+/// 后台线程+缓冲的写法）——目的就是崩溃时这一条日志已经真的落盘了，不会因为进程
+/// 退出得太快、后台刷盘线程没来得及跑完而把最关键的这条丢掉。日志量本来就不大
+/// （用户操作触发的业务事件，不是逐字节的高频日志），阻塞写入的开销可以忽略。
+fn init_logging(log_dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(log_dir);
+    let file_writer = tracing_appender::rolling::daily(log_dir, "roc_desk.log");
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(file_writer).with_ansi(false))
+        .init();
+}
+
+/// 之前完全没有 panic hook：任何线程 panic 都是"无声消失"——windowed 发布版没有
+/// 控制台，默认 panic hook 打印到 stderr 等于打进了黑洞，用户看到的就是"程序突然
+/// 不见了"，什么线索都留不下（2026-08-28 用户反馈）。这里不改变 panic 本身的行为
+/// （该 unwind 还是 unwind，该终止哪个线程还是终止哪个线程），只是在默认处理之前
+/// 先把完整信息记进日志文件。`Backtrace::force_capture` 无视 `RUST_BACKTRACE`
+/// 环境变量强制抓栈——打包给用户的 exe 没人会去设这个环境变量，不强制就等于没有。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "非字符串 panic payload".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(target: "panic", %location, %message, %backtrace, "程序发生 panic");
+        default_hook(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt::init();
+    let app_data_dir = match resolve_app_data_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            // 连数据目录都定位不了，日志系统也没法初始化——这是极端边缘情况
+            // （比如 current_exe() 失败），只能眼下退出，没有更好的兜底。
+            eprintln!("无法初始化数据目录，程序退出: {error}");
+            return;
+        }
+    };
+    init_logging(&app_data_dir.join("logs"));
+    install_panic_hook();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            // 数据库/日志缓存等可变内容放在 exe 同级的 data 子目录，不用系统 AppData——
-            // 便于整个安装目录整体迁移/备份，也符合便携部署的预期（不打包进 exe 本身，
-            // 是运行时在旁边生成的独立目录）。
-            let exe_dir = std::env::current_exe()?
-                .parent()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位可执行文件所在目录"))?
-                .to_path_buf();
-            // 统一应用缓存目录：数据库、日志缓存、编程助手历史等都放在这里。
-            // 使用项目约定的隐藏目录名，避免缓存散落在各个模块或临时目录中。
-            let mut app_data_dir = exe_dir.join(".rock_desk");
-            let legacy_data_dir = exe_dir.join("data");
-            if !app_data_dir.exists() && legacy_data_dir.exists() {
-                // 一次性迁移旧版本数据，保留连接、Provider、日志索引等已有配置。
-                if let Err(error) = std::fs::rename(&legacy_data_dir, &app_data_dir) {
-                    tracing::warn!(%error, "failed to migrate data directory to .rock_desk; using legacy data directory for this run");
-                    app_data_dir = legacy_data_dir;
-                }
-            }
-            std::fs::create_dir_all(&app_data_dir)?;
+        .setup(move |app| {
             let db_path = app_data_dir.join("roc_desk.db");
 
             let pool = db::pool::create_pool(&db_path)?;
@@ -194,7 +255,14 @@ pub fn run() {
             commands::fs::fs_rename,
             commands::fs::fs_copy,
             commands::fs::fs_search_stream,
+            commands::fs::fs_search_cancel,
             commands::fs::fs_replace,
+            commands::fs::fs_read_binary_preview,
+            commands::fs::fs_open_externally,
+            commands::fs::fs_convert_legacy_office_to_pdf,
+            commands::fs::fs_inspect_binary,
+            commands::fs::fs_peek_is_binary,
+            commands::fs::fs_inspect_jar,
             commands::connection::connection_list,
             commands::connection::connection_create,
             commands::connection::connection_update,
@@ -219,6 +287,12 @@ pub fn run() {
             commands::rdp::rdp_status,
             commands::sftp::sftp_list_dir,
             commands::sftp::sftp_read_file,
+            commands::sftp::sftp_read_binary_preview,
+            commands::sftp::sftp_open_externally,
+            commands::sftp::sftp_convert_legacy_office_to_pdf,
+            commands::sftp::sftp_inspect_binary,
+            commands::sftp::sftp_peek_is_binary,
+            commands::sftp::sftp_inspect_jar,
             commands::sftp::sftp_write_file,
             commands::sftp::sftp_download,
             commands::sftp::sftp_upload,
@@ -279,6 +353,7 @@ pub fn run() {
             commands::browser::browser_history_list,
             commands::browser::browser_history_remove,
             commands::browser::browser_history_clear,
+            commands::diagnostics::log_frontend_error,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

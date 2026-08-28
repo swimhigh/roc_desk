@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FileContent, FileEntry, ReplaceSummary, SearchMode, SearchOptions, WriteOutcome } from "../types/bindings";
+import type { BinaryInfo, FileContent, FileEntry, JarInfo, ReplaceSummary, SearchMode, SearchOptions, WriteOutcome } from "../types/bindings";
 
 export const fsService = {
   listDir(workspaceId: string, path: string): Promise<FileEntry[]> {
@@ -8,6 +8,40 @@ export const fsService = {
 
   readFile(workspaceId: string, path: string): Promise<FileContent> {
     return invoke("fs_read_file", { workspaceId, path });
+  },
+
+  /** 图片/PDF/Word/Excel 预览：返回 base64（不含 data: 前缀），前端自己按扩展名分流。*/
+  readBinaryPreview(workspaceId: string, path: string): Promise<string> {
+    return invoke("fs_read_binary_preview", { workspaceId, path });
+  },
+
+  /** "用系统默认程序打开"——本地工作区开原路径，远程工作区后端会先下载到本地临时目录。*/
+  openExternally(workspaceId: string, path: string): Promise<void> {
+    return invoke("fs_open_externally", { workspaceId, path });
+  },
+
+  /** 旧版二进制 Office 文档（.doc/.xls/.ppt/.pptx）用本机 LibreOffice 临时转成 PDF
+   * 预览，返回 base64（不含 data: 前缀）——没装 LibreOffice 时会 reject，调用方需要
+   * 兜底展示成"转换失败 + 用系统程序打开"（2026-08-28 用户建议）。*/
+  convertLegacyOfficeToPdf(workspaceId: string, path: string): Promise<string> {
+    return invoke("fs_convert_legacy_office_to_pdf", { workspaceId, path });
+  },
+
+  /** EXE/DLL/SO 等可执行文件的基本信息 + 依赖库列表（2026-08-28 需求）。*/
+  inspectBinary(workspaceId: string, path: string): Promise<BinaryInfo> {
+    return invoke("fs_inspect_binary", { workspaceId, path });
+  },
+
+  /** 没有已知可执行文件扩展名的文件，打开前嗅探开头几个字节判断是不是 ELF/PE/
+   * Mach-O（2026-08-28 用户反馈：Linux 下的可执行文件习惯上不带扩展名，之前一律
+   * 被当文本打开）。只读一小段，不是整篇。*/
+  peekIsBinary(workspaceId: string, path: string): Promise<boolean> {
+    return invoke("fs_peek_is_binary", { workspaceId, path });
+  },
+
+  /** JAR 包的基本信息（manifest/Main-Class/Class-Path）+ 内部条目列表（2026-08-28 需求）。*/
+  inspectJar(workspaceId: string, path: string): Promise<JarInfo> {
+    return invoke("fs_inspect_jar", { workspaceId, path });
   },
 
   writeFile(
@@ -70,6 +104,12 @@ export const fsService = {
     options: SearchOptions,
   ): Promise<void> {
     return invoke("fs_search_stream", { workspaceId, requestId, scopePath, query, mode, options });
+  },
+
+  /** 手动停止正在跑的搜索（2026-08-29 需求："搜索功能不能停止，需要有停止功能"）。
+   * `requestId` 必须是那次搜索发起时用的同一个，避免误停用户之后又发起的新搜索。*/
+  cancelSearch(requestId: string): Promise<void> {
+    return invoke("fs_search_cancel", { requestId });
   },
 
   /** 查找并替换全部——paths 是搜索结果里的文件路径，不重新在后端搜一遍。 */

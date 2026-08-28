@@ -27,11 +27,62 @@ export interface FileContent {
   text: string;
   encoding: string;
   mtime: number;
+  /** 文件总字节数（不是 text 的长度——truncated 为 true 时 text 只是截断预览）。 */
+  total_size: number;
+  /** 文件过大、text 只是截断预览时为 true；此时编辑器应转只读，禁止保存。 */
+  truncated: boolean;
 }
 
 export type WriteOutcome =
   | { type: "Written"; mtime: number }
   | { type: "Conflict"; current_mtime: number; current_preview: string };
+
+/** 对应后端 `fsops::binary_info::BinaryInfo`——打开 EXE/DLL/SO 等可执行文件时展示
+ * 的基本信息 + 依赖库列表（2026-08-28 需求）。 */
+export interface BinaryInfo {
+  format: string;
+  architecture: string;
+  bitness: string;
+  file_kind: string;
+  entry_point: string | null;
+  timestamp: string | null;
+  subsystem: string | null;
+  dependencies: string[];
+  exports: string[];
+  exports_truncated: boolean;
+  total_exports: number;
+  sections: BinarySection[];
+}
+
+export interface BinarySection {
+  name: string;
+  virtual_size: number;
+  raw_size: number;
+}
+
+/** 对应后端 `fsops::jar_info::JarInfo`——打开 JAR 包时展示的基本信息（manifest/
+ * Main-Class/Class-Path）+ 内部条目列表（2026-08-28 需求）。 */
+export interface JarInfo {
+  total_entries: number;
+  class_count: number;
+  main_class: string | null;
+  class_path: string[];
+  manifest: ManifestAttribute[];
+  entries: JarEntryInfo[];
+  entries_truncated: boolean;
+}
+
+export interface ManifestAttribute {
+  key: string;
+  value: string;
+}
+
+export interface JarEntryInfo {
+  path: string;
+  is_dir: boolean;
+  size: number;
+  compressed_size: number;
+}
 
 export type AppErrorKind =
   | "Connection"

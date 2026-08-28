@@ -1,11 +1,16 @@
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::fsops::encoding;
-use crate::fsops::{search_stream, FileContent, FileEntry, ReplaceSummary, SearchMode, SearchOptions, WriteOutcome};
+use crate::fsops::{
+    binary_info, jar_info, office_convert, search_stream, BinaryInfo, FileContent, FileEntry, JarInfo, ReplaceSummary,
+    SearchMode, SearchOptions, WriteOutcome, BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
+};
 use crate::state::AppState;
 use crate::workspace::{WorkspaceHandle, WorkspaceKind};
 
@@ -77,7 +82,7 @@ pub async fn fs_read_file(
 ) -> Result<FileContent, AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
-    handle.file_ops.read_file(&path).await
+    handle.file_ops.read_file_for_editor(&path).await
 }
 
 #[tauri::command]
@@ -103,9 +108,9 @@ pub async fn fs_read_file_with_encoding(
 ) -> Result<FileContent, AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
-    let (bytes, mtime) = handle.file_ops.read_file_raw(&path).await?;
+    let (bytes, mtime, total_size, truncated) = handle.file_ops.read_bytes_for_editor(&path).await?;
     let text = encoding::decode_with(&bytes, &encoding_label).map_err(AppError::Internal)?;
-    Ok(FileContent { text, encoding: encoding_label, mtime })
+    Ok(FileContent { text, encoding: encoding_label, mtime, total_size, truncated })
 }
 
 /// "Save with Encoding"（参考 VS Code）：按指定编码编码后写盘，而不是固定 UTF-8。
@@ -127,6 +132,111 @@ pub async fn fs_write_file_with_encoding(
 #[tauri::command]
 pub fn fs_supported_encodings() -> Vec<&'static str> {
     encoding::SUPPORTED_ENCODINGS.to_vec()
+}
+
+/// 编辑器图片/PDF/Word/Excel 预览（2026-08-28 用户反馈：这些文件在编辑器里被当文本
+/// 打开显示乱码）：返回 base64，前端自己按扩展名分流成 `<img>`/`<iframe>`/mammoth/
+/// xlsx 解析——是什么类型、用什么方式展示都是前端已经要维护的"按扩展名分流"逻辑的
+/// 一部分，不需要后端再判断一遍。
+#[tauri::command]
+pub async fn fs_read_binary_preview(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<String, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+    let bytes = handle.file_ops.read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// "用系统默认程序打开"（Word/Excel/PDF 等编辑器不预览、或压根不支持的二进制文件，
+/// 2026-08-28 用户反馈）：本地工作区直接开原路径；远程工作区先下载到本地临时目录
+/// 再开——系统程序不认识 SSH 路径。临时文件故意不清理：用户可能还在用外部程序编辑，
+/// 提前删掉会导致外部程序保存失败；操作系统的临时目录本身会被系统按需清理。
+#[tauri::command]
+pub async fn fs_open_externally(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    path: String,
+) -> Result<(), AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+
+    let target = if handle.profile.kind == WorkspaceKind::Local {
+        path.clone()
+    } else {
+        let file_name = path.rsplit('/').next().unwrap_or(&path);
+        let tmp_dir = std::env::temp_dir().join("roc_desk_open");
+        std::fs::create_dir_all(&tmp_dir)?;
+        let local_path = tmp_dir.join(file_name);
+        handle.file_ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+        local_path.to_string_lossy().to_string()
+    };
+
+    app_handle
+        .opener()
+        .open_path(target, None::<&str>)
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// 旧版二进制 Office 文档（.doc/.xls/.ppt 等）没有轻量级纯 JS 库能解析——不像
+/// .docx/.xlsx 是 zip+XML，mammoth/xlsx.js 用不了。用本机安装的 LibreOffice 临时转成
+/// PDF 再复用已有的 `PdfPreview` 渲染（2026-08-28 用户建议）。本地工作区直接转源文件；
+/// 远程工作区先下载到本地临时目录（复用 `fs_open_externally` 的思路），LibreOffice
+/// 本来也只能处理本地文件。转换产物和 `fs_open_externally` 一样落在系统临时目录，
+/// 不主动清理。
+#[tauri::command]
+pub async fn fs_convert_legacy_office_to_pdf(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<String, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+
+    let tmp_dir = std::env::temp_dir().join("roc_desk_office_convert");
+    let source_path = if handle.profile.kind == WorkspaceKind::Local {
+        PathBuf::from(&path)
+    } else {
+        std::fs::create_dir_all(&tmp_dir)?;
+        let file_name = path.rsplit('/').next().unwrap_or(&path);
+        let local_path = tmp_dir.join(file_name);
+        handle.file_ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+        local_path
+    };
+
+    let pdf_path = office_convert::convert_to_pdf(&source_path, &tmp_dir).await?;
+    let bytes = tokio::fs::read(&pdf_path).await.map_err(AppError::from)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// 打开 EXE/DLL/SO 等不可编辑的可执行文件时展示基本信息 + 依赖库列表（2026-08-28
+/// 需求），复用 `BINARY_PREVIEW_MAX_BYTES` 同一个体积上限——道理和图片/PDF 预览一样，
+/// 头部结构解析需要完整文件字节，太大的文件不值得整份读进内存只为看个摘要。
+#[tauri::command]
+pub async fn fs_inspect_binary(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<BinaryInfo, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+    let bytes = handle.file_ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    binary_info::inspect(&bytes)
+}
+
+/// 没有已知可执行文件扩展名的文件打开前先嗅探开头 64 字节判断是不是 ELF/PE/Mach-O
+/// （2026-08-28 用户反馈："Linux 的可执行文件默认是以文本编辑器查看的，需要改成
+/// 查看它的基本信息和依赖库信息"——Linux 下的可执行文件习惯上不带扩展名，只靠
+/// 扩展名分流会完全漏掉这类文件）。只读一小段，不是整篇，前端只对没有已知扩展名
+/// 的文件调用这个命令，不会给每次打开文本文件都加一次往返。
+#[tauri::command]
+pub async fn fs_peek_is_binary(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<bool, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+    let (head, _mtime) = handle.file_ops.read_file_raw_bounded(&path, 64).await?;
+    Ok(binary_info::looks_like_binary(&head))
+}
+
+/// 打开 JAR 包时展示基本信息（manifest/Main-Class/Class-Path）+ 内部条目列表
+/// （2026-08-28 需求），语义和 `fs_inspect_binary` 一致，只是解析的是 ZIP 结构而不是
+/// PE/ELF 头。
+#[tauri::command]
+pub async fn fs_inspect_jar(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<JarInfo, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+    let bytes = handle.file_ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    jar_info::inspect(&bytes)
 }
 
 /// Explorer 右键"删除"（参考 VS Code）。
@@ -210,6 +320,20 @@ pub async fn fs_search_stream(
         }
     }
     Ok(())
+}
+
+/// 手动"停止搜索"（2026-08-29 用户反馈：搜索开始后没有办法主动停下来，只能干等
+/// 跑完）。复用 `fs_search_stream` 已有的取消机制——`should_cancel` 每处理一个
+/// 目录/文件都会检查一次 `active_search` 是否还等于自己的 `request_id`，之前只有
+/// "开始新搜索"会改写这个值触发取消，这里补上"用户主动点停止"这第二个触发源。
+/// 只在 `request_id` 仍然匹配时才清空——避免停止按钮的这次点击滞后到达时，
+/// 误伤了用户之后又输入新关键词触发的另一次搜索。
+#[tauri::command]
+pub fn fs_search_cancel(state: State<'_, AppState>, request_id: Uuid) {
+    let mut active = state.active_search.lock().unwrap();
+    if *active == Some(request_id) {
+        *active = None;
+    }
 }
 
 /// 查找并替换全部（参考 VS Code 搜索面板的 Replace）。`paths` 是前端已经拿到的

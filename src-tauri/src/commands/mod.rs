@@ -2,6 +2,7 @@ pub mod ai;
 pub mod browser;
 pub mod coding;
 pub mod connection;
+pub mod diagnostics;
 pub mod connection_group;
 pub mod fs;
 pub mod local_fs;

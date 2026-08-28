@@ -64,6 +64,10 @@ npm run tauri:build            # 在仓库根目录执行
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri 插件](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
+## 日志
+
+程序崩溃/异常会记录到 exe 同级的 `.rock_desk/logs/roc_desk.log.YYYY-MM-DD`（按天滚动）。遇到"程序突然退出/不见了"，先看这个文件里最后几行——panic 会带上完整的出错位置和调用栈。前端未捕获的异常（渲染错误、未处理的 Promise rejection）也会转发进同一份日志。
+
 ## 许可证
 
 [MIT](LICENSE) + [Commons Clause](https://commonsclause.com/)：可以自由使用、修改、分发（包括商业环境内部使用），唯一的限制是不能把本软件本身直接拿去卖钱或作为收费服务对外提供（即"不能直接商用"，其余不受限）。完整条款见 [LICENSE](LICENSE)。

@@ -1,8 +1,13 @@
+use base64::Engine;
 use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::fsops::{FileContent, FileEntry, FileOps, WriteOutcome};
+use crate::fsops::{
+    binary_info, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps, JarInfo, WriteOutcome,
+    BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
+};
 use crate::state::AppState;
 
 /// SFTP 自由浏览快捷工具（DESIGN.md §3.3）：**故意不做工作区边界检查**——
@@ -26,7 +31,75 @@ pub async fn sftp_read_file(
     path: String,
 ) -> Result<FileContent, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    ops.read_file(&path).await
+    ops.read_file_for_editor(&path).await
+}
+
+/// SFTP 快捷浏览器的图片/PDF/Word/Excel 预览，语义和 `commands::fs::fs_read_binary_preview`
+/// 一致，见那边注释。
+#[tauri::command]
+pub async fn sftp_read_binary_preview(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<String, AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let bytes = ops.read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// "用系统默认程序打开"：SFTP 快捷浏览器天然都是远程路径，不需要 `fs_open_externally`
+/// 那样区分本地/远程——一律先下载到本地临时目录再拉起系统默认程序。
+#[tauri::command]
+pub async fn sftp_open_externally(app_handle: AppHandle, state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let file_name = path.rsplit('/').next().unwrap_or(&path);
+    let tmp_dir = std::env::temp_dir().join("roc_desk_open");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let local_path = tmp_dir.join(file_name);
+    ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+    app_handle
+        .opener()
+        .open_path(local_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+/// SFTP 版的旧版二进制 Office 文档转 PDF 预览，语义和
+/// `commands::fs::fs_convert_legacy_office_to_pdf` 一致——这里天然都是远程路径，
+/// 不需要区分本地/远程分支，直接下载到本地临时目录再转换。
+#[tauri::command]
+pub async fn sftp_convert_legacy_office_to_pdf(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<String, AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let tmp_dir = std::env::temp_dir().join("roc_desk_office_convert");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let file_name = path.rsplit('/').next().unwrap_or(&path);
+    let local_path = tmp_dir.join(file_name);
+    ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+
+    let pdf_path = office_convert::convert_to_pdf(&local_path, &tmp_dir).await?;
+    let bytes = tokio::fs::read(&pdf_path).await.map_err(AppError::from)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// SFTP 版的 EXE/DLL/SO 基本信息 + 依赖库查看，语义和 `commands::fs::fs_inspect_binary` 一致。
+#[tauri::command]
+pub async fn sftp_inspect_binary(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<BinaryInfo, AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let bytes = ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    binary_info::inspect(&bytes)
+}
+
+/// SFTP 版的"没有扩展名的文件是不是 ELF 可执行文件"嗅探，语义和
+/// `commands::fs::fs_peek_is_binary` 一致——Linux 远程主机上的可执行文件同样习惯上
+/// 不带扩展名，SFTP 快捷浏览器这边也要有同样的兜底。
+#[tauri::command]
+pub async fn sftp_peek_is_binary(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<bool, AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let (head, _mtime) = ops.read_file_raw_bounded(&path, 64).await?;
+    Ok(binary_info::looks_like_binary(&head))
+}
+
+/// SFTP 版的 JAR 包查看，语义和 `commands::fs::fs_inspect_jar` 一致。
+#[tauri::command]
+pub async fn sftp_inspect_jar(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<JarInfo, AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let bytes = ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    jar_info::inspect(&bytes)
 }
 
 #[tauri::command]

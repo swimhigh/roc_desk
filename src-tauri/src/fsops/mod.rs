@@ -1,5 +1,8 @@
+pub mod binary_info;
 pub mod encoding;
+pub mod jar_info;
 pub mod local;
+pub mod office_convert;
 pub mod remote;
 
 use async_trait::async_trait;
@@ -8,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use encoding::decode_text_detect;
+
+pub use binary_info::{BinaryInfo, SectionInfo};
+pub use jar_info::{JarEntryInfo, JarInfo, ManifestAttribute};
 
 /// 全文搜索/替换单个目录内跳过的噪音目录名（构建产物/依赖/VCS 元数据），
 /// 和常见二进制文件扩展名——不进这些目录、不读这些扩展名的文件，避免把
@@ -25,6 +31,34 @@ const SEARCH_MAX_MATCHES: usize = 3000;
 const SEARCH_MAX_MATCHES_PER_FILE: usize = 50;
 /// 单文件超过这个大小就跳过，不读进内存做正则——避免误扫到大体积日志/数据文件。
 const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 编辑器打开文件超过这个大小就不整篇读入内存，改走只读预览（2026-08-28 用户反馈：
+/// >1GB 的文本文件在编辑器里打开会卡死——根因是 `read_file`/`read_file_raw` 默认实现
+/// 无论文件多大都 `read_to_string`/`read_to_end` 整篇吸进内存，Monaco 再存一份，
+/// 前端拿到超大字符串卡死渲染。DESIGN.md/UI_DESIGN.md 里早就设想过大文件分档处理，
+/// 但一直没有落地，这里补上）。
+const EDITOR_PREVIEW_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
+/// 超过阈值时只读这么多字节做预览——够看清文件内容，又不会因为单个巨大文件把
+/// 内存/IPC 占满（尤其是远程 SFTP 场景，这些字节还要整个通过 IPC 序列化传给前端）。
+const EDITOR_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 二进制预览（图片/PDF/Word/Excel）最大字节数：这些格式不能像文本那样"只读一半"
+/// （截断的 PNG/PDF/docx 解不出内容，不如不读），所以是"超过就直接拒绝"而不是
+/// "超过就截断"。30MB 覆盖绝大多数截图/文档场景，真遇到更大的文件用户应该用
+/// "系统默认程序打开"而不是编辑器里的预览（2026-08-28 用户反馈图片/Word/Excel/PDF
+/// 在编辑器里被当文本打开显示乱码）。`pub` 是因为 `commands/fs.rs`/`commands/sftp.rs`
+/// 的预览命令也要用同一个上限。
+pub const BINARY_PREVIEW_MAX_BYTES: u64 = 30 * 1024 * 1024;
+
+/// EXE/DLL/SO/JAR 解析（`fsops::binary_info`/`fsops::jar_info`）用单独的、大得多的
+/// 上限，不能复用 `BINARY_PREVIEW_MAX_BYTES`（2026-08-29 用户反馈：Linux 下一个
+/// 62.5MB 的可执行文件报"文件过大，无法预览"，之前两者共用 30MB 这个为图片/PDF/
+/// Word/Excel 预览设计的上限）——真实世界的可执行文件/JAR 包（尤其是 Go/Rust 静态
+/// 链接产物、fat jar）动辄几十到上百 MB，比典型图片/文档大一个数量级，而且解析
+/// 依赖完整字节（ELF 的节区表、动态符号表可能在文件任意偏移，goblin/zip 都需要
+/// 能随机访问整个文件，不能像文本预览那样只读开头一截）。200MB 覆盖绝大多数真实
+/// 场景，真遇到更大的直接引导去"用系统程序打开"。
+pub const EXECUTABLE_INSPECT_MAX_BYTES: u64 = 200 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchOptions {
@@ -115,8 +149,9 @@ fn looks_binary(bytes: &[u8]) -> bool {
 pub trait FileOps: Send + Sync {
     async fn read_file(&self, path: &str) -> Result<FileContent, AppError> {
         let (bytes, mtime) = self.read_file_raw(path).await?;
+        let total_size = bytes.len() as u64;
         let (text, encoding) = decode_text_detect(&bytes);
-        Ok(FileContent { text, encoding: encoding.to_string(), mtime })
+        Ok(FileContent { text, encoding: encoding.to_string(), mtime, total_size, truncated: false })
     }
 
     /// `expected_mtime` 为空表示不做冲突检测（例如新建文件）；非空时若远程/本地
@@ -135,6 +170,61 @@ pub trait FileOps: Send + Sync {
 
     /// 返回文件的原始字节 + mtime，不做任何编码假设。
     async fn read_file_raw(&self, path: &str) -> Result<(Vec<u8>, i64), AppError>;
+
+    /// 只 stat 拿文件总字节数，不读内容——编辑器打开文件前用它判断要不要走
+    /// 只读预览分支，判断本身不能先把文件读一遍，否则大文件还是会卡在这一步。
+    async fn file_size(&self, path: &str) -> Result<u64, AppError>;
+
+    /// 和 `read_file_raw` 一样返回原始字节 + mtime，但最多只读 `max_bytes` 字节——
+    /// 本地实现用 `Read::take`，远程实现用 SFTP 文件句柄的 `AsyncReadExt::take`，
+    /// 都不会像 `read_file_raw` 那样把整个文件一次性吸进内存。
+    async fn read_file_raw_bounded(&self, path: &str, max_bytes: u64) -> Result<(Vec<u8>, i64), AppError>;
+
+    /// 给编辑器用的"体积感知"读取：超过 `EDITOR_PREVIEW_THRESHOLD_BYTES` 就只读前
+    /// `EDITOR_PREVIEW_MAX_BYTES` 字节，`truncated` 告诉调用方这份内容是被截断的
+    /// 预览，不能整篇编辑保存（保存会把截断内容覆盖回真实的大文件，等于删除数据）。
+    async fn read_bytes_for_editor(&self, path: &str) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
+        let total_size = self.file_size(path).await?;
+        if total_size > EDITOR_PREVIEW_THRESHOLD_BYTES {
+            let (bytes, mtime) = self.read_file_raw_bounded(path, EDITOR_PREVIEW_MAX_BYTES).await?;
+            Ok((bytes, mtime, total_size, true))
+        } else {
+            let (bytes, mtime) = self.read_file_raw(path).await?;
+            Ok((bytes, mtime, total_size, false))
+        }
+    }
+
+    /// `read_bytes_for_editor` 的字符串版本，直接产出编辑器/`fs_read_file` 命令要的
+    /// `FileContent`，编码探测只在实际读到的那部分字节上跑（截断预览时同理，探测的是
+    /// 预览片段的编码，不代表一定是整个文件的编码——这是"能看个大概"和"卡死"之间的取舍）。
+    async fn read_file_for_editor(&self, path: &str) -> Result<FileContent, AppError> {
+        let (bytes, mtime, total_size, truncated) = self.read_bytes_for_editor(path).await?;
+        let (text, encoding) = decode_text_detect(&bytes);
+        Ok(FileContent { text, encoding: encoding.to_string(), mtime, total_size, truncated })
+    }
+
+    /// 图片预览用：先 stat 判断大小，超过 `max_bytes` 直接拒绝（不像文本那样截断读
+    /// 一部分——半张图片解不出来，截断预览对图片没有意义），没超就整份读回。
+    async fn read_binary_for_preview(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+        let total_size = self.file_size(path).await?;
+        if total_size > max_bytes {
+            return Err(AppError::Internal(format!(
+                "文件过大（{:.1}MB），无法预览",
+                total_size as f64 / 1024.0 / 1024.0
+            )));
+        }
+        let (bytes, _mtime) = self.read_file_raw(path).await?;
+        Ok(bytes)
+    }
+
+    /// "用系统默认程序打开"（Word/Excel/PDF 等编辑器不支持预览或不支持编辑的文件类型，
+    /// 2026-08-28 用户反馈）：系统程序不认识 SSH/SFTP 路径，必须先把内容落到本地磁盘
+    /// 上的一个真实路径。默认实现直接整篇读入内存再写盘（本地场景足够快）；`RemoteFileOps`
+    /// 覆盖成流式的 `download_to_local`，不会把大文件整个吸进内存。
+    async fn download_to_local_file(&self, path: &str, local_path: &str) -> Result<(), AppError> {
+        let (bytes, _mtime) = self.read_file_raw(path).await?;
+        tokio::fs::write(local_path, &bytes).await.map_err(AppError::from)
+    }
 
     /// 和 `write_file` 语义一致（含冲突检测），只是接受任意字节而不是假定 UTF-8 字符串。
     async fn write_file_bytes(
@@ -342,6 +432,11 @@ pub struct FileContent {
     pub encoding: String,
     /// Unix 时间戳（秒），供保存时做冲突检测
     pub mtime: i64,
+    /// 文件总字节数（不是 `text` 的长度——`truncated` 为 true 时 `text` 只是前一小段）。
+    pub total_size: u64,
+    /// 文件超过大小阈值、`text` 只是截断预览时为 true；前端应据此把编辑器切成只读，
+    /// 禁止保存（截断内容写回会把真实的大文件截断成预览这么大，等于丢数据）。
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
