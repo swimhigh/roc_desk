@@ -7,6 +7,10 @@ interface PasswordPromptDialogProps {
   onCancel: () => void;
   onSubmit: (password: string) => void;
   submitting?: boolean;
+  /** 复用同一个弹窗给 Agent 连接补录配对令牌时传 "配对令牌"，默认 "密码"
+   * （AGENT_DESIGN.md：Agent 协议用配对令牌而不是密码，但补救交互完全一样，
+   * 不值得单独建一个弹窗组件）。 */
+  secretLabel?: string;
 }
 
 /**
@@ -22,6 +26,7 @@ export const PasswordPromptDialog: React.FC<PasswordPromptDialogProps> = ({
   onCancel,
   onSubmit,
   submitting,
+  secretLabel = "密码",
 }) => {
   const [password, setPassword] = useState("");
   const [visible, setVisible] = useState(false);
@@ -31,7 +36,7 @@ export const PasswordPromptDialog: React.FC<PasswordPromptDialogProps> = ({
       open={open}
       severity="warning"
       icon="🔑"
-      title="需要重新输入密码"
+      title={`需要重新输入${secretLabel}`}
       dismissible={!submitting}
       onDismiss={onCancel}
       actions={
@@ -50,7 +55,7 @@ export const PasswordPromptDialog: React.FC<PasswordPromptDialogProps> = ({
       }
     >
       <p style={{ marginBottom: 8 }}>
-        连接 <strong>{connectionName}</strong> 没有已保存的密码（或密码已失效），请重新输入。
+        连接 <strong>{connectionName}</strong> 没有已保存的{secretLabel}（或已失效），请重新输入。
       </p>
       <div className="form-input-group">
         <input

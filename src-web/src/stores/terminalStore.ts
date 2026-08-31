@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { sshService } from "../services/sshService";
 import { ptyService } from "../services/ptyService";
+import { agentService } from "../services/agentService";
 
 export interface TerminalTab {
   id: string; // channelId，同时用作 React key
@@ -11,8 +12,8 @@ export interface TerminalTab {
    * 那边的 Tab 从来不经过本 store，天然没有也用不到这个字段；本 store 自己产出的
    * Tab（`openTerminal` 等）总是会填上。 */
   workspaceId?: string;
-  kind: "ssh" | "local";
-  profileId?: string; // kind === 'ssh' 时必填
+  kind: "ssh" | "agent" | "local";
+  profileId?: string; // kind === 'ssh' | 'agent' 时必填
   title: string;
   /** Channel 已经断开（远端 shell 退出、连接中断等）——不是"用户主动关闭"，
    * 是被动检测到的，UI 上要和正常的 Tab 区分开并提供重连入口。*/
@@ -49,7 +50,9 @@ interface TerminalState {
 
   /** 新开一个终端 Tab（VS Code 风格：底部面板 + 多终端），返回新 Tab 的 id。
    * `cwd` 默认就是当前工作区根目录——参考 VS Code 打开项目后集成终端自动进到项目目录。*/
-  openTerminal: (target: { kind: "ssh"; profileId: string; cwd?: string } | { kind: "local"; cwd?: string }) => Promise<string>;
+  openTerminal: (
+    target: { kind: "ssh" | "agent"; profileId: string; cwd?: string } | { kind: "local"; cwd?: string },
+  ) => Promise<string>;
   closeTerminal: (id: string) => Promise<void>;
   /** 把一段文本写进某个终端（供 Explorer 右键"运行脚本"等场景复用，不需要终端已经
    * focus 或可见——数据经后端 emit 回来，已挂载的 TerminalView 自然会显示）。*/
@@ -79,6 +82,8 @@ async function closeBackendChannel(tab: TerminalTab): Promise<void> {
   try {
     if (tab.kind === "ssh") {
       await sshService.closeChannel(tab.profileId!, tab.id);
+    } else if (tab.kind === "agent") {
+      await agentService.closeChannel(tab.profileId!, tab.id);
     } else {
       await ptyService.close(tab.id);
     }
@@ -103,11 +108,13 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const channelId =
       target.kind === "ssh"
         ? await sshService.openShell(target.profileId, 24, 80, target.cwd)
-        : await ptyService.open(target.cwd ?? "", 24, 80);
+        : target.kind === "agent"
+          ? await agentService.openShell(target.profileId, 24, 80, target.cwd)
+          : await ptyService.open(target.cwd ?? "", 24, 80);
     const seq = get().allTabs.filter((t) => t.workspaceId === workspaceId).length + 1;
     const tab: TerminalTab =
-      target.kind === "ssh"
-        ? { id: channelId, workspaceId, kind: "ssh", profileId: target.profileId, title: `终端 ${seq}` }
+      target.kind === "ssh" || target.kind === "agent"
+        ? { id: channelId, workspaceId, kind: target.kind, profileId: target.profileId, title: `终端 ${seq}` }
         : { id: channelId, workspaceId, kind: "local", title: `终端 ${seq}` };
     set((s) => {
       const allTabs = [...s.allTabs, tab];
@@ -149,6 +156,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const bytes = new TextEncoder().encode(text);
     if (tab.kind === "ssh") {
       await sshService.write(tab.profileId!, id, bytes);
+    } else if (tab.kind === "agent") {
+      await agentService.write(tab.profileId!, id, bytes);
     } else {
       await ptyService.write(id, bytes);
     }
@@ -164,7 +173,11 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const tab = get().allTabs.find((t) => t.id === id);
     if (!tab) return;
     const newChannelId =
-      tab.kind === "ssh" ? await sshService.openShell(tab.profileId!, 24, 80, cwd) : await ptyService.open(cwd ?? "", 24, 80);
+      tab.kind === "ssh"
+        ? await sshService.openShell(tab.profileId!, 24, 80, cwd)
+        : tab.kind === "agent"
+          ? await agentService.openShell(tab.profileId!, 24, 80, cwd)
+          : await ptyService.open(cwd ?? "", 24, 80);
     set((s) => {
       const allTabs = s.allTabs.map((t) => (t.id === id ? { ...t, id: newChannelId, disconnected: false } : t));
       const activeIdByWorkspace = { ...s.activeIdByWorkspace };

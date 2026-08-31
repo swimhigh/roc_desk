@@ -1,0 +1,54 @@
+[package]
+name = "roc_desk_agent"
+version = "0.1.0"
+edition = "2021"
+description = "roc_desk 远程 Windows Agent（AGENT_DESIGN.md）：常驻在被管理的远程 Windows 服务器上，通过自定义协议把文件系统/命令执行接入 roc_desk.exe 的工作区模型"
+
+[[bin]]
+name = "roc_desk_agent"
+path = "src/main.rs"
+
+[dependencies]
+roc_desk_protocol = { path = "../protocol" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "process", "io-util", "sync", "time", "signal"] }
+# 显式选 `ring` 而不是默认的 `aws-lc-rs`——后者的构建脚本在部分 Windows 环境下会
+# 因为杀毒软件隔离刚编译出的 build-script 可执行文件而失败（"拒绝访问"），`ring`
+# 是纯 Rust/汇编实现，构建更可靠，这条连接本身也不需要 FIPS 认证这类只有
+# aws-lc-rs 才提供的能力。
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+clap = { version = "4", features = ["derive"] }
+
+sha2 = "0.10"
+rand = "0.8"
+data-encoding = "2"
+
+regex = "1"
+
+# 交互式终端（AGENT_DESIGN.md §四.4 Phase 2）：Windows 上底层是 ConPTY，和
+# src-tauri 本地终端用的是同一个库/同一个版本，行为上一致。
+portable-pty = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+# 只用来在打开 ConPTY 之前探测它存不存在（`GetProcAddress` 查
+# `CreatePseudoConsole`）——`portable-pty` 内部不做这个探测，老 Windows（Server
+# 2012 这类 ConPTY 出现之前的系统）上直接调用会从深处 panic 一句"this system
+# does not support conpty"，用户在客户端只会看到一个语焉不详的 panic 文本。
+# 提前探测能把它换成一句清楚的"这台机器的 Windows 版本太老，不支持交互式终端"，
+# 且不影响文件读写/命令执行这些不需要 ConPTY 的能力。
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }

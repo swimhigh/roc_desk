@@ -6,9 +6,11 @@ import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { sshService } from "../../services/sshService";
 import { ptyService } from "../../services/ptyService";
+import { agentService } from "../../services/agentService";
 import { useThemeStore } from "../../stores/themeStore";
 import { useTerminalStore, type TerminalTab } from "../../stores/terminalStore";
 import { getTerminalTheme } from "../../utils/terminalTheme";
+import { highlightTerminalChunk } from "../../utils/terminalHighlight";
 import type { SshDataEvent, SshStatusEvent } from "../../types/bindings";
 
 interface TerminalViewProps {
@@ -28,9 +30,10 @@ interface TerminalViewProps {
 }
 
 /**
- * 终端渲染（DESIGN.md §3.2）：xterm.js，SSH 和本地 PTY 两种 Tab 共用同一个组件——
- * 差别只在输入往哪个后端命令写、输出监听哪个事件（`ssh:data`/`ssh:status` vs
- * `pty:data`/`pty:status`），两边事件 payload 形状一致所以能共用同一套渲染逻辑。
+ * 终端渲染（DESIGN.md §3.2）：xterm.js，SSH / Agent / 本地 PTY 三种 Tab 共用
+ * 同一个组件——差别只在输入往哪个后端命令写、输出监听哪个事件
+ * （`ssh:data`/`ssh:status` vs `agent:data`/`agent:status` vs `pty:data`/`pty:status`），
+ * 三边事件 payload 形状一致所以能共用同一套渲染逻辑。
  */
 export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconnected, onReconnect, onInput }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,11 +43,19 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
     if (!containerRef.current) return;
 
     const write = (data: Uint8Array) =>
-      tab.kind === "ssh" ? sshService.write(tab.profileId!, tab.id, data) : ptyService.write(tab.id, data);
+      tab.kind === "ssh"
+        ? sshService.write(tab.profileId!, tab.id, data)
+        : tab.kind === "agent"
+          ? agentService.write(tab.profileId!, tab.id, data)
+          : ptyService.write(tab.id, data);
     const resize = (rows: number, cols: number) =>
-      tab.kind === "ssh" ? sshService.resize(tab.profileId!, tab.id, rows, cols) : ptyService.resize(tab.id, rows, cols);
-    const dataEvent = tab.kind === "ssh" ? "ssh:data" : "pty:data";
-    const statusEvent = tab.kind === "ssh" ? "ssh:status" : "pty:status";
+      tab.kind === "ssh"
+        ? sshService.resize(tab.profileId!, tab.id, rows, cols)
+        : tab.kind === "agent"
+          ? agentService.resize(tab.profileId!, tab.id, rows, cols)
+          : ptyService.resize(tab.id, rows, cols);
+    const dataEvent = tab.kind === "ssh" ? "ssh:data" : tab.kind === "agent" ? "agent:data" : "pty:data";
+    const statusEvent = tab.kind === "ssh" ? "ssh:status" : tab.kind === "agent" ? "agent:status" : "pty:status";
 
     const term = new Terminal({
       fontFamily: "'Cascadia Mono', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
@@ -77,9 +88,16 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
     });
     resizeObserver.observe(containerRef.current);
 
+    // {stream: true} + 复用同一个 decoder 实例：一个多字节 UTF-8 字符（中文很常见）
+    // 被切在两次数据事件的边界上时，decoder 会记住上一次没解完的尾部字节，下一次
+    // 调用自动拼上，不会解出乱码替换符——和 xterm 直接喂 Uint8Array 时内部解码器
+    // 的行为等价，这里只是在喂给 xterm 之前多插一步高亮处理（见
+    // utils/terminalHighlight.ts 顶部注释的取舍说明）。
+    const decoder = new TextDecoder();
     const unlistenDataPromise = listen<SshDataEvent>(dataEvent, (event) => {
       if (event.payload.channelId !== tab.id) return;
-      term.write(new Uint8Array(event.payload.data));
+      const text = decoder.decode(new Uint8Array(event.payload.data), { stream: true });
+      term.write(highlightTerminalChunk(text));
     });
 
     // 之前这个事件后端一直在发，前端从没听过——Channel 断开时终端就是"安静下来了"，

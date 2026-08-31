@@ -61,6 +61,14 @@ russh = "0.46"
 russh-keys = "0.46"
 russh-sftp = "2"
 
+# Windows 远程 Agent（AGENT_DESIGN.md）：客户端与 roc_desk_agent.exe 共享的协议
+# 类型 + 帧编解码；TLS 用法和 agent/Cargo.toml 保持一致（显式 `ring`，
+# 避免 `aws-lc-rs` 构建脚本在部分 Windows 环境下的"拒绝访问"问题）。
+roc_desk_protocol = { path = "../protocol" }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+sha2 = "0.10"
+
 # 本地终端 PTY（DESIGN.md §3.2，本地工作区的终端面板；Windows 上底层走 ConPTY）
 portable-pty = "0.8"
 

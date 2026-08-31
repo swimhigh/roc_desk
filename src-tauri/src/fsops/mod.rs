@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod binary_info;
 pub mod encoding;
 pub mod jar_info;
@@ -8,6 +9,8 @@ pub mod remote;
 use async_trait::async_trait;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
 use crate::error::AppError;
 use encoding::decode_text_detect;
@@ -306,6 +309,42 @@ pub trait FileOps: Send + Sync {
 
         Ok(ReplaceSummary { files_changed, occurrences_replaced })
     }
+}
+
+/// 跨后端复制（本地磁盘 <-> Agent 远程主机，AGENT_DESIGN.md §四.3 的双栏浏览器
+/// 用它实现"下载到本地"/"上传到远程"）。和 trait 默认的 `copy` 方法不同——那个
+/// 只能在同一个 `FileOps` 实现内部复制（`&self` 用了两次），这里两侧可以是不同的
+/// `FileOps` 实现：文件直接读字节写字节，目录先在目的端建好、再逐个子项递归，
+/// 复用两边现成的基础原语，和 `fsops::remote::download_recursive`/
+/// `upload_recursive` 是同一个思路，只是那两个是 SFTP 专属（流式、走 SFTP
+/// 文件句柄直接 `tokio::io::copy`），这个是给"源和目的分属两种协议"这个场景的
+/// 通用版本，不追求流式（一次性整读整写，和 trait 默认 `copy` 的代价量级一致）。
+///
+/// `progress` 语义和 `download_recursive` 一致：按"完成了第几个文件"报告，
+/// 不做字节级百分比，事件名固定 `agent:transfer-progress`（不和 SFTP 那边的
+/// `sftp:transfer-progress` 共用，避免两种协议的传输进度事件互相干扰）。
+pub async fn copy_between(
+    src: &dyn FileOps,
+    src_path: &str,
+    dst: &dyn FileOps,
+    dst_path: &str,
+    is_dir: bool,
+    progress: &Option<(AppHandle, Uuid)>,
+) -> Result<(), AppError> {
+    if !is_dir {
+        let (bytes, _) = src.read_file_raw(src_path).await?;
+        dst.write_file_bytes(dst_path, &bytes, None).await?;
+        if let Some((app, request_id)) = progress {
+            let _ = app.emit("agent:transfer-progress", serde_json::json!({ "requestId": request_id, "path": src_path }));
+        }
+        return Ok(());
+    }
+    dst.create_dir(dst_path).await?;
+    for entry in src.list_dir(src_path).await? {
+        let child_dst = format!("{}/{}", dst_path.trim_end_matches(['/', '\\']), entry.name);
+        Box::pin(copy_between(src, &entry.path, dst, &child_dst, entry.is_dir, progress)).await?;
+    }
+    Ok(())
 }
 
 /// 工作区全文搜索（左侧目录树的"搜索"功能，参考 VS Code 全局搜索面板）。不是

@@ -1,4 +1,7 @@
 import React, { useState } from "react";
+import { agentService } from "../../services/agentService";
+import { useToastStore } from "../shared/Toast";
+import { formatError } from "../../utils/error";
 import type { Protocol } from "../../types/bindings";
 
 export type AuthMethod = "password" | "key" | "agent";
@@ -20,15 +23,19 @@ export interface ConnectionFormValue {
   rdpColorDepth: number;
 }
 
-const DEFAULT_PORT: Record<Protocol, number> = { ssh: 22, rdp: 3389 };
+const DEFAULT_PORT: Record<Protocol, number> = { ssh: 22, rdp: 3389, agent: 7879 };
 
 interface ConnectionFormProps {
   initial?: Partial<ConnectionFormValue>;
   groups: { id: string; name: string }[];
   jumpHostOptions: { id: string; name: string }[];
-  /** 传了这个就不显示协议选择器，永远按这个协议提交——工作区挂载向导只会创建
-   * SSH 连接（RDP 没有"目录"这个概念，挂不了工作区）。*/
+  /** 传了这个就不显示协议选择器，永远按这个协议提交（编辑已有连接时用——协议
+   * 创建后不允许再改）。*/
   fixedProtocol?: Protocol;
+  /** 限制协议选择器里出现的选项，`fixedProtocol` 未传时生效——工作区挂载向导
+   * 用它把"RDP"排除掉（RDP 没有"目录"这个概念，挂不了工作区），但仍然允许
+   * 用户在 SSH/Agent 之间选择。不传则显示全部三种协议。*/
+  allowedProtocols?: Protocol[];
   onCancel: () => void;
   onSave: (value: ConnectionFormValue) => void;
 }
@@ -43,9 +50,16 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
   groups,
   jumpHostOptions,
   fixedProtocol,
+  allowedProtocols,
   onCancel,
   onSave,
 }) => {
+  const protocolOptions = allowedProtocols ?? (["ssh", "rdp", "agent"] as Protocol[]);
+  const PROTOCOL_LABEL: Record<Protocol, string> = {
+    ssh: "SSH（终端 / SFTP）",
+    rdp: "RDP（远程桌面）",
+    agent: "Agent（远程 Windows，无需 OpenSSH）",
+  };
   const [value, setValue] = useState<ConnectionFormValue>({
     name: initial?.name ?? "",
     host: initial?.host ?? "",
@@ -62,9 +76,25 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
     rdpColorDepth: initial?.rdpColorDepth ?? 32,
   });
   const [secretVisible, setSecretVisible] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const push = useToastStore((s) => s.push);
 
   const set = <K extends keyof ConnectionFormValue>(key: K, v: ConnectionFormValue[K]) =>
     setValue((s) => ({ ...s, [key]: v }));
+
+  /** 测的是表单里当前填的值，不是已保存的连接——不需要先点"保存"才能验证
+   * host/port/配对令牌填得对不对，也不会因为测试就把指纹持久化。 */
+  const testAgentConnection = async () => {
+    setTesting(true);
+    try {
+      const message = await agentService.testConnection(value.host, value.port, value.secret);
+      push("success", message);
+    } catch (e) {
+      push("error", `测试失败：${formatError(e)}`);
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const setProtocol = (protocol: Protocol) =>
     setValue((s) => ({
@@ -80,8 +110,9 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
         <div className="form-row">
           <label className="form-label">协议</label>
           <select className="form-select" value={value.protocol} onChange={(e) => setProtocol(e.target.value as Protocol)}>
-            <option value="ssh">SSH（终端 / SFTP）</option>
-            <option value="rdp">RDP（远程桌面）</option>
+            {protocolOptions.map((p) => (
+              <option key={p} value={p}>{PROTOCOL_LABEL[p]}</option>
+            ))}
           </select>
         </div>
       )}
@@ -108,10 +139,12 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
           />
         </div>
       </div>
-      <div className="form-row">
-        <label className="form-label">用户名</label>
-        <input className="form-input" value={value.username} onChange={(e) => set("username", e.target.value)} />
-      </div>
+      {value.protocol !== "agent" && (
+        <div className="form-row">
+          <label className="form-label">用户名</label>
+          <input className="form-input" value={value.username} onChange={(e) => set("username", e.target.value)} />
+        </div>
+      )}
       {value.protocol === "ssh" ? (
         <>
           <div className="form-row">
@@ -143,6 +176,33 @@ export const ConnectionForm: React.FC<ConnectionFormProps> = ({
             </div>
           )}
         </>
+      ) : value.protocol === "agent" ? (
+        <div className="form-row">
+          <label className="form-label">配对令牌</label>
+          <div className="form-input-group">
+            <input
+              className="form-input"
+              type={secretVisible ? "text" : "password"}
+              placeholder="roc-agent-xxxx-xxxx-xxxx-xxxx"
+              value={value.secret}
+              onChange={(e) => set("secret", e.target.value)}
+            />
+            <button className="btn ghost sm" onClick={() => setSecretVisible((v) => !v)}>
+              {secretVisible ? "隐藏" : "显示"}
+            </button>
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
+            在目标 Windows 主机上运行 <code>roc_desk_agent.exe pair</code> 生成，粘贴到这里。
+          </p>
+          <button
+            className="btn ghost sm"
+            style={{ marginTop: 8 }}
+            disabled={testing || !value.host || !value.secret}
+            onClick={testAgentConnection}
+          >
+            {testing ? "测试中…" : "测试连接"}
+          </button>
+        </div>
       ) : (
         <>
           <div className="form-row split">

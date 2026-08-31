@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, Laptop, Pencil, Server } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server } from "lucide-react";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
 import { sftpService } from "../../services/sftpService";
@@ -27,6 +27,29 @@ function formatTime(epochSeconds: number | null): string {
 }
 
 type Side = "remote" | "local";
+
+type SortField = "name" | "size" | "modified";
+interface SortState {
+  field: SortField;
+  asc: boolean;
+}
+const DEFAULT_SORT: SortState = { field: "name", asc: true };
+
+/** 目录始终排在前面（和后端 list_dir 的默认排序保持一致），文件内部再按选中的
+ * 字段排序——按大小/时间排序时目录之间仍按名称排列，因为目录没有 size/modified。 */
+function sortEntries(entries: FileEntry[], sort: SortState): FileEntry[] {
+  const dir = sort.asc ? 1 : -1;
+  return [...entries].sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    if (sort.field === "name" || a.is_dir) {
+      return dir * a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    }
+    if (sort.field === "size") {
+      return dir * ((a.size ?? 0) - (b.size ?? 0));
+    }
+    return dir * ((a.modified ?? 0) - (b.modified ?? 0));
+  });
+}
 
 interface DragPayload {
   side: Side;
@@ -87,6 +110,15 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   const [transfer, setTransfer] = useState<{ count: number; path: string } | null>(null);
   const [editingSide, setEditingSide] = useState<Side | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [sort, setSort] = useState<Record<Side, SortState>>({ remote: DEFAULT_SORT, local: DEFAULT_SORT });
+
+  const toggleSort = (side: Side, field: SortField) => {
+    setSort((s) => {
+      const current = s[side];
+      const asc = current.field === field ? !current.asc : true;
+      return { ...s, [side]: { field, asc } };
+    });
+  };
 
   useEffect(() => {
     (async () => {
@@ -221,6 +253,23 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     const segments = state.cwd.split(/[/\\]/).filter(Boolean);
     const dirCount = state.entries.filter((e) => e.is_dir).length;
     const fileCount = state.entries.length - dirCount;
+    const paneSort = sort[side];
+    const sortedEntries = sortEntries(state.entries, paneSort);
+    const sortIcon = (field: SortField) => {
+      if (paneSort.field !== field) return null;
+      const Icon = paneSort.asc ? ArrowUpNarrowWide : ArrowDownNarrowWide;
+      return <Icon style={{ width: 12, height: 12 }} />;
+    };
+    const headerCell = (field: SortField, label: string) => (
+      <span
+        onClick={() => toggleSort(side, field)}
+        style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", userSelect: "none" }}
+        title="点击排序"
+      >
+        {label}
+        {sortIcon(field)}
+      </span>
+    );
 
     return (
       <div
@@ -307,16 +356,16 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
 
         <div style={{ flex: 1, overflowY: "auto" }}>
           <div className="file-header">
-            <span>名称</span>
-            <span>大小</span>
-            <span>修改时间</span>
+            {headerCell("name", "名称")}
+            {headerCell("size", "大小")}
+            {headerCell("modified", "修改时间")}
           </div>
           {state.loading ? (
             <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>加载中…</div>
           ) : state.entries.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>此目录是空的</div>
           ) : (
-            state.entries.map((entry) => (
+            sortedEntries.map((entry) => (
               <div
                 key={entry.path}
                 className={`file-row ${state.selectedPath === entry.path ? "selected" : ""}`}

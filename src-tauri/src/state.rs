@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+use crate::agent::{AgentConnectionPool, AgentTrustPromptRegistry};
 use crate::ai::{AiChatClient, AiProviderManager};
 use crate::coding::{CodingSession, CommandConfirmRegistry, QuestionRegistry};
 use crate::connection::{ConnectionGroupManager, ConnectionManager};
@@ -32,6 +33,13 @@ pub struct AppState {
     pub ssh_pool: Arc<SshConnectionPool>,
     pub rdp_sessions: Arc<RdpSessionManager>,
     pub trust_prompts: TrustPromptRegistry,
+    /// 远程 Windows Agent 连接池（AGENT_DESIGN.md），和 `ssh_pool` 是同一种"连接池"
+    /// 模式——`WorkspaceManager`/`CodingSession` 按连接档案的 `protocol` 字段决定
+    /// 用这个还是 `ssh_pool`。
+    pub agent_pool: Arc<AgentConnectionPool>,
+    /// Agent TLS 证书指纹 TOFU 弹窗的等待注册表，和 `trust_prompts`（SSH 主机指纹）
+    /// 是两条独立的信任链条，故意不合用一张表（见 `agent::handshake` 模块文档）。
+    pub agent_trust_prompts: AgentTrustPromptRegistry,
     pub workspace_manager: Arc<WorkspaceManager>,
     /// 当前窗口内已打开的工作区句柄，key 为 WorkspaceProfile.id
     pub workspaces: Arc<RwLock<HashMap<Uuid, WorkspaceHandle>>>,

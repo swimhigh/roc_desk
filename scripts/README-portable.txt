@@ -18,7 +18,12 @@ roc_desk 是面向开发者的桌面工作区工具，集成文件管理、代�
 首次启动会在 EXE 旁创建 .rock_desk 目录，用于保存工作区信息、会话、编辑器状态和应用缓存。
 将整个 bin 目录复制到其他 Windows 机器即可使用，不能只复制 EXE。
 
-四、运行环境与安全
+四、远程 Windows Agent（新增连接方式）
+agent\ 子目录下的 roc_desk_agent.exe 不是给运行 roc_desk.exe 的这台机器用的——它要拷到你
+想连接的【远程 Windows 服务器】上运行，让 roc_desk.exe 能通过"Agent"连接方式访问那台机器
+（不需要它装 OpenSSH Server）。把整个 agent\ 子目录拷过去就行，详见其中的 README.txt。
+
+五、运行环境与安全
 Windows 10/11 通常已预装 WebView2 Runtime；若启动失败，请安装 Microsoft Edge WebView2 Runtime。
 API Key、SSH 密码等敏感信息不会写入 README；请勿将密钥直接提交到 Git 或复制给他人。
 远程工作区需要网络可达，并正确配置 SSH 连接。

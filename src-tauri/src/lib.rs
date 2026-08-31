@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod ai;
 pub mod browser;
 pub mod coding;
@@ -21,10 +22,12 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
 
+use agent::{AgentCertVerifier, AgentConnectionPool, AgentTrustPromptRegistry};
 use ai::{AiChatClient, AiProviderManager};
 use coding::CommandConfirmRegistry;
 use connection::{ConnectionGroupManager, ConnectionManager};
 use credential::KeyringStore;
+use db::repo::agent_known_hosts_repo::AgentKnownHostsRepo;
 use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
 use db::repo::browser_history_repo::BrowserHistoryRepo;
@@ -188,11 +191,21 @@ pub fn run() {
             let ssh_pool = Arc::new(SshConnectionPool::new(connection_manager.clone(), verifier));
             let rdp_sessions = Arc::new(RdpSessionManager::new(connection_manager.clone()));
 
+            let agent_known_hosts_repo = Arc::new(AgentKnownHostsRepo::new(sessions_pool.clone()));
+            let agent_trust_prompts = AgentTrustPromptRegistry::default();
+            let agent_cert_verifier = Arc::new(AgentCertVerifier::new(
+                agent_known_hosts_repo,
+                agent_trust_prompts.clone(),
+                app.handle().clone(),
+            ));
+            let agent_pool = Arc::new(AgentConnectionPool::new(connection_manager.clone(), agent_cert_verifier));
+
             let workspace_repo = Arc::new(WorkspaceRepo::new(workspaces_pool.clone()));
             let workspace_manager = Arc::new(WorkspaceManager::new(
                 workspace_repo,
                 connection_manager.clone(),
                 ssh_pool.clone(),
+                agent_pool.clone(),
                 workspaces_dir,
             ));
 
@@ -218,6 +231,8 @@ pub fn run() {
                 ssh_pool,
                 rdp_sessions,
                 trust_prompts,
+                agent_pool,
+                agent_trust_prompts,
                 workspace_manager,
                 workspaces: Arc::new(RwLock::new(HashMap::new())),
                 log_engine,
@@ -279,6 +294,24 @@ pub fn run() {
             commands::ssh::ssh_close_channel,
             commands::ssh::ssh_host_stats,
             commands::ssh::ssh_confirm_host_key,
+            commands::agent::agent_connect,
+            commands::agent::agent_disconnect,
+            commands::agent::agent_confirm_cert,
+            commands::agent::agent_test_connection,
+            commands::agent::agent_list_dir,
+            commands::agent::agent_list_roots,
+            commands::agent::agent_open_shell,
+            commands::agent::agent_write,
+            commands::agent::agent_resize,
+            commands::agent::agent_close_channel,
+            commands::agent::agent_read_file,
+            commands::agent::agent_write_file,
+            commands::agent::agent_delete,
+            commands::agent::agent_rename,
+            commands::agent::agent_download,
+            commands::agent::agent_upload,
+            commands::agent::agent_download_entry,
+            commands::agent::agent_upload_entry,
             commands::rdp::rdp_connect,
             commands::rdp::rdp_set_bounds,
             commands::rdp::rdp_hide,

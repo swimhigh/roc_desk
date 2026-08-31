@@ -7,9 +7,11 @@ use chrono::Utc;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
-use crate::connection::ConnectionManager;
+use crate::agent::AgentConnectionPool;
+use crate::connection::{ConnectionManager, Protocol};
 use crate::db::repo::workspace_repo::WorkspaceRepo;
 use crate::error::AppError;
+use crate::fsops::agent::AgentFileOps;
 use crate::fsops::local::LocalFileOps;
 use crate::fsops::remote::RemoteFileOps;
 use crate::fsops::FileOps;
@@ -43,6 +45,7 @@ pub struct WorkspaceManager {
     repo: Arc<WorkspaceRepo>,
     connection_manager: Arc<ConnectionManager>,
     ssh_pool: Arc<SshConnectionPool>,
+    agent_pool: Arc<AgentConnectionPool>,
     cache_root: PathBuf,
 }
 
@@ -51,9 +54,26 @@ impl WorkspaceManager {
         repo: Arc<WorkspaceRepo>,
         connection_manager: Arc<ConnectionManager>,
         ssh_pool: Arc<SshConnectionPool>,
+        agent_pool: Arc<AgentConnectionPool>,
         cache_root: PathBuf,
     ) -> Self {
-        Self { repo, connection_manager, ssh_pool, cache_root }
+        Self { repo, connection_manager, ssh_pool, agent_pool, cache_root }
+    }
+
+    /// SSH/Agent 都是"Remote"工作区，靠连接档案的 `protocol` 字段决定用哪条连接池
+    /// 建连、构造哪个 `FileOps` 实现（AGENT_DESIGN.md §四.2）。
+    async fn remote_file_ops(&self, connection: &crate::connection::ConnectionProfile) -> Result<Arc<dyn FileOps>, AppError> {
+        match connection.protocol {
+            Protocol::Agent => {
+                let session = self.agent_pool.get_or_connect(connection.id).await?;
+                Ok(Arc::new(AgentFileOps::new(session)))
+            }
+            Protocol::Ssh => {
+                let session = self.ssh_pool.get_or_connect(connection.id).await?;
+                Ok(Arc::new(RemoteFileOps::new(session)))
+            }
+            Protocol::Rdp => Err(AppError::Internal("RDP 连接不能作为文件工作区".into())),
+        }
     }
 
     fn write_fallback_metadata(&self, metadata: &WorkspaceMetadata) -> Result<(), AppError> {
@@ -118,8 +138,7 @@ impl WorkspaceManager {
             .get(connection_id)?
             .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
 
-        let session = self.ssh_pool.get_or_connect(connection_id).await?;
-        let file_ops: Arc<dyn FileOps> = Arc::new(RemoteFileOps::new(session));
+        let file_ops = self.remote_file_ops(&connection).await?;
         let metadata_path = format!("{}/.rock_desk/workspace.json", remote_path.trim_end_matches('/'));
         let embedded = file_ops.read_file(&metadata_path).await.ok()
             .and_then(|file| serde_json::from_str::<WorkspaceMetadata>(&file.text).ok())
@@ -205,8 +224,7 @@ impl WorkspaceManager {
                     .connection_manager
                     .get(connection_id)?
                     .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
-                let session = self.ssh_pool.get_or_connect(connection_id).await?;
-                let file_ops = RemoteFileOps::new(session);
+                let file_ops = self.remote_file_ops(&connection).await?;
                 let trimmed = new_path.trim_end_matches('/');
                 let trimmed = if trimmed.is_empty() { "/" } else { trimmed };
                 file_ops

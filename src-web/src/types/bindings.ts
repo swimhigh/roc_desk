@@ -104,7 +104,9 @@ export function isAppError(e: unknown): e is AppError {
 }
 
 export type AuthMethod = "password" | "key" | "agent";
-export type Protocol = "ssh" | "rdp";
+/** "agent" 是 AGENT_DESIGN.md 的远程 Windows Agent 协议——和上面 AuthMethod 里的
+ * "agent"（SSH Agent 认证）是两个不相关的概念，只是恰好同名，注意区分。 */
+export type Protocol = "ssh" | "rdp" | "agent";
 
 /** RDP 专属的少量额外字段，存在 ConnectionProfile.options 里（JSON，见后端
  * connection/profile.rs 注释）；SSH 连接的 options 一般是 null。*/
@@ -182,6 +184,19 @@ export interface DiskUsage {
 
 export interface HostKeyPromptEvent {
   requestId: string;
+  host: string;
+  port: number;
+  fingerprint: string;
+  changed: boolean;
+  oldFingerprint: string | null;
+}
+
+/** Agent TLS 证书指纹 TOFU 弹窗（AGENT_DESIGN.md §3.1），和上面的 SSH 主机指纹
+ * 弹窗结构几乎一样，多一个 connectionId 字段——指纹按连接档案而不是 host/port
+ * 存（见后端 `agent_known_hosts` 表的注释）。 */
+export interface AgentCertPromptEvent {
+  requestId: string;
+  connectionId: string;
   host: string;
   port: number;
   fingerprint: string;
@@ -269,7 +284,8 @@ export type CodingMode = "plan" | "build";
 
 export type CodingTarget =
   | { kind: "Local" }
-  | { kind: "Remote"; connection_id: string; host_label: string };
+  | { kind: "Remote"; connection_id: string; host_label: string }
+  | { kind: "Agent"; connection_id: string; host_label: string };
 
 export type ChangeStatus = "pending" | "applied" | "rejected" | "undone";
 

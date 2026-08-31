@@ -1,6 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 
-export type TerminalKind = "ssh" | "local";
+export type TerminalKind = "ssh" | "local" | "agent";
 
 /**
  * 真实的 Dracula 主题官方 ANSI 数值（WindTerm 官方主题列表里 `dracula/windterm`
@@ -45,7 +45,8 @@ export function getTerminalTheme(_mode: "dark" | "light", kind: TerminalKind = "
     ...draculaTheme,
     // 本地/远程光标用不同颜色一眼分清当前敲的命令发去哪——本地跟随前景色，
     // 远程固定橙色（同一个真实细节取自 WindTerm 主题文件里的
-    // line.caret.local/line.caret.remote，不是随手挑的颜色）。
-    cursor: kind === "ssh" ? "#FFB000" : "#F8F8F2",
+    // line.caret.local/line.caret.remote，不是随手挑的颜色）。SSH 和 Agent
+    // 都是"远程"，用同一个颜色。
+    cursor: kind === "ssh" || kind === "agent" ? "#FFB000" : "#F8F8F2",
   };
 }

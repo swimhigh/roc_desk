@@ -2,13 +2,23 @@ import React, { useEffect, useState } from "react";
 import { connectionService } from "../../services/connectionService";
 import { connectionGroupService } from "../../services/connectionGroupService";
 import { sftpService } from "../../services/sftpService";
+import { agentService } from "../../services/agentService";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { formatError } from "../../utils/error";
 import { useToastStore } from "../shared/Toast";
 import { ConnectionForm, type ConnectionFormValue } from "../ConnectionManager/ConnectionForm";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
 import { isAppError } from "../../types/bindings";
-import type { ConnectionGroup, ConnectionProfile, FileEntry } from "../../types/bindings";
+import type { ConnectionGroup, ConnectionProfile, FileEntry, Protocol } from "../../types/bindings";
+import { AGENT_ROOT, agentParentPath } from "../../utils/windowsPath";
+
+function isAgentRoot(protocol: Protocol, path: string) {
+  return protocol === "agent" && path === AGENT_ROOT;
+}
+
+function sshParentPath(path: string): string {
+  return path.split("/").slice(0, -1).join("/") || "/";
+}
 
 type Step = "pick" | "new" | "browse";
 
@@ -30,6 +40,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [groups, setGroups] = useState<ConnectionGroup[]>([]);
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(editWorkspace?.connectionId ?? null);
+  const [activeProtocol, setActiveProtocol] = useState<Protocol>("ssh");
   const [cwd, setCwd] = useState(editWorkspace?.initialPath ?? "/");
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [browsing, setBrowsing] = useState(false);
@@ -40,14 +51,17 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
   const updatePath = useWorkspaceStore((s) => s.updatePath);
 
   useEffect(() => {
-    connectionService.list().then(setProfiles).catch((e) => push("error", formatError(e)));
+    connectionService
+      .list()
+      .then((loaded) => {
+        setProfiles(loaded);
+        if (editWorkspace) {
+          const profile = loaded.find((p) => p.id === editWorkspace.connectionId);
+          startBrowsing(editWorkspace.connectionId, editWorkspace.initialPath, profile?.protocol ?? "ssh");
+        }
+      })
+      .catch((e) => push("error", formatError(e)));
     connectionGroupService.list().then(setGroups).catch((e) => push("error", formatError(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!editWorkspace) return;
-    startBrowsing(editWorkspace.connectionId, editWorkspace.initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -60,18 +74,33 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, passwordPromptFor, savingPassword]);
 
-  const startBrowsing = async (connectionId: string, path: string) => {
+  /** SSH 走 SFTP 列目录；Agent 走 AGENT_DESIGN.md 的协议，且没有单一根目录——
+   * 空路径表示"此电脑"下的盘符列表（`agentService.listRoots`），选中某个盘符
+   * 之后才是真正的 `agentService.listDir`。 */
+  const startBrowsing = async (connectionId: string, path: string, protocol: Protocol) => {
     setActiveConnectionId(connectionId);
+    setActiveProtocol(protocol);
     setStep("browse");
     setBrowsing(true);
     try {
-      const dirs = await sftpService.listDir(connectionId, path);
+      if (protocol === "agent") {
+        if (isAgentRoot(protocol, path)) {
+          const roots = await agentService.listRoots(connectionId);
+          setEntries(roots.map((r) => ({ name: r, path: r, is_dir: true, size: null, modified: null })));
+        } else {
+          const dirs = await agentService.listDir(connectionId, path);
+          setEntries(dirs.filter((e) => e.is_dir));
+        }
+      } else {
+        const dirs = await sftpService.listDir(connectionId, path);
+        setEntries(dirs.filter((e) => e.is_dir));
+      }
       setCwd(path);
-      setEntries(dirs.filter((e) => e.is_dir));
     } catch (e) {
-      // Auth 类错误大多是"这个连接没有可用的已保存密码"（真实 bug：keyring 之前
-      // 没启用 windows-native，历史连接的密码全是假保存），弹出补录密码的入口，
-      // 而不是让用户卡在一个没有任何补救办法的错误提示上。
+      // Auth 类错误大多是"这个连接没有可用的已保存密码/配对令牌"（SSH 那边是真实
+      // bug：keyring 之前没启用 windows-native，历史连接的密码全是假保存；Agent
+      // 则可能是令牌填错了），弹出补录入口，而不是让用户卡在一个没有任何补救
+      // 办法的错误提示上。
       if (isAppError(e) && e.kind === "Auth") {
         const profile = profiles.find((p) => p.id === connectionId);
         if (profile) {
@@ -105,8 +134,9 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         options: passwordPromptFor.options,
       });
       const connectionId = passwordPromptFor.id;
+      const protocol = passwordPromptFor.protocol;
       setPasswordPromptFor(null);
-      await startBrowsing(connectionId, "/");
+      await startBrowsing(connectionId, protocol === "agent" ? AGENT_ROOT : "/", protocol);
     } catch (e) {
       push("error", `保存密码失败：${formatError(e)}`);
     } finally {
@@ -121,16 +151,18 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         host: value.host,
         port: value.port,
         username: value.username,
-        auth_method: value.authMethod,
+        auth_method: value.protocol === "agent" ? "key" : value.authMethod,
         secret: value.secret || null,
         group_id: value.groupId ?? null,
         tags: [],
         jump_host_id: value.jumpHostId ?? null,
-        protocol: "ssh",
+        protocol: value.protocol,
         options: null,
       });
       setProfiles((p) => [...p, created]);
-      await startBrowsing(created.id, created.username.startsWith("root") ? "/root" : `/home/${created.username}`);
+      const initialPath =
+        value.protocol === "agent" ? AGENT_ROOT : created.username.startsWith("root") ? "/root" : `/home/${created.username}`;
+      await startBrowsing(created.id, initialPath, value.protocol);
     } catch (e) {
       push("error", `创建连接失败：${formatError(e)}`);
     }
@@ -167,17 +199,21 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
                 </p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
-                  {profiles.map((p) => (
-                    <div
-                      key={p.id}
-                      className="file-row"
-                      style={{ gridTemplateColumns: "1fr auto", cursor: "pointer" }}
-                      onClick={() => startBrowsing(p.id, "/")}
-                    >
-                      <span>{p.name} — {p.username}@{p.host}:{p.port}</span>
-                      <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>连接 →</span>
-                    </div>
-                  ))}
+                  {profiles
+                    .filter((p) => p.protocol !== "rdp")
+                    .map((p) => (
+                      <div
+                        key={p.id}
+                        className="file-row"
+                        style={{ gridTemplateColumns: "1fr auto", cursor: "pointer" }}
+                        onClick={() => startBrowsing(p.id, p.protocol === "agent" ? AGENT_ROOT : "/", p.protocol)}
+                      >
+                        <span>
+                          {p.name} — {p.protocol === "agent" ? `${p.host}:${p.port}（Agent）` : `${p.username}@${p.host}:${p.port}`}
+                        </span>
+                        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>连接 →</span>
+                      </div>
+                    ))}
                 </div>
               )}
               <button className="btn ghost sm" onClick={() => setStep("new")}>+ 新建连接</button>
@@ -188,7 +224,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
             <ConnectionForm
               groups={groups.map((g) => ({ id: g.id, name: g.name }))}
               jumpHostOptions={profiles.filter((p) => p.protocol === "ssh").map((p) => ({ id: p.id, name: p.name }))}
-              fixedProtocol="ssh"
+              allowedProtocols={["ssh", "agent"]}
               onCancel={() => setStep("pick")}
               onSave={handleCreateConnection}
             />
@@ -197,25 +233,37 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
           {step === "browse" && (
             <div>
               <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
-                当前路径：<span style={{ fontFamily: "var(--font-mono)" }}>{cwd}</span>
+                当前路径：
+                <span style={{ fontFamily: "var(--font-mono)" }}>
+                  {isAgentRoot(activeProtocol, cwd) ? "此电脑" : cwd}
+                </span>
               </div>
               {browsing ? (
                 <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>加载中…</div>
               ) : (
                 <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border-default)", borderRadius: 4 }}>
-                  <div
-                    className="file-row"
-                    style={{ gridTemplateColumns: "1fr" }}
-                    onClick={() => activeConnectionId && startBrowsing(activeConnectionId, cwd.split("/").slice(0, -1).join("/") || "/")}
-                  >
-                    <span>📁 ..</span>
-                  </div>
+                  {!isAgentRoot(activeProtocol, cwd) && (
+                    <div
+                      className="file-row"
+                      style={{ gridTemplateColumns: "1fr" }}
+                      onClick={() =>
+                        activeConnectionId &&
+                        startBrowsing(
+                          activeConnectionId,
+                          activeProtocol === "agent" ? agentParentPath(cwd) : sshParentPath(cwd),
+                          activeProtocol,
+                        )
+                      }
+                    >
+                      <span>📁 ..</span>
+                    </div>
+                  )}
                   {entries.map((e) => (
                     <div
                       key={e.path}
                       className="file-row"
                       style={{ gridTemplateColumns: "1fr" }}
-                      onClick={() => activeConnectionId && startBrowsing(activeConnectionId, e.path)}
+                      onClick={() => activeConnectionId && startBrowsing(activeConnectionId, e.path, activeProtocol)}
                     >
                       <span>📁 {e.name}</span>
                     </div>
@@ -238,6 +286,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         <PasswordPromptDialog
           open
           connectionName={passwordPromptFor.name}
+          secretLabel={passwordPromptFor.protocol === "agent" ? "配对令牌" : "密码"}
           submitting={savingPassword}
           onCancel={() => setPasswordPromptFor(null)}
           onSubmit={handleSavePassword}

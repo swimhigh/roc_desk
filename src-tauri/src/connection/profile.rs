@@ -31,6 +31,10 @@ pub struct ConnectionProfile {
 pub enum Protocol {
     Ssh,
     Rdp,
+    /// 远程 Windows Agent（AGENT_DESIGN.md）：不需要 OpenSSH Server 的第三种远程
+    /// 后端，认证靠配对令牌而不是 `AuthMethod`（`username`/`auth_method` 字段对
+    /// 这个协议不适用，UI 层隐藏，`ConnectionProfileInput.secret` 装的是配对令牌）。
+    Agent,
 }
 
 impl Protocol {
@@ -38,12 +42,14 @@ impl Protocol {
         match self {
             Protocol::Ssh => "ssh",
             Protocol::Rdp => "rdp",
+            Protocol::Agent => "agent",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "rdp" => Protocol::Rdp,
+            "agent" => Protocol::Agent,
             _ => Protocol::Ssh,
         }
     }

@@ -5,9 +5,10 @@ import { TerminalView } from "./TerminalView";
 import { SshHostStatsBar } from "../RemoteTool/SshHostStatsBar";
 
 interface TerminalPanelProps {
-  /** 本地工作区传 { kind: 'local' }，远程工作区传 { kind: 'ssh', profileId }；
-   * `cwd` 是工作区根目录，新开的终端默认停在这里（参考 VS Code）。*/
-  target: { kind: "local"; cwd: string } | { kind: "ssh"; profileId: string; cwd: string };
+  /** 本地工作区传 { kind: 'local' }，远程工作区传 { kind: 'ssh' | 'agent', profileId }
+   * （取决于连接协议，AGENT_DESIGN.md）；`cwd` 是工作区根目录，新开的终端默认停在
+   * 这里（参考 VS Code）。*/
+  target: { kind: "local"; cwd: string } | { kind: "ssh" | "agent"; profileId: string; cwd: string };
 }
 
 /**
@@ -48,8 +49,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ target }) => {
   };
 
   const openNew = () =>
-    target.kind === "ssh"
-      ? openTerminal({ kind: "ssh", profileId: target.profileId, cwd: target.cwd })
+    target.kind === "ssh" || target.kind === "agent"
+      ? openTerminal({ kind: target.kind, profileId: target.profileId, cwd: target.cwd })
       : openTerminal({ kind: "local", cwd: target.cwd });
 
   // 折叠面板不能 `return null`——那会把所有工作区、所有 Tab 的 TerminalView 全部

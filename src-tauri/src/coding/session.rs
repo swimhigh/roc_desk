@@ -14,6 +14,7 @@ use super::skills::{self, SkillMeta};
 use super::tools::{self, TodoItem, ToolCall};
 use super::webfetch;
 use super::{CommandConfirmRegistry, QuestionRegistry};
+use crate::agent::AgentConnectionPool;
 use crate::ai::{search_web_results, AiProviderManager};
 use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
@@ -34,6 +35,10 @@ pub enum CodingMode {
 pub enum CodingTarget {
     Local,
     Remote { connection_id: Uuid, host_label: String },
+    /// 远程 Windows Agent 工作区（AGENT_DESIGN.md §四.4）：`run_command`/`search_files`
+    /// 走 Agent 协议而不是 SSH `exec`/`grep`，命令语法也是 Windows 原生的
+    /// （`cmd.exe /C` + 参数数组，不是"拼一行 POSIX shell 字符串"）。
+    Agent { connection_id: Uuid, host_label: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +132,7 @@ impl CodingSession {
         let target_desc = match &target {
             CodingTarget::Local => "本地工作区".to_string(),
             CodingTarget::Remote { host_label, .. } => format!("远程主机 {host_label}"),
+            CodingTarget::Agent { host_label, .. } => format!("远程 Windows 主机 {host_label}"),
         };
         // 2026-08-18 真实复现：分析整个项目/做代码评审这类开放式大任务，模型会没完
         // 没了地交替 search_files/read_file，一直不给结论。后端有 FORCE_CONCLUDE_LAST_N
@@ -205,6 +211,7 @@ impl CodingSession {
         match &self.target {
             CodingTarget::Local => "本地".to_string(),
             CodingTarget::Remote { host_label, .. } => host_label.clone(),
+            CodingTarget::Agent { host_label, .. } => host_label.clone(),
         }
     }
 
@@ -224,6 +231,7 @@ impl CodingSession {
         attachments: &[ChatAttachment],
         providers: &AiProviderManager,
         ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
         audit: &AuditLogRepo,
         confirms: &CommandConfirmRegistry,
         permission_rules: &PermissionRulesRepo,
@@ -379,7 +387,7 @@ impl CodingSession {
                 };
                 let result_text = match call_result {
                     Ok(call) => self
-                        .execute_tool(call, ssh_pool, audit, confirms, &permission_engine, question_confirms, mcp_manager, app_handle)
+                        .execute_tool(call, ssh_pool, agent_pool, audit, confirms, &permission_engine, question_confirms, mcp_manager, app_handle)
                         .await
                         .unwrap_or_else(|e| format!("工具执行出错：{e}")),
                     Err(e) => format!("工具调用参数解析失败：{e}"),
@@ -409,6 +417,7 @@ impl CodingSession {
         &mut self,
         call: ToolCall,
         ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
         audit: &AuditLogRepo,
         confirms: &CommandConfirmRegistry,
         permission_engine: &PermissionEngine,
@@ -427,7 +436,7 @@ impl CodingSession {
                 let entries = self.file_ops.list_dir(&path).await?;
                 Ok(serde_json::to_string(&entries).unwrap_or_default())
             }
-            ToolCall::SearchFiles { pattern, path } => self.search_files(&pattern, &path, ssh_pool).await,
+            ToolCall::SearchFiles { pattern, path } => self.search_files(&pattern, &path, ssh_pool, agent_pool).await,
             ToolCall::WebSearch { query } => {
                 search_web_results(&reqwest::Client::new(), &query).await
             }
@@ -446,7 +455,7 @@ impl CodingSession {
                 self.stage_change(&path, updated, app_handle).await
             }
             ToolCall::RunCommand { command } => {
-                self.run_command_gated(&command, ssh_pool, audit, confirms, permission_engine, app_handle).await
+                self.run_command_gated(&command, ssh_pool, agent_pool, audit, confirms, permission_engine, app_handle).await
             }
             ToolCall::Glob { pattern, path } => self.search_glob(&pattern, &path).await,
             ToolCall::WebFetch { url } => self.webfetch_gated(&url, permission_engine, app_handle).await,
@@ -566,7 +575,7 @@ impl CodingSession {
         client.call_tool(tool_name, arguments).await
     }
 
-    async fn search_files(&self, pattern: &str, path: &str, ssh_pool: &SshConnectionPool) -> Result<String, AppError> {
+    async fn search_files(&self, pattern: &str, path: &str, ssh_pool: &SshConnectionPool, agent_pool: &AgentConnectionPool) -> Result<String, AppError> {
         match &self.target {
             CodingTarget::Local => {
                 let results = tools::search_files_local(std::path::Path::new(path), pattern, 50);
@@ -580,6 +589,30 @@ impl CodingSession {
                     "rg -n -F -- {quoted_pattern} {quoted_path} 2>/dev/null || grep -rn -F -- {quoted_pattern} {quoted_path} 2>/dev/null"
                 );
                 session.exec(&cmd).await
+            }
+            // Agent 侧的搜索在远程主机本机跑（`agent/src/handlers/search.rs`，用
+            // std::fs 遍历，不是逐文件网络往返）——这正是 AGENT_DESIGN.md §一表格
+            // 里"远程内容搜索慢"这条设计收益的落地位置。
+            CodingTarget::Agent { connection_id, .. } => {
+                let session = agent_pool.get_or_connect(*connection_id).await?;
+                let options = roc_desk_protocol::SearchOptions { case_sensitive: false, whole_word: false, use_regex: false };
+                let request = roc_desk_protocol::Request::SearchContent { root: path.to_string(), query: pattern.to_string(), options };
+                match session.request(request).await? {
+                    roc_desk_protocol::Response::Ok(roc_desk_protocol::ResponseBody::SearchResults(results)) => {
+                        if results.is_empty() {
+                            return Ok("没有匹配结果".to_string());
+                        }
+                        let mut lines = Vec::new();
+                        for file in results {
+                            for m in file.matches {
+                                lines.push(format!("{}:{}:{}", file.path, m.line_number, m.line_text.trim()));
+                            }
+                        }
+                        Ok(lines.join("\n"))
+                    }
+                    roc_desk_protocol::Response::Error { message, .. } => Err(AppError::Internal(message)),
+                    _ => Err(AppError::Internal("Agent 返回了意外的响应类型".into())),
+                }
             }
         }
     }
@@ -608,14 +641,16 @@ impl CodingSession {
         &mut self,
         command: &str,
         ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
         audit: &AuditLogRepo,
         confirms: &CommandConfirmRegistry,
         permission_engine: &PermissionEngine,
         app_handle: &AppHandle,
     ) -> Result<String, AppError> {
         let target_label = self.target_label();
+        let is_windows_target = matches!(&self.target, CodingTarget::Agent { .. });
 
-        if guard::is_blacklisted(command) {
+        if guard::is_blacklisted(command, is_windows_target) {
             audit.record(self.id, &target_label, command, "blocked", None);
             let _ = app_handle.emit("coding:command-blocked", json!({ "sessionId": self.id, "command": command }));
             return Ok(format!("已拦截高危命令：{command}，如需执行请前往终端模块手动操作"));
@@ -639,6 +674,10 @@ impl CodingSession {
                         let session = ssh_pool.get_or_connect(*connection_id).await?;
                         session.exec(command).await?
                     }
+                    CodingTarget::Agent { connection_id, .. } => {
+                        let session = agent_pool.get_or_connect(*connection_id).await?;
+                        session.exec(command, &self.workspace_root).await?
+                    }
                 };
                 let summary: String = output.chars().take(2000).collect();
                 audit.record(self.id, &target_label, command, "executed", Some(&summary));
@@ -651,7 +690,7 @@ impl CodingSession {
             true
         } else {
             let (request_id, rx) = confirms.register().await;
-            let is_remote = matches!(&self.target, CodingTarget::Remote { .. });
+            let is_remote = matches!(&self.target, CodingTarget::Remote { .. } | CodingTarget::Agent { .. });
             let _ = app_handle.emit(
                 "coding:command-confirm-request",
                 json!({
@@ -676,6 +715,10 @@ impl CodingSession {
                 let session = ssh_pool.get_or_connect(*connection_id).await?;
                 session.exec(command).await?
             }
+            CodingTarget::Agent { connection_id, .. } => {
+                let session = agent_pool.get_or_connect(*connection_id).await?;
+                session.exec(command, &self.workspace_root).await?
+            }
         };
 
         let summary: String = output.chars().take(2000).collect();
@@ -694,6 +737,7 @@ impl CodingSession {
         &mut self,
         change_id: Uuid,
         ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
         app_handle: &AppHandle,
     ) -> Result<(), AppError> {
         let change = self
@@ -711,7 +755,7 @@ impl CodingSession {
 
         if self.auto_git_commit && self.git_repo {
             let message = format!("AI 编程助手：修改 {path}");
-            let result = git_ops::commit_file(&self.target, &self.workspace_root, &path, &message, ssh_pool).await;
+            let result = git_ops::commit_file(&self.target, &self.workspace_root, &path, &message, ssh_pool, agent_pool).await;
             let output = match result {
                 Ok(out) => out,
                 Err(e) => format!("Git 提交失败：{e}"),

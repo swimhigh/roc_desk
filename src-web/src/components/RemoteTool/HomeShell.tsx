@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { X, Terminal as TerminalIcon, FolderCog, Monitor, FolderGit2, Rows3, LogOut } from "lucide-react";
+import { X, Terminal as TerminalIcon, FolderCog, Monitor, FolderGit2, Rows3, LogOut, HardDrive, ArrowLeftRight } from "lucide-react";
 import { SessionTree } from "./SessionTree";
 import { SshHostStatsBar } from "./SshHostStatsBar";
 import { RdpView } from "./RdpView";
 import { TerminalView } from "../Terminal/TerminalView";
 import { SftpBrowser } from "../SftpBrowser/SftpBrowser";
 import { SftpFileViewer } from "../SftpBrowser/SftpFileViewer";
+import { AgentBrowser } from "../SftpBrowser/AgentBrowser";
 import { WorkspacePicker } from "../Workspace/WorkspacePicker";
 import { useRemoteSessionStore, type RemoteSessionTab } from "../../stores/remoteSessionStore";
 import { useSessionTreeStore } from "../../stores/sessionTreeStore";
@@ -17,7 +18,9 @@ function defaultRemotePath(username: string): string {
 
 const TAB_ICON: Record<RemoteSessionTab["kind"], React.ReactNode> = {
   "ssh-terminal": <TerminalIcon />,
+  "agent-terminal": <HardDrive />,
   sftp: <FolderCog />,
+  "agent-browse": <ArrowLeftRight />,
   rdp: <Monitor />,
 };
 
@@ -35,8 +38,11 @@ export const HomeShell: React.FC = () => {
   const closeTab = useRemoteSessionStore((s) => s.closeTab);
   const markDisconnected = useRemoteSessionStore((s) => s.markDisconnected);
   const reconnectSshTerminal = useRemoteSessionStore((s) => s.reconnectSshTerminal);
+  const reconnectAgentTerminal = useRemoteSessionStore((s) => s.reconnectAgentTerminal);
   const openSshTerminal = useRemoteSessionStore((s) => s.openSshTerminal);
+  const openAgentTerminal = useRemoteSessionStore((s) => s.openAgentTerminal);
   const openSftp = useRemoteSessionStore((s) => s.openSftp);
+  const openAgentBrowse = useRemoteSessionStore((s) => s.openAgentBrowse);
   const multiExecEnabled = useRemoteSessionStore((s) => s.multiExecEnabled);
   const multiExecExcluded = useRemoteSessionStore((s) => s.multiExecExcluded);
   const toggleMultiExec = useRemoteSessionStore((s) => s.toggleMultiExec);
@@ -100,6 +106,24 @@ export const HomeShell: React.FC = () => {
       if (profile) void openSshTerminal(profile);
     }
   };
+  const jumpToAgentBrowse = (profileId: string) => {
+    const existing = tabs.find((t) => t.kind === "agent-browse" && t.profileId === profileId);
+    if (existing) {
+      setActive(existing.id);
+    } else {
+      const profile = profileOf(profileId);
+      if (profile) openAgentBrowse(profile);
+    }
+  };
+  const jumpToAgentTerminal = (profileId: string) => {
+    const existing = tabs.find((t) => t.kind === "agent-terminal" && t.profileId === profileId);
+    if (existing) {
+      setActive(existing.id);
+    } else {
+      const profile = profileOf(profileId);
+      if (profile) void openAgentTerminal(profile);
+    }
+  };
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
@@ -134,7 +158,7 @@ export const HomeShell: React.FC = () => {
             >
               {TAB_ICON[tab.kind]}
               <span>{tab.title}</span>
-              {tab.kind === "ssh-terminal" && tab.disconnected && <span className="tab-dot connecting" />}
+              {(tab.kind === "ssh-terminal" || tab.kind === "agent-terminal") && tab.disconnected && <span className="tab-dot connecting" />}
               <button
                 className="remote-session-tab-close"
                 title="关闭"
@@ -159,12 +183,16 @@ export const HomeShell: React.FC = () => {
           )}
         </div>
 
-        {showPicker ? (
-          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            <WorkspacePicker />
-          </div>
-        ) : (
-          <>
+        {/* "工作区"入口和下面的会话标签区不能再用 showPicker 互斥的三元表达式二选一
+            渲染——那样切到"工作区"再切回来，整棵会话标签子树会被卸载重建，RDP
+            内嵌的是真实原生窗口，SSH/Agent 终端是有状态的 xterm.js 实例，重建就等于
+            "会话没有保持"（真实反馈：点开 RDP 后点一下工作区再切回来，RDP 又得
+            重新连接）。改成两棵子树都常驻，只用 display 切换可见性，和下面
+            "multiExecEnabled 那块 vs 普通标签区"已经在用的同一个模式保持一致。 */}
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: showPicker ? "block" : "none" }}>
+          <WorkspacePicker />
+        </div>
+        <>
             {/* SFTP/RDP 标签（尤其是 RDP——内嵌的是真实进程/原生窗口，不是能随便丢的
                 画面）不能因为切进/切出多路执行模式就被卸载重建，所以这块和下面的
                 grid 是两棵并存的子树，用 display 切换可见性，不是互斥渲染。ssh-terminal
@@ -172,7 +200,7 @@ export const HomeShell: React.FC = () => {
                 这里对应位置要跳过，否则同一个 Channel 会有两个 xterm 实例同时收
                 ssh:data 事件。 */}
             {multiExecEnabled && (
-              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ flex: 1, minHeight: 0, display: showPicker ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
                 <div className="host-stats-bar" style={{ borderTop: "none", borderBottom: "1px solid var(--border-default)" }}>
                   <strong>多路执行模式</strong>：在任意未排除的终端里输入，会同步发给其它未排除的终端
                   <button className="btn ghost sm" style={{ marginLeft: "auto" }} onClick={toggleMultiExec}>
@@ -208,9 +236,9 @@ export const HomeShell: React.FC = () => {
               </div>
             )}
 
-            <div style={{ flex: 1, minHeight: 0, display: multiExecEnabled ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ flex: 1, minHeight: 0, display: showPicker || multiExecEnabled ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
               {tabs.length === 0 ? (
-                <div className="remote-session-empty">在左侧会话树里双击一个连接，开始一个 SSH / RDP / SFTP 会话</div>
+                <div className="remote-session-empty">在左侧会话树里双击一个连接，开始一个 SSH / Agent / RDP / SFTP 会话</div>
               ) : (
                 tabs.map((tab) => {
                   if (multiExecEnabled && tab.kind === "ssh-terminal") return null;
@@ -233,6 +261,34 @@ export const HomeShell: React.FC = () => {
                             />
                           </div>
                           <SshHostStatsBar profileId={tab.profileId} active={isActive} />
+                        </>
+                      )}
+                      {tab.kind === "agent-terminal" && (
+                        <>
+                          <div className="remote-session-subbar">
+                            <button className="quick-tool-btn" title="打开这台服务器的文件传输" onClick={() => jumpToAgentBrowse(tab.profileId)}>
+                              <ArrowLeftRight /> <span>文件传输</span>
+                            </button>
+                          </div>
+                          <div style={{ flex: 1, minHeight: 0 }}>
+                            <TerminalView
+                              tab={{ id: tab.id, kind: "agent", profileId: tab.profileId, title: tab.title, disconnected: tab.disconnected }}
+                              onDisconnected={markDisconnected}
+                              onReconnect={(id) => void reconnectAgentTerminal(id)}
+                            />
+                          </div>
+                        </>
+                      )}
+                      {tab.kind === "agent-browse" && (
+                        <>
+                          <div className="remote-session-subbar">
+                            <button className="quick-tool-btn" title="打开这台服务器的终端" onClick={() => jumpToAgentTerminal(tab.profileId)}>
+                              <HardDrive /> <span>终端</span>
+                            </button>
+                          </div>
+                          <div style={{ flex: 1, minHeight: 0 }}>
+                            <AgentBrowser profileId={tab.profileId} workspaceId={tab.profileId} />
+                          </div>
                         </>
                       )}
                       {tab.kind === "sftp" && (
@@ -268,7 +324,6 @@ export const HomeShell: React.FC = () => {
               )}
             </div>
           </>
-        )}
       </div>
     </div>
   );

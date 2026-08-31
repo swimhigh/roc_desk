@@ -50,6 +50,10 @@ const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
         "0010_connection_protocol",
         include_str!("../../migrations/0010_connection_protocol.sql"),
     ),
+    (
+        "0013_agent_known_hosts",
+        include_str!("../../migrations/0013_agent_known_hosts.sql"),
+    ),
 ];
 
 const WORKSPACES_MIGRATIONS: &[(&str, &str)] = &[(

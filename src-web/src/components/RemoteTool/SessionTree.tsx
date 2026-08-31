@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Folder, FolderOpen, Terminal as TerminalIcon, Monitor, FolderCog, Plus } from "lucide-react";
+import { Folder, FolderOpen, Terminal as TerminalIcon, Monitor, HardDrive, FolderCog, Plus } from "lucide-react";
 import { useSessionTreeStore } from "../../stores/sessionTreeStore";
 import { useRemoteSessionStore } from "../../stores/remoteSessionStore";
+import { agentService } from "../../services/agentService";
 import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
@@ -24,7 +25,9 @@ export const SessionTree: React.FC = () => {
   const { groups, connections, loading, expanded, load, toggleExpanded, deleteGroup, deleteConnection, createConnection, updateConnection } =
     useSessionTreeStore();
   const openSshTerminal = useRemoteSessionStore((s) => s.openSshTerminal);
+  const openAgentTerminal = useRemoteSessionStore((s) => s.openAgentTerminal);
   const openSftp = useRemoteSessionStore((s) => s.openSftp);
+  const openAgentBrowse = useRemoteSessionStore((s) => s.openAgentBrowse);
   const openRdp = useRemoteSessionStore((s) => s.openRdp);
   const push = useToastStore((s) => s.push);
 
@@ -74,7 +77,7 @@ export const SessionTree: React.FC = () => {
 
   const tabs = useRemoteSessionStore((s) => s.tabs);
   const activeProfileIds = useMemo(
-    () => new Set(tabs.filter((t) => t.kind === "ssh-terminal" && !t.disconnected).map((t) => t.profileId)),
+    () => new Set(tabs.filter((t) => (t.kind === "ssh-terminal" || t.kind === "agent-terminal") && !t.disconnected).map((t) => t.profileId)),
     [tabs],
   );
 
@@ -82,11 +85,22 @@ export const SessionTree: React.FC = () => {
     try {
       if (profile.protocol === "ssh") {
         await openSshTerminal(profile);
+      } else if (profile.protocol === "agent") {
+        await openAgentTerminal(profile);
       } else {
         openRdp(profile);
       }
     } catch (e) {
       push("error", `打开会话失败：${formatError(e)}`);
+    }
+  };
+
+  const testAgentConnection = async (profile: ConnectionProfile) => {
+    try {
+      await agentService.connect(profile.id);
+      push("success", `已连接到 ${profile.name}（TLS 握手 + 配对令牌校验通过）`);
+    } catch (e) {
+      push("error", `连接失败：${formatError(e)}`);
     }
   };
 
@@ -97,7 +111,13 @@ export const SessionTree: React.FC = () => {
             { label: "打开终端", onClick: () => void openSshTerminal(profile).catch((e) => push("error", `打开终端失败：${formatError(e)}`)) },
             { label: "打开 SFTP", onClick: () => openSftp(profile) },
           ]
-        : [{ label: "打开 RDP", onClick: () => openRdp(profile) }];
+        : profile.protocol === "agent"
+          ? [
+              { label: "打开终端", onClick: () => void openAgentTerminal(profile).catch((e) => push("error", `打开终端失败：${formatError(e)}`)) },
+              { label: "文件传输", onClick: () => openAgentBrowse(profile) },
+              { label: "测试连接", onClick: () => void testAgentConnection(profile) },
+            ]
+          : [{ label: "打开 RDP", onClick: () => openRdp(profile) }];
     items.push(
       { label: "编辑", onClick: () => setConnectionDialog({ protocol: profile.protocol, groupId: profile.group_id, connection: profile }), separatorBefore: true },
       { label: "删除", onClick: () => setDeleteConnectionTarget(profile), danger: true },
@@ -108,6 +128,7 @@ export const SessionTree: React.FC = () => {
   const groupMenuItems = (group: ConnectionGroup): ContextMenuItem[] => [
     { label: "新建 SSH 会话", onClick: () => setConnectionDialog({ protocol: "ssh", groupId: group.id }) },
     { label: "新建 RDP 会话", onClick: () => setConnectionDialog({ protocol: "rdp", groupId: group.id }) },
+    { label: "新建 Agent 会话", onClick: () => setConnectionDialog({ protocol: "agent", groupId: group.id }) },
     { label: "新建子分组", onClick: () => setGroupDialog({ mode: "create", parentId: group.id }) },
     { label: "重命名 / 移动", onClick: () => setGroupDialog({ mode: "edit", parentId: group.parent_id, group }), separatorBefore: true },
     { label: "删除分组", onClick: () => setDeleteGroupTarget(group), danger: true },
@@ -116,6 +137,7 @@ export const SessionTree: React.FC = () => {
   const rootMenuItems: ContextMenuItem[] = [
     { label: "新建 SSH 会话", onClick: () => setConnectionDialog({ protocol: "ssh", groupId: null }) },
     { label: "新建 RDP 会话", onClick: () => setConnectionDialog({ protocol: "rdp", groupId: null }) },
+    { label: "新建 Agent 会话", onClick: () => setConnectionDialog({ protocol: "agent", groupId: null }) },
     { label: "新建分组", onClick: () => setGroupDialog({ mode: "create", parentId: null }) },
   ];
 
@@ -161,11 +183,17 @@ export const SessionTree: React.FC = () => {
         e.stopPropagation();
         setMenu({ x: e.clientX, y: e.clientY, target: { kind: "connection", connection: profile } });
       }}
-      title={`${profile.username}@${profile.host}:${profile.port}`}
+      title={profile.protocol === "agent" ? `${profile.host}:${profile.port}（Agent）` : `${profile.username}@${profile.host}:${profile.port}`}
     >
-      {profile.protocol === "ssh" ? <TerminalIcon className="tree-icon" /> : <Monitor className="tree-icon" />}
+      {profile.protocol === "ssh" ? (
+        <TerminalIcon className="tree-icon" />
+      ) : profile.protocol === "agent" ? (
+        <HardDrive className="tree-icon" />
+      ) : (
+        <Monitor className="tree-icon" />
+      )}
       <span className="tree-name">{profile.name}</span>
-      {profile.protocol === "ssh" && (
+      {(profile.protocol === "ssh" || profile.protocol === "agent") && (
         <span className={`status-dot tree-status-dot ${activeProfileIds.has(profile.id) ? "connected" : "disconnected"}`} />
       )}
     </div>
@@ -280,7 +308,15 @@ export const SessionTree: React.FC = () => {
 
       {connectionDialog && (
         <ConnectionDialog
-          title={connectionDialog.connection ? "编辑会话" : connectionDialog.protocol === "ssh" ? "新建 SSH 会话" : "新建 RDP 会话"}
+          title={
+            connectionDialog.connection
+              ? "编辑会话"
+              : connectionDialog.protocol === "ssh"
+                ? "新建 SSH 会话"
+                : connectionDialog.protocol === "agent"
+                  ? "新建 Agent 会话"
+                  : "新建 RDP 会话"
+          }
           initial={connectionDialog.connection}
           defaultProtocol={connectionDialog.protocol}
           defaultGroupId={connectionDialog.groupId}

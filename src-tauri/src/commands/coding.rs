@@ -83,6 +83,7 @@ pub async fn coding_start(
         let target_matches = match (&guard.target, profile.kind, profile.connection_id) {
             (CodingTarget::Local, WorkspaceKind::Local, None) => true,
             (CodingTarget::Remote { connection_id, .. }, WorkspaceKind::Remote, Some(expected)) => *connection_id == expected,
+            (CodingTarget::Agent { connection_id, .. }, WorkspaceKind::Remote, Some(expected)) => *connection_id == expected,
             _ => false,
         };
         if target_matches && guard.workspace_root == profile.root_path {
@@ -100,19 +101,30 @@ pub async fn coding_start(
 
     let target = match profile.kind {
         WorkspaceKind::Local => CodingTarget::Local,
-        WorkspaceKind::Remote => CodingTarget::Remote {
-            connection_id: profile
+        WorkspaceKind::Remote => {
+            let connection_id = profile
                 .connection_id
-                .ok_or_else(|| AppError::Internal("remote workspace missing connection_id".into()))?,
-            host_label: profile.display_name.clone(),
-        },
+                .ok_or_else(|| AppError::Internal("remote workspace missing connection_id".into()))?;
+            // "Remote" 工作区可能是 SSH 也可能是 Agent 连接——两者共用同一个
+            // `WorkspaceKind`，靠连接档案的 `protocol` 字段区分该走哪套 `CodingTarget`。
+            let connection = state
+                .connection_manager
+                .get(connection_id)?
+                .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
+            match connection.protocol {
+                crate::connection::Protocol::Agent => {
+                    CodingTarget::Agent { connection_id, host_label: profile.display_name.clone() }
+                }
+                _ => CodingTarget::Remote { connection_id, host_label: profile.display_name.clone() },
+            }
+        }
     };
 
     let mut session = CodingSession::new(workspace_id, profile.root_path.clone(), target, provider_id, file_ops);
     // 只在会话开始时探测一次是否在 Git 仓库里——探测本身要跑一条命令，不值得每次
     // 查询会话状态都重新问一遍；工作区在会话生命周期内也不会突然从"不是仓库"
     // 变成"是仓库"（真发生了，用户重开一次工作区/编程会话就能重新探测到）。
-    session.git_repo = crate::coding::git_ops::is_git_repo(&session.target, &session.workspace_root, &state.ssh_pool).await;
+    session.git_repo = crate::coding::git_ops::is_git_repo(&session.target, &session.workspace_root, &state.ssh_pool, &state.agent_pool).await;
     // 项目记忆（AGENTS.md/CLAUDE.md）和技能发现同样只在会话开始时做一次，
     // 和上面的 git_repo 探测是同一个时机/理由。
     session.load_project_memory().await;
@@ -196,6 +208,7 @@ pub async fn coding_send_message(
             &attachments.unwrap_or_default(),
             &state.ai_provider_manager,
             &state.ssh_pool,
+            &state.agent_pool,
             &state.audit_log,
             &state.command_confirms,
             &state.permission_rules,
@@ -302,7 +315,7 @@ pub async fn coding_accept_change(
 ) -> Result<(), AppError> {
     let session = get_session(&state, workspace_id).await?;
     let mut guard = session.lock().await;
-    guard.accept_change(change_id, &state.ssh_pool, &app_handle).await
+    guard.accept_change(change_id, &state.ssh_pool, &state.agent_pool, &app_handle).await
 }
 
 #[tauri::command]

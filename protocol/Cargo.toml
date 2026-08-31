@@ -1,0 +1,11 @@
+[package]
+name = "roc_desk_protocol"
+version = "0.1.0"
+edition = "2021"
+description = "roc_desk client <-> roc_desk_agent 共享协议类型定义与帧编解码（AGENT_DESIGN.md §三）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util"] }
+thiserror = "2"

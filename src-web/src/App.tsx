@@ -3,11 +3,12 @@ import { Code2, FolderCog, Globe, Home, Sparkles, TerminalSquare, FileCode, Scro
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { useEditorStore } from "./stores/editorStore";
 import { useTerminalStore } from "./stores/terminalStore";
-import { registerHostKeyPromptListener } from "./stores/connectionStore";
+import { registerAgentCertPromptListener, registerHostKeyPromptListener } from "./stores/connectionStore";
 import { registerAiChatListeners } from "./stores/aiChatStore";
 import { registerCodingListeners } from "./stores/codingStore";
 import { registerSearchListeners, useSearchStore } from "./stores/searchStore";
 import { sshService } from "./services/sshService";
+import { connectionService } from "./services/connectionService";
 import { ExplorerTree } from "./components/Explorer/ExplorerTree";
 import { CodeEditor } from "./components/Editor/CodeEditor";
 import { TerminalPanel } from "./components/Terminal/TerminalPanel";
@@ -18,6 +19,7 @@ import { WebBrowserPanel } from "./components/WebBrowser/WebBrowserPanel";
 import { SearchPanel } from "./components/Search/SearchPanel";
 import { CodingAgentPanel } from "./components/CodingAgent/CodingAgentPanel";
 import { HostKeyPromptHost } from "./components/ConnectionManager/HostKeyPromptHost";
+import { AgentCertPromptHost } from "./components/ConnectionManager/AgentCertPromptHost";
 import { ToastStack, useToastStore } from "./components/shared/Toast";
 import { ThemeToggle } from "./components/shared/ThemeToggle";
 import { ContextMenu, type ContextMenuItem } from "./components/shared/ContextMenu";
@@ -26,6 +28,14 @@ import { formatError } from "./utils/error";
 import type { WorkspaceProfile } from "./types/bindings";
 
 type ActiveView = "editor" | "sftp" | "logs" | "browser";
+
+/** "remote" 工作区可能是 SSH 也可能是 Agent 连接（AGENT_DESIGN.md），
+ * `WorkspaceProfile` 本身不带协议字段，需要另查一次连接档案列表才知道该开哪种
+ * 终端——和 RemoteWorkspaceDialog.tsx 里同样的"查全量列表再 find"写法一致。 */
+async function resolveWorkspaceProtocol(connectionId: string): Promise<"ssh" | "agent" | "rdp"> {
+  const profiles = await connectionService.list();
+  return profiles.find((p) => p.id === connectionId)?.protocol ?? "ssh";
+}
 
 /**
  * 顶层入口：没有打开的工作区时展示 WorkspacePicker，
@@ -48,6 +58,10 @@ function App() {
   const pinFile = useEditorStore((s) => s.pin);
 
   const [workspaceMenu, setWorkspaceMenu] = useState<{ x: number; y: number } | null>(null);
+  // "remote" 工作区可能是 SSH 也可能是 Agent 连接（AGENT_DESIGN.md），底部终端面板
+  // 的 `target` prop 渲染时需要知道具体是哪种协议，才能决定新开的终端走哪条后端
+  // 命令——这个状态和下面的"自动打开默认终端"用的是同一次协议解析结果。
+  const [workspaceProtocol, setWorkspaceProtocol] = useState<"ssh" | "agent" | "rdp">("ssh");
   const [activeView, setActiveView] = useState<ActiveView>("editor");
   const [sidebarMode, setSidebarMode] = useState<"explorer" | "search">("explorer");
   const [sftpViewingPath, setSftpViewingPath] = useState<string | null>(null);
@@ -68,6 +82,13 @@ function App() {
 
   useEffect(() => {
     const unlistenPromise = registerHostKeyPromptListener();
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromise = registerAgentCertPromptListener();
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
@@ -111,17 +132,30 @@ function App() {
     let terminalCancelled = false;
     void (async () => {
       try {
+        // 协议解析要在"已经有保活的 Tab、不需要自动开新终端"这条早退路径之前做——
+        // `workspaceProtocol` 状态驱动的是底部面板"新建终端"按钮该走哪条后端命令，
+        // 不是只有"自动开默认终端"这一条路径用得到，即使这次切换不需要自动开终端
+        // 也必须更新它，否则从 Agent 工作区切到 SSH 工作区（或反过来）之后，
+        // 手动点"新建终端"仍然会用上一个工作区的协议。
+        const protocol = current.kind === "remote" && current.connection_id ? await resolveWorkspaceProtocol(current.connection_id) : "ssh";
+        if (!terminalCancelled) setWorkspaceProtocol(protocol);
+
         await useTerminalStore.getState().switchWorkspace(current.id);
         if (terminalCancelled) return;
         if (useTerminalStore.getState().tabs.length > 0) return;
         if (current.kind === "remote" && current.connection_id) {
-          await sshService.connect(current.connection_id);
-          if (!terminalCancelled) await openTerminal({ kind: "ssh", profileId: current.connection_id, cwd: current.root_path });
+          if (protocol === "agent") {
+            if (!terminalCancelled) await openTerminal({ kind: "agent", profileId: current.connection_id, cwd: current.root_path });
+          } else {
+            await sshService.connect(current.connection_id);
+            if (!terminalCancelled) await openTerminal({ kind: "ssh", profileId: current.connection_id, cwd: current.root_path });
+          }
         } else if (current.kind === "local" && !terminalCancelled) {
           await openTerminal({ kind: "local", cwd: current.root_path });
         }
       } catch (error) {
         console.error("打开默认终端失败", error);
+        pushToast("error", `打开终端失败：${formatError(error)}`);
       }
     })();
     const key = `roc_desk-editor-tabs:${current.id}`;
@@ -219,6 +253,7 @@ function App() {
         <HomeShell />
         <ToastStack />
         <HostKeyPromptHost />
+        <AgentCertPromptHost />
       </>
     );
   }
@@ -233,13 +268,18 @@ function App() {
     }
     try {
       if (isRemote && current.connection_id) {
-        await sshService.connect(current.connection_id);
-        await openTerminal({ kind: "ssh", profileId: current.connection_id, cwd: current.root_path });
+        if (workspaceProtocol === "agent") {
+          await openTerminal({ kind: "agent", profileId: current.connection_id, cwd: current.root_path });
+        } else {
+          await sshService.connect(current.connection_id);
+          await openTerminal({ kind: "ssh", profileId: current.connection_id, cwd: current.root_path });
+        }
       } else if (!isRemote) {
         await openTerminal({ kind: "local", cwd: current.root_path });
       }
     } catch (error) {
       console.error("打开终端失败", error);
+      pushToast("error", `打开终端失败：${formatError(error)}`);
     }
   };
 
@@ -475,7 +515,7 @@ function App() {
             <TerminalPanel
               target={
                 isRemote && current.connection_id
-                  ? { kind: "ssh", profileId: current.connection_id, cwd: current.root_path }
+                  ? { kind: workspaceProtocol === "agent" ? "agent" : "ssh", profileId: current.connection_id, cwd: current.root_path }
                   : { kind: "local", cwd: current.root_path }
               }
             />
@@ -522,6 +562,7 @@ function App() {
 
       <ToastStack />
       <HostKeyPromptHost />
+      <AgentCertPromptHost />
     </div>
   );
 }

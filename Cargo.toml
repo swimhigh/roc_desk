@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "protocol", "agent"]
+
+# `src-tauri` 是现有客户端 crate（roc_desk.exe），`protocol`/`agent` 是新增的
+# Windows 远程 Agent 方案（AGENT_DESIGN.md）：`protocol` 是客户端与 Agent 共享的
+# 纯数据协议 crate，`agent` 产出独立部署在远程 Windows 服务器上的 roc_desk_agent.exe。
+# 三者放进同一个 workspace 只是为了共用一份 Cargo.lock/依赖解析缓存，不代表
+# roc_desk.exe 运行时依赖 agent crate——`src-tauri` 只依赖 `protocol`。

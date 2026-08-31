@@ -1,0 +1,10 @@
+# 把 cargo/Tauri 的构建产物统一放到仓库根目录的 build/ 下，而不是默认的
+# <crate>/target/，方便直接找可执行文件和安装包。原先这份配置放在 src-tauri/.cargo/
+# 下（仓库还没 workspace 化之前，src-tauri 是唯一的 crate）；引入 workspace
+# （新增 protocol/、agent/ 两个 crate，AGENT_DESIGN.md）后必须挪到仓库根目录——
+# cargo 的配置发现是按"当前工作目录逐级向上找"，放在 src-tauri/.cargo/ 下时只有
+# cwd 在 src-tauri/ 或其子目录才会生效，agent/、protocol/ 目录下跑 `cargo build`
+# 找不到这份配置，会退回默认的 target-dir。放到仓库根目录后三个 crate 无论从哪个
+# 目录构建，产物都统一落在同一个 build/ 下。
+[build]
+target-dir = "build"
