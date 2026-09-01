@@ -37,6 +37,7 @@ use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
+use db::repo::transfer_log_repo::TransferLogRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
 use mcp::McpServerManager;
@@ -222,6 +223,7 @@ pub fn run() {
             let permission_rules = Arc::new(PermissionRulesRepo::new(pool.clone()));
             let mcp_servers_repo = Arc::new(McpServersRepo::new(pool.clone()));
             let mcp_manager = Arc::new(McpServerManager::new(mcp_servers_repo, credential_store.clone()));
+            let transfer_log = Arc::new(TransferLogRepo::new(pool.clone()));
 
             app.manage(AppState {
                 db: pool,
@@ -246,6 +248,8 @@ pub fn run() {
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
+                cancelled_transfers: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                transfer_log,
                 permission_rules,
                 question_confirms: coding::QuestionRegistry::default(),
                 mcp_manager,
@@ -260,6 +264,7 @@ pub fn run() {
             commands::workspace::workspace_remove_recent,
             commands::workspace::workspace_update_path,
             commands::workspace::workspace_close,
+            commands::workspace::workspace_update_last_sftp_paths,
             commands::fs::fs_list_dir,
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
@@ -335,6 +340,10 @@ pub fn run() {
             commands::sftp::sftp_upload_entry,
             commands::local_fs::local_list_dir,
             commands::local_fs::local_home_dir,
+            commands::local_fs::local_is_dir,
+            commands::transfer::transfer_cancel,
+            commands::transfer::transfer_log_list,
+            commands::transfer::transfer_log_clear,
             commands::log_search::log_search_index,
             commands::log_search::log_search_live,
             commands::log_search::log_import_file,

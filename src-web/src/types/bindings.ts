@@ -13,6 +13,9 @@ export interface WorkspaceProfile {
   connection_id: string | null;
   display_name: string;
   last_opened_at: string | null;
+  /** SFTP/Agent 双栏浏览器最后停留的两边目录，NULL 表示还没打开过。 */
+  last_sftp_local_path: string | null;
+  last_sftp_remote_path: string | null;
 }
 
 export interface FileEntry {
@@ -451,6 +454,26 @@ export interface CodingGitCommitResultEvent {
 export interface SftpTransferProgressEvent {
   requestId: string;
   path: string;
+}
+
+/** 传输历史一条记录（`transfer_log_list`），SFTP/Agent 双栏浏览器共用同一张表。
+ * 字段名和 Rust 的 `TransferLogEntry` 保持原样的 snake_case——这个结构体没有
+ * `#[serde(rename_all = "camelCase")]`，序列化出来的 JSON key 就是 Rust 字段名
+ * 本身（和 `FileEntry` 的 `is_dir` 是同一个既有约定）。*/
+export interface TransferLogEntry {
+  id: string;
+  protocol: "sftp" | "agent";
+  direction: "upload" | "download";
+  profile_id: string | null;
+  profile_name: string;
+  local_path: string;
+  remote_path: string;
+  is_dir: boolean;
+  file_count: number;
+  status: "completed" | "cancelled" | "failed";
+  error_message: string | null;
+  started_at: string;
+  finished_at: string;
 }
 
 export interface BrowserHistoryEntry {

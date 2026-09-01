@@ -9,4 +9,8 @@ export const localFsService = {
   homeDir(): Promise<string> {
     return invoke("local_home_dir");
   },
+  /** 从外部拖真实文件进来时用——判断是文件还是目录，决定走单文件还是整目录上传。*/
+  isDir(path: string): Promise<boolean> {
+    return invoke("local_is_dir", { path });
+  },
 };

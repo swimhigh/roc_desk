@@ -123,9 +123,20 @@ impl RemoteFileOps {
     /// `progress` 不做字节级百分比——那需要先完整遍历一遍算总大小，再在拷贝循环里
     /// 手动分块读写替换掉 `tokio::io::copy`，复杂度不小；退而求其次按"已完成第几个
     /// 文件"报进度，够让用户知道"还在传、没卡死"，这是够用和精确之间的取舍。
-    pub async fn download_recursive(&self, remote_path: &str, local_path: &str, progress: Option<(AppHandle, Uuid)>) -> Result<(), AppError> {
+    pub async fn download_recursive(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        progress: Option<(AppHandle, Uuid)>,
+        should_cancel: &(dyn Fn() -> bool + Send + Sync),
+        file_count: &std::sync::atomic::AtomicU64,
+    ) -> Result<(), AppError> {
+        if should_cancel() {
+            return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
+        }
         if !self.is_remote_dir(remote_path).await? {
             self.download_to_local(remote_path, local_path).await?;
+            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             emit_progress(&progress, remote_path);
             return Ok(());
         }
@@ -133,16 +144,27 @@ impl RemoteFileOps {
         let entries = self.list_dir(remote_path).await?;
         for entry in entries {
             let local_child = format!("{}/{}", local_path.trim_end_matches('/'), entry.name);
-            Box::pin(self.download_recursive(&entry.path, &local_child, progress.clone())).await?;
+            Box::pin(self.download_recursive(&entry.path, &local_child, progress.clone(), should_cancel, file_count)).await?;
         }
         Ok(())
     }
 
     /// 递归上传整个本地目录，`upload_recursive` 与 `download_recursive` 对称。
-    pub async fn upload_recursive(&self, local_path: &str, remote_path: &str, progress: Option<(AppHandle, Uuid)>) -> Result<(), AppError> {
+    pub async fn upload_recursive(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        progress: Option<(AppHandle, Uuid)>,
+        should_cancel: &(dyn Fn() -> bool + Send + Sync),
+        file_count: &std::sync::atomic::AtomicU64,
+    ) -> Result<(), AppError> {
+        if should_cancel() {
+            return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
+        }
         let meta = tokio::fs::metadata(local_path).await.map_err(AppError::from)?;
         if !meta.is_dir() {
             self.upload_from_local(local_path, remote_path).await?;
+            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             emit_progress(&progress, local_path);
             return Ok(());
         }
@@ -152,7 +174,7 @@ impl RemoteFileOps {
             let name = entry.file_name().to_string_lossy().to_string();
             let child_local = entry.path().to_string_lossy().replace('\\', "/");
             let child_remote = format!("{}/{}", remote_path.trim_end_matches('/'), name);
-            Box::pin(self.upload_recursive(&child_local, &child_remote, progress.clone())).await?;
+            Box::pin(self.upload_recursive(&child_local, &child_remote, progress.clone(), should_cancel, file_count)).await?;
         }
         Ok(())
     }

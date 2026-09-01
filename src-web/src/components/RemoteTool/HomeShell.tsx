@@ -287,7 +287,7 @@ export const HomeShell: React.FC = () => {
                             </button>
                           </div>
                           <div style={{ flex: 1, minHeight: 0 }}>
-                            <AgentBrowser profileId={tab.profileId} workspaceId={tab.profileId} />
+                            <AgentBrowser profileId={tab.profileId} workspaceId={tab.profileId} rememberRemotePath />
                           </div>
                         </>
                       )}

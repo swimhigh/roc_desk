@@ -26,4 +26,10 @@ export const workspaceService = {
   close(id: string): Promise<void> {
     return invoke("workspace_close", { id });
   },
+
+  /** SFTP/Agent 双栏浏览器每次导航都调一次，把两边当前目录写回工作区档案——
+   * 下次重新打开这个工作区的 SFTP/文件传输时直接定位到这里，不用重新导航。 */
+  updateLastSftpPaths(id: string, localPath: string, remotePath: string): Promise<void> {
+    return invoke("workspace_update_last_sftp_paths", { id, localPath, remotePath });
+  },
 };

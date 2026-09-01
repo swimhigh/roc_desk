@@ -111,6 +111,8 @@ impl WorkspaceManager {
                 connection_id: None,
                 display_name,
                 last_opened_at: Some(Utc::now().to_rfc3339()),
+                last_sftp_local_path: None,
+                last_sftp_remote_path: None,
             },
         };
         self.repo.upsert(&profile)?;
@@ -163,6 +165,8 @@ impl WorkspaceManager {
                     connection_id: Some(connection_id),
                     display_name,
                     last_opened_at: Some(Utc::now().to_rfc3339()),
+                    last_sftp_local_path: None,
+                    last_sftp_remote_path: None,
                 }
             }
         };
@@ -262,5 +266,9 @@ impl WorkspaceManager {
 
     pub fn touch(&self, id: Uuid) -> Result<(), AppError> {
         self.repo.touch_last_opened(id)
+    }
+
+    pub fn update_last_sftp_paths(&self, id: Uuid, local_path: &str, remote_path: &str) -> Result<(), AppError> {
+        self.repo.update_last_sftp_paths(id, local_path, remote_path)
     }
 }

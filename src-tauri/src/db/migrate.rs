@@ -39,6 +39,10 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0012_mcp_servers",
         include_str!("../../migrations/0012_mcp_servers.sql"),
     ),
+    (
+        "0014_transfer_log",
+        include_str!("../../migrations/0014_transfer_log.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
@@ -56,10 +60,16 @@ const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-const WORKSPACES_MIGRATIONS: &[(&str, &str)] = &[(
-    "0006_workspaces",
-    include_str!("../../migrations/0006_workspaces.sql"),
-)];
+const WORKSPACES_MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0006_workspaces",
+        include_str!("../../migrations/0006_workspaces.sql"),
+    ),
+    (
+        "0015_workspace_last_sftp_paths",
+        include_str!("../../migrations/0015_workspace_last_sftp_paths.sql"),
+    ),
+];
 
 fn apply(conn: &Connection, migrations: &[(&str, &str)]) -> Result<(), AppError> {
     conn.execute_batch(

@@ -3,12 +3,59 @@ use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
+use crate::db::repo::transfer_log_repo::TransferLogInput;
 use crate::error::AppError;
 use crate::fsops::{
     binary_info, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps, JarInfo, WriteOutcome,
-    BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
+    BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES, TRANSFER_CANCELLED_MESSAGE,
 };
 use crate::state::AppState;
+
+/// `sftp_download_entry`/`sftp_upload_entry` 收尾时共用：清掉这个 `request_id` 的
+/// "取消"标记（不清会在 `state.cancelled_transfers` 里永久占位），查一下连接名字
+/// 快照进日志（连接以后被删了也能看出当时传的是哪台机器），按错误消息是不是那个
+/// 共享的取消哨兵字符串区分 'cancelled' 还是 'failed'，最后把这条记录写进
+/// `transfer_log`（尽力而为，写失败不影响命令本身的返回值）。
+fn finish_transfer_log(
+    state: &AppState,
+    request_id: Uuid,
+    profile_id: Uuid,
+    direction: &str,
+    local_path: &str,
+    remote_path: &str,
+    is_dir: bool,
+    file_count: u64,
+    started_at: &str,
+    result: &Result<(), AppError>,
+) {
+    state.cancelled_transfers.lock().unwrap().remove(&request_id);
+    let profile_name = state
+        .connection_manager
+        .get(profile_id)
+        .ok()
+        .flatten()
+        .map(|p| p.name)
+        .unwrap_or_else(|| "未知连接".into());
+    let error_message = result.as_ref().err().map(|e| e.to_string());
+    let status = match &error_message {
+        None => "completed",
+        Some(msg) if msg.contains(TRANSFER_CANCELLED_MESSAGE) => "cancelled",
+        Some(_) => "failed",
+    };
+    state.transfer_log.record(TransferLogInput {
+        protocol: "sftp",
+        direction,
+        profile_id: Some(profile_id),
+        profile_name: &profile_name,
+        local_path,
+        remote_path,
+        is_dir,
+        file_count,
+        status,
+        error_message: error_message.as_deref(),
+        started_at,
+    });
+}
 
 /// SFTP 自由浏览快捷工具（DESIGN.md §3.3）：**故意不做工作区边界检查**——
 /// 这就是它和 Explorer 用的 `fs_*` 命令（见 commands/fs.rs）的核心区别，
@@ -153,11 +200,33 @@ pub async fn sftp_download_entry(
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     let name = remote_path.trim_end_matches('/').rsplit('/').next().unwrap_or(&remote_path);
     let local_target = format!("{}/{}", local_dir.trim_end_matches('/'), name);
-    if is_dir {
-        ops.download_recursive(&remote_path, &local_target, Some((app_handle, request_id))).await
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let cancelled_transfers = state.cancelled_transfers.clone();
+    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+
+    let result = if is_dir {
+        ops.download_recursive(&remote_path, &local_target, Some((app_handle, request_id)), &should_cancel, &file_count).await
     } else {
-        ops.download_to_local(&remote_path, &local_target).await
-    }
+        ops.download_to_local(&remote_path, &local_target).await.inspect(|_| {
+            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+    };
+
+    finish_transfer_log(
+        &state,
+        request_id,
+        profile_id,
+        "download",
+        &local_target,
+        &remote_path,
+        is_dir,
+        file_count.load(std::sync::atomic::Ordering::Relaxed),
+        &started_at,
+        &result,
+    );
+    result
 }
 
 /// 和 `sftp_download_entry` 对称的"上传到远程目录"。
@@ -174,11 +243,33 @@ pub async fn sftp_upload_entry(
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     let name = local_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&local_path);
     let remote_target = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
-    if is_dir {
-        ops.upload_recursive(&local_path, &remote_target, Some((app_handle, request_id))).await
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let cancelled_transfers = state.cancelled_transfers.clone();
+    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+
+    let result = if is_dir {
+        ops.upload_recursive(&local_path, &remote_target, Some((app_handle, request_id)), &should_cancel, &file_count).await
     } else {
-        ops.upload_from_local(&local_path, &remote_target).await
-    }
+        ops.upload_from_local(&local_path, &remote_target).await.inspect(|_| {
+            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+    };
+
+    finish_transfer_log(
+        &state,
+        request_id,
+        profile_id,
+        "upload",
+        &local_path,
+        &remote_target,
+        is_dir,
+        file_count.load(std::sync::atomic::Ordering::Relaxed),
+        &started_at,
+        &result,
+    );
+    result
 }
 
 /// 删除需要前端二次确认（UI 层，不是这里）——DESIGN.md §3.3 明确要求

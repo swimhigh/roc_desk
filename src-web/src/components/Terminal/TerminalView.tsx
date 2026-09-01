@@ -9,8 +9,10 @@ import { ptyService } from "../../services/ptyService";
 import { agentService } from "../../services/agentService";
 import { useThemeStore } from "../../stores/themeStore";
 import { useTerminalStore, type TerminalTab } from "../../stores/terminalStore";
+import { useToastStore } from "../shared/Toast";
 import { getTerminalTheme } from "../../utils/terminalTheme";
 import { highlightTerminalChunk } from "../../utils/terminalHighlight";
+import { formatError } from "../../utils/error";
 import type { SshDataEvent, SshStatusEvent } from "../../types/bindings";
 
 interface TerminalViewProps {
@@ -136,7 +138,16 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
         <div className="terminal-disconnected-overlay">
           <button
             className="btn primary sm"
-            onClick={() => (onReconnect ?? useTerminalStore.getState().reconnectTerminal)(tab.id, cwd)}
+            onClick={() => {
+              // 之前这里点了没反应（真实反馈）：重连失败时 Promise reject 没人接，
+              // 按钮"点了跟没点一样"，连接池里缓存的死连接一直废在那，不重启整个
+              // app 都连不上——现在池子那边已经会自动识别并清掉死连接重连，这里
+              // 补上失败提示，万一还是连不上（比如目标真的不可达）用户能看到原因。
+              const reconnect = onReconnect ?? useTerminalStore.getState().reconnectTerminal;
+              Promise.resolve(reconnect(tab.id, cwd)).catch((e) => {
+                useToastStore.getState().push("error", `重新连接失败：${formatError(e)}`);
+              });
+            }}
           >
             <RefreshCw style={{ width: 14, height: 14 }} /> 重新连接
           </button>

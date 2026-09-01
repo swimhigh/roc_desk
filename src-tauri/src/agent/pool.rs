@@ -24,8 +24,13 @@ impl AgentConnectionPool {
 
     pub async fn get_or_connect(&self, profile_id: Uuid) -> Result<Arc<AgentSession>, AppError> {
         if let Some(existing) = self.sessions.read().await.get(&profile_id) {
-            return Ok(existing.clone());
+            if existing.is_alive() {
+                return Ok(existing.clone());
+            }
         }
+        // 和 `SshConnectionPool::get_or_connect` 同一个真实 bug/修法：缓存的连接
+        // 已经断了就不能继续复用，清掉重连一条，否则"重新连接"点了跟没点一样。
+        self.sessions.write().await.remove(&profile_id);
 
         let profile = self
             .connection_manager

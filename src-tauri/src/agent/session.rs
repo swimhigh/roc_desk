@@ -319,6 +319,14 @@ impl AgentSession {
         self.shell_channels.lock().await.insert(local_id, stream_id);
 
         tokio::spawn(async move {
+            // 和 `ssh::session::SshSession::open_shell` 同一个理由（那边注释更详细）：
+            // 前端拿到 `local_id` 后还要走一次 IPC 往返 + React 挂载才会挂上
+            // `listen("agent:data", ...)`，这段窗口期里如果已经开始 `rx.recv()` 并
+            // `emit`，PTY 起来后立刻打印的东西（比如自定义 PS1/欢迎信息）就会在没人
+            // 监听时被发出去，丢失且不会重发。这里的 `rx` 是无界 mpsc，不消费也不会
+            // 丢数据，稳妥地延后一小段再开始读，就能让第一批输出等到前端监听器
+            // 挂上之后再流过去。
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             while let Some(item) = rx.recv().await {
                 match item {
                     StreamFrame::Data(bytes) => {
@@ -371,5 +379,14 @@ impl AgentSession {
             let _ = self.out_tx.send((stream_id, FrameType::StreamEnd, Vec::new()));
         }
         Ok(())
+    }
+
+    /// `AgentConnectionPool::get_or_connect` 在把缓存的会话交给调用方之前先问一句
+    /// ——和 `SshSession::is_alive` 同一个理由：网络掉线/Agent 重启后，写任务
+    /// （`from_stream` 里那个 `tokio::spawn`）写失败会 `break` 退出并丢掉
+    /// `out_rx`，`out_tx.is_closed()` 就会变 true，据此判断这条 TLS 连接已经废了，
+    /// 不能继续复用。
+    pub fn is_alive(&self) -> bool {
+        !self.out_tx.is_closed()
     }
 }

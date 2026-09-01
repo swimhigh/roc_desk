@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::{Mutex, RwLock};
@@ -61,6 +61,17 @@ pub struct AppState {
     /// 的 `should_cancel` 钩子）。用 `std::sync::Mutex` 而不是 `tokio::sync::Mutex`——
     /// 只是拿锁读写一个值，不跨 `.await`，标准库的锁足够，不需要 tokio 版本的开销。
     pub active_search: Arc<StdMutex<Option<Uuid>>>,
+    /// SFTP/Agent 双栏浏览器"停止传输"用（2026-09-01 用户反馈：拖拽/上传下载
+    /// 大文件夹时没有办法主动停下来，只能干等传完）——和 `active_search` 是同一个
+    /// 取消模式，区别是这里可能同时有多个传输各自跑在不同的 `request_id` 下（比如
+    /// 两个不同的浏览器面板各自拖了一次），所以用 `HashSet` 记"被取消的" id 集合，
+    /// 不是单个"当前活跃的" id：递归复制（`fsops::copy_between`/
+    /// `fsops::remote::upload_recursive`/`download_recursive`）每处理完一个文件都
+    /// 检查一次自己的 `request_id` 是否在这个集合里，在就尽快中止。取消/正常结束/
+    /// 出错都要记得从集合里移除对应 id，不然会无限增长。
+    pub cancelled_transfers: Arc<StdMutex<HashSet<Uuid>>>,
+    /// 传输日志（用户 2026-09-01 需求："传输日志需要记录，并可在界面上查询追溯"）。
+    pub transfer_log: Arc<crate::db::repo::transfer_log_repo::TransferLogRepo>,
     /// 权限规则引擎的持久化层（REQUIREMENTS.md §3.7 权限引擎升级）——`CodingSession`
     /// 不持有它，`send_message` 每次都现取一份最新规则，见 `coding/permission.rs`。
     pub permission_rules: Arc<PermissionRulesRepo>,

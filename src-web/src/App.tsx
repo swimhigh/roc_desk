@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Code2, FolderCog, Globe, Home, Sparkles, TerminalSquare, FileCode, ScrollText, Files, Search as SearchIcon } from "lucide-react";
+import { Code2, FolderCog, Globe, Home, Sparkles, TerminalSquare, FileCode, ScrollText, Files, Search as SearchIcon, RotateCw } from "lucide-react";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { useEditorStore } from "./stores/editorStore";
+import { useExplorerStore } from "./stores/explorerStore";
 import { useTerminalStore } from "./stores/terminalStore";
 import { registerAgentCertPromptListener, registerHostKeyPromptListener } from "./stores/connectionStore";
 import { registerAiChatListeners } from "./stores/aiChatStore";
@@ -14,6 +15,7 @@ import { CodeEditor } from "./components/Editor/CodeEditor";
 import { TerminalPanel } from "./components/Terminal/TerminalPanel";
 import { SftpBrowser } from "./components/SftpBrowser/SftpBrowser";
 import { SftpFileViewer } from "./components/SftpBrowser/SftpFileViewer";
+import { AgentBrowser } from "./components/SftpBrowser/AgentBrowser";
 import { LogSearchPanel } from "./components/LogSearch/LogSearchPanel";
 import { WebBrowserPanel } from "./components/WebBrowser/WebBrowserPanel";
 import { SearchPanel } from "./components/Search/SearchPanel";
@@ -48,7 +50,9 @@ async function resolveWorkspaceProtocol(connectionId: string): Promise<"ssh" | "
  */
 function App() {
   const current = useWorkspaceStore((s) => s.current);
+  const showPicker = useWorkspaceStore((s) => s.showPicker);
   const backToPicker = useWorkspaceStore((s) => s.backToPicker);
+  const updateLastSftpPaths = useWorkspaceStore((s) => s.updateLastSftpPaths);
   const recentWorkspaces = useWorkspaceStore((s) => s.recent);
   const loadRecentWorkspaces = useWorkspaceStore((s) => s.loadRecent);
   const openLocalPath = useWorkspaceStore((s) => s.openLocalPath);
@@ -73,6 +77,11 @@ function App() {
   const terminalTabs = useTerminalStore((s) => s.tabs);
   const openTerminal = useTerminalStore((s) => s.openTerminal);
   const togglePanel = useTerminalStore((s) => s.togglePanel);
+  /** 有界保活的 LRU 常驻工作区集合（terminalStore.ts）——"切换工作区"下拉菜单用它
+   * 标一个绿点：在这个集合里说明终端 Channel/xterm 实例一直没被摘掉，切过去是
+   * 真正的"原样恢复"，不在集合里则说明上次切走时已经被 LRU 淘汰，切回去会是一个
+   * 全新终端（2026-09-01 用户需求：想要和 SSH 会话树一样的在线状态指示）。 */
+  const residentWorkspaceIds = useTerminalStore((s) => s.residentOrder);
   const [aiToolsOpen, setAiToolsOpen] = useState(false);
   const [aiToolsWidth, setAiToolsWidth] = useState(() => {
     const stored = Number(localStorage.getItem("roc_desk-ai-tools-width"));
@@ -259,7 +268,10 @@ function App() {
   }
 
   const isRemote = current.kind === "remote";
-  const sftpReady = isRemote; // 本地工作区下需要先选一个已保存连接才能用 SFTP，尚未接（DESIGN.md §3.1.3）
+  const sftpReady = isRemote; // 本地工作区下需要先选一个已保存连接才能用文件互传，尚未接（DESIGN.md §3.1.3）
+  // Agent 协议的工作区底层是 AgentBrowser（Windows 路径语义、走 Agent 协议的浏览/传输命令），
+  // 不是 SftpBrowser——按钮沿用同一个位置，但文案跟着协议换，避免用户以为点的是 SSH SFTP。
+  const sftpTabLabel = workspaceProtocol === "agent" ? "文件传输" : "SFTP";
 
   const handleTerminalToggle = async () => {
     if (terminalTabs.length > 0) {
@@ -304,7 +316,20 @@ function App() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+    <>
+      {/* HomeShell（会话树 + RDP/SSH/Agent 远程会话）和下面的工作区 IDE 主界面
+          不能再靠 `!current` 互斥渲染二选一——那样"返回首页"时 `current` 被置空，
+          整棵 IDE 子树（连同它下面常驻的 `TerminalPanel`）被卸载，切回工作区看到
+          的终端是内容清空的新终端；反过来打开工作区时 HomeShell 卸载，它自己
+          正开着的 RDP/SSH/Agent 会话（`remoteSessionStore`）也会丢失渲染状态。
+          现在两棵子树都常驻挂载，只用 `showPicker`（workspaceStore.ts）切换
+          display 可见性——和 HomeShell.tsx 内部"工作区选择页 vs 会话标签"已经在用
+          的同一个模式保持一致（2026-09-01 用户反馈：切到首页做完远程会话操作后
+          回工作区，终端状态没保持住）。 */}
+      <div style={{ display: showPicker ? "block" : "none", height: "100vh" }}>
+        <HomeShell />
+      </div>
+      <div style={{ display: showPicker ? "none" : "flex", flexDirection: "column", height: "100vh" }}>
       <div className="tab-bar">
         <button className="quick-tool-btn" onClick={backToPicker} title="返回首页">
           <Home />
@@ -333,12 +358,15 @@ function App() {
             onClose={() => setWorkspaceMenu(null)}
             items={recentWorkspaces
               .filter((w) => w.id !== current.id)
-              .map(
-                (w): ContextMenuItem => ({
-                  label: `${w.kind === "local" ? "💻" : "🖥"} ${w.display_name} — ${w.root_path}`,
+              .map((w): ContextMenuItem => {
+                // 绿点＝终端有界保活集合里还留着这个工作区（切过去终端原样恢复，
+                // 不是新连的）；灰点＝已经被 LRU 淘汰，切过去会是一个全新终端。
+                const online = residentWorkspaceIds.includes(w.id);
+                return {
+                  label: `${online ? "🟢" : "⚪"} ${w.kind === "local" ? "💻" : "🖥"} ${w.display_name} — ${w.root_path}`,
                   onClick: () => void switchWorkspace(w),
-                }),
-              )}
+                };
+              })}
           />
         )}
 
@@ -356,7 +384,7 @@ function App() {
         {sftpReady && (
           <div className={`tab-item ${activeView === "sftp" ? "active" : ""}`} onClick={() => setActiveView("sftp")}>
             <FolderCog className="tab-icon" />
-            <span>SFTP</span>
+            <span>{sftpTabLabel}</span>
           </div>
         )}
 
@@ -364,7 +392,7 @@ function App() {
           <button
             className={`quick-tool-btn ${activeView === "sftp" ? "active" : ""}`}
             disabled={!sftpReady}
-            title={sftpReady ? "SFTP 传输管理器（跨目录自由浏览）" : "本地工作区需先选择一个已保存连接才能用 SFTP，尚未实现"}
+            title={sftpReady ? `${sftpTabLabel}（跨目录自由浏览与互传）` : "本地工作区需先选择一个已保存连接才能用文件互传，尚未实现"}
             onClick={() => sftpReady && setActiveView("sftp")}
           >
             <FolderCog />
@@ -423,6 +451,19 @@ function App() {
             >
               <SearchIcon />
             </button>
+            {/* 目录树刷新（2026-09-01 用户反馈：目录树没有任何办法刷新，工作区外部
+                改了文件看不到最新状态）——只在资源管理器视图下有意义，搜索视图
+                切过去这个按钮没有对应操作。 */}
+            {sidebarMode === "explorer" && (
+              <button
+                className="quick-tool-btn"
+                style={{ marginLeft: "auto" }}
+                title="刷新目录树"
+                onClick={() => void useExplorerStore.getState().refreshAll(current.id, current.root_path)}
+              >
+                <RotateCw />
+              </button>
+            )}
           </div>
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
             {sidebarMode === "explorer" ? (
@@ -473,21 +514,29 @@ function App() {
           </div>
           {sftpReady && (
             <div style={{ flex: 1, overflow: "hidden", display: activeView === "sftp" ? "block" : "none" }}>
-              {current.connection_id && sftpViewingPath ? (
+              {!current.connection_id ? null : workspaceProtocol === "agent" ? (
+                <AgentBrowser
+                  profileId={current.connection_id}
+                  workspaceId={current.id}
+                  initialRemotePath={current.last_sftp_remote_path ?? current.root_path}
+                  initialLocalPath={current.last_sftp_local_path ?? undefined}
+                  onPathsChange={updateLastSftpPaths}
+                />
+              ) : sftpViewingPath ? (
                 <SftpFileViewer
                   profileId={current.connection_id}
                   path={sftpViewingPath}
                   onBack={() => setSftpViewingPath(null)}
                 />
               ) : (
-                current.connection_id && (
-                  <SftpBrowser
-                    profileId={current.connection_id}
-                    workspaceId={current.id}
-                    initialRemotePath={current.root_path}
-                    onOpenFile={(entry) => setSftpViewingPath(entry.path)}
-                  />
-                )
+                <SftpBrowser
+                  profileId={current.connection_id}
+                  workspaceId={current.id}
+                  initialRemotePath={current.last_sftp_remote_path ?? current.root_path}
+                  initialLocalPath={current.last_sftp_local_path ?? undefined}
+                  onPathsChange={updateLastSftpPaths}
+                  onOpenFile={(entry) => setSftpViewingPath(entry.path)}
+                />
               )}
             </div>
           )}
@@ -559,11 +608,12 @@ function App() {
       >
         {current.root_path}
       </div>
+      </div>
 
       <ToastStack />
       <HostKeyPromptHost />
       <AgentCertPromptHost />
-    </div>
+    </>
   );
 }
 

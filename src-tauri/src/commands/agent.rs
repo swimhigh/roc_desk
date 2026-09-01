@@ -1,11 +1,56 @@
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
+use crate::db::repo::transfer_log_repo::TransferLogInput;
 use crate::error::AppError;
 use crate::fsops::agent::AgentFileOps;
 use crate::fsops::local::LocalFileOps;
-use crate::fsops::{copy_between, FileContent, FileEntry, FileOps, WriteOutcome};
+use crate::fsops::{copy_between, FileContent, FileEntry, FileOps, WriteOutcome, TRANSFER_CANCELLED_MESSAGE};
 use crate::state::AppState;
+
+/// 和 `commands::sftp` 里的同名函数（那边注释更详细）是同一套逻辑，两份没有共用
+/// 一个模块是因为 `direction`/日志的 `protocol` 字段不同，共用需要多传两个参数，
+/// 不如各自留一份更直白。
+fn finish_transfer_log(
+    state: &AppState,
+    request_id: Uuid,
+    profile_id: Uuid,
+    direction: &str,
+    local_path: &str,
+    remote_path: &str,
+    is_dir: bool,
+    file_count: u64,
+    started_at: &str,
+    result: &Result<(), AppError>,
+) {
+    state.cancelled_transfers.lock().unwrap().remove(&request_id);
+    let profile_name = state
+        .connection_manager
+        .get(profile_id)
+        .ok()
+        .flatten()
+        .map(|p| p.name)
+        .unwrap_or_else(|| "未知连接".into());
+    let error_message = result.as_ref().err().map(|e| e.to_string());
+    let status = match &error_message {
+        None => "completed",
+        Some(msg) if msg.contains(TRANSFER_CANCELLED_MESSAGE) => "cancelled",
+        Some(_) => "failed",
+    };
+    state.transfer_log.record(TransferLogInput {
+        protocol: "agent",
+        direction,
+        profile_id: Some(profile_id),
+        profile_name: &profile_name,
+        local_path,
+        remote_path,
+        is_dir,
+        file_count,
+        status,
+        error_message: error_message.as_deref(),
+        started_at,
+    });
+}
 
 async fn file_ops(state: &AppState, profile_id: Uuid) -> Result<AgentFileOps, AppError> {
     let session = state.agent_pool.get_or_connect(profile_id).await?;
@@ -144,13 +189,15 @@ pub async fn agent_rename(state: State<'_, AppState>, profile_id: Uuid, from: St
 #[tauri::command]
 pub async fn agent_download(state: State<'_, AppState>, profile_id: Uuid, remote_path: String, local_path: String) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
-    copy_between(&ops, &remote_path, &LocalFileOps, &local_path, false, &None).await
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+    copy_between(&ops, &remote_path, &LocalFileOps, &local_path, false, &None, &|| false, &file_count).await
 }
 
 #[tauri::command]
 pub async fn agent_upload(state: State<'_, AppState>, profile_id: Uuid, local_path: String, remote_path: String) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
-    copy_between(&LocalFileOps, &local_path, &ops, &remote_path, false, &None).await
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+    copy_between(&LocalFileOps, &local_path, &ops, &remote_path, false, &None, &|| false, &file_count).await
 }
 
 /// 双栏浏览器的"下载到本地目录"：目标文件/目录名沿用远程原名，落在 `local_dir`
@@ -168,7 +215,27 @@ pub async fn agent_download_entry(
     let ops = file_ops(&state, profile_id).await?;
     let name = remote_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&remote_path);
     let local_target = format!("{}/{}", local_dir.trim_end_matches(['/', '\\']), name);
-    copy_between(&ops, &remote_path, &LocalFileOps, &local_target, is_dir, &Some((app_handle, request_id))).await
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let cancelled_transfers = state.cancelled_transfers.clone();
+    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+
+    let result = copy_between(&ops, &remote_path, &LocalFileOps, &local_target, is_dir, &Some((app_handle, request_id)), &should_cancel, &file_count).await;
+
+    finish_transfer_log(
+        &state,
+        request_id,
+        profile_id,
+        "download",
+        &local_target,
+        &remote_path,
+        is_dir,
+        file_count.load(std::sync::atomic::Ordering::Relaxed),
+        &started_at,
+        &result,
+    );
+    result
 }
 
 /// 和 `agent_download_entry` 对称的"上传到远程目录"。
@@ -185,5 +252,25 @@ pub async fn agent_upload_entry(
     let ops = file_ops(&state, profile_id).await?;
     let name = local_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&local_path);
     let remote_target = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
-    copy_between(&LocalFileOps, &local_path, &ops, &remote_target, is_dir, &Some((app_handle, request_id))).await
+
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let cancelled_transfers = state.cancelled_transfers.clone();
+    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+
+    let result = copy_between(&LocalFileOps, &local_path, &ops, &remote_target, is_dir, &Some((app_handle, request_id)), &should_cancel, &file_count).await;
+
+    finish_transfer_log(
+        &state,
+        request_id,
+        profile_id,
+        "upload",
+        &local_path,
+        &remote_target,
+        is_dir,
+        file_count.load(std::sync::atomic::Ordering::Relaxed),
+        &started_at,
+        &result,
+    );
+    result
 }

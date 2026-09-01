@@ -22,6 +22,11 @@ interface ExplorerState {
   loadRoot: (workspaceId: string, rootPath: string) => Promise<void>;
   /** 重命名/删除之后强制重新拉取某个目录的子项，忽略缓存（右键菜单用）。*/
   reloadDir: (workspaceId: string, path: string) => Promise<void>;
+  /** 顶部工具栏"刷新"按钮 / 空白处右键"刷新"用（2026-09-01 用户反馈：目录树没有
+   * 任何办法刷新，工作区外部改了文件看不到最新状态）。和 `loadRoot` 的区别是不会
+   * 把已经展开的子目录折叠收起——只重新拉取根目录 + 所有当前展开着的目录，保持
+   * 用户已经点开的那些层级不动，体验上更接近"刷新"而不是"重新打开"。 */
+  refreshAll: (workspaceId: string, rootPath: string) => Promise<void>;
   select: (path: string) => void;
   setCompareSource: (path: string | null) => void;
   reset: () => void;
@@ -83,6 +88,37 @@ export const useExplorerStore = create<ExplorerState>((set, get) => ({
     } catch (e) {
       set({ rootError: formatError(e) });
     }
+  },
+
+  refreshAll: async (workspaceId, rootPath) => {
+    const targets = new Set(get().expanded);
+    targets.add(rootPath);
+    const results = await Promise.all(
+      Array.from(targets).map((p) =>
+        fsService.listDir(workspaceId, p).then(
+          (entries) => ({ p, entries, ok: true as const }),
+          (e) => ({ p, error: formatError(e), ok: false as const }),
+        ),
+      ),
+    );
+    set((s) => {
+      const children = { ...s.children };
+      const expanded = new Set(s.expanded);
+      let rootError: string | null = null;
+      for (const r of results) {
+        if (r.ok) {
+          children[r.p] = r.entries;
+        } else if (r.p === rootPath) {
+          rootError = r.error;
+        } else {
+          // 子目录刷新失败大概率是被删掉/改名了——直接收起，别留着一个点开就
+          // 报错的死目录。
+          delete children[r.p];
+          expanded.delete(r.p);
+        }
+      }
+      return { children, expanded, rootError };
+    });
   },
 
   select: (path) => set({ selectedPath: path }),

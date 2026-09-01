@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, HardDrive } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, HardDrive, RotateCw, History } from "lucide-react";
+import { TransferLogDialog } from "./TransferLogDialog";
 import { useAgentBrowseStore } from "../../stores/agentBrowseStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
 import { agentService } from "../../services/agentService";
@@ -8,8 +9,10 @@ import { localFsService } from "../../services/localFsService";
 import { logSearchService } from "../../services/logSearchService";
 import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
-import { formatError } from "../../utils/error";
+import { formatError, isCancelledTransferError } from "../../utils/error";
+import { transferService } from "../../services/transferService";
 import { AGENT_ROOT, agentParentPath, isAgentRoot } from "../../utils/windowsPath";
+import { useDualPaneDnd, type DndPayload, type PaneSide } from "../../hooks/useDualPaneDnd";
 import type { FileEntry, SftpTransferProgressEvent } from "../../types/bindings";
 
 function formatBytes(size: number | null): string {
@@ -26,7 +29,7 @@ function formatTime(epochSeconds: number | null): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-type Side = "remote" | "local";
+type Side = PaneSide;
 
 type SortField = "name" | "size" | "modified";
 interface SortState {
@@ -49,19 +52,30 @@ function sortEntries(entries: FileEntry[], sort: SortState): FileEntry[] {
   });
 }
 
-interface DragPayload {
-  side: Side;
-  path: string;
-  isDir: boolean;
-  name: string;
-}
+type DragPayload = DndPayload;
 
-const DRAG_MIME = "application/x-roc-desk-agent-entry";
+/** 左右两栏分隔比例记忆 key——和 SftpBrowser 共用同一个 key，两种双栏浏览器是
+ * 同一种交互习惯，没必要分开记两份。*/
+const SPLIT_STORAGE_KEY = "roc_desk-dual-pane-split-percent";
 
 interface AgentBrowserProps {
   profileId: string;
   /** 本地一侧上次浏览停留的目录记忆 key（纯前端便利性状态，和 SftpBrowser 同款）。*/
   workspaceId: string;
+  /** 默认远程目录——工作区模式下就是当前工作区根目录（和 SftpBrowser 的
+   * `initialRemotePath` 同一个用途），只在没有记忆或记忆的目录打不开时才会用到。
+   * 不传就退回 AGENT_ROOT（"此电脑"盘符列表），是会话树"文件传输"入口的默认行为。 */
+  initialRemotePath?: string;
+  /** 远程一侧要不要也按 `workspaceId` 记忆上次停留的目录——工作区模式不用这个，
+   * 那边两侧目录改走 `initialLocalPath`/`onPathsChange`，存进后端工作区档案
+   * （和 SftpBrowser 的同名 props 同一条设计）。 */
+  rememberRemotePath?: boolean;
+  /** 本地一侧的初始目录——工作区模式传 `WorkspaceProfile.last_sftp_local_path`，
+   * 不传就退回下面 localStorage 的旧逻辑（会话树"文件传输"入口用）。 */
+  initialLocalPath?: string;
+  /** 两侧目录任意一边变化都会调一次，工作区模式用它把最新路径写回
+   * `workspace_update_last_sftp_paths`。*/
+  onPathsChange?: (localPath: string, remotePath: string) => void;
 }
 
 function localPathStorageKey(workspaceId: string): string {
@@ -82,14 +96,26 @@ function remotePathStorageKey(id: string): string {
  * Word/Excel/JAR/EXE 预览命令，Agent 侧尚未实现这些）——这里只做浏览 + 传输 +
  * 删除/重命名，是 AGENT_DESIGN.md 里"点一下方便互传"这个具体诉求的最小完整实现，
  * 预览/编辑留作后续按需扩展。
+ *
+ * 拖拽传输见 `useDualPaneDnd`：面板内互拖和从 Windows 资源管理器拖真实文件进来
+ * 是两套完全独立的机制（前者手搓鼠标事件，后者用 Tauri 的 `onDragDropEvent`），
+ * 因为 Windows 上 Tauri 默认的 `dragDropEnabled: true` 会让浏览器原生 HTML5
+ * 拖拽在前端完全不触发。
  */
-export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspaceId }) => {
+export const AgentBrowser: React.FC<AgentBrowserProps> = ({
+  profileId,
+  workspaceId,
+  initialRemotePath,
+  rememberRemotePath,
+  initialLocalPath,
+  onPathsChange,
+}) => {
   const remote = useAgentBrowseStore();
   const local = useLocalFsStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side; entry: FileEntry } | null>(null);
-  const [dragOverSide, setDragOverSide] = useState<Side | null>(null);
-  const [transfer, setTransfer] = useState<{ count: number; path: string } | null>(null);
+  const [transfer, setTransfer] = useState<{ requestId: string; count: number; path: string } | null>(null);
+  const [showLog, setShowLog] = useState(false);
   const [editingSide, setEditingSide] = useState<Side | null>(null);
   const [editValue, setEditValue] = useState("");
   const [sort, setSort] = useState<Record<Side, SortState>>({ remote: DEFAULT_SORT, local: DEFAULT_SORT });
@@ -102,17 +128,45 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
     });
   };
 
+  // 左右两栏比例可拖拽调整，和 SftpBrowser.tsx 同一套实现（按容器宽度百分比算，
+  // 不是固定像素，面板会随窗口缩放）。
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [splitPercent, setSplitPercent] = useState(() => {
+    const stored = Number(localStorage.getItem(SPLIT_STORAGE_KEY));
+    return stored >= 20 && stored <= 80 ? stored : 50;
+  });
+  const onSplitDragStart = () => {
+    const rect = splitContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    let latest = splitPercent;
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.max(20, Math.min(80, ((ev.clientX - rect.left) / rect.width) * 100));
+      setSplitPercent(latest);
+    };
+    const onUp = () => {
+      localStorage.setItem(SPLIT_STORAGE_KEY, String(latest));
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const defaultRemote = initialRemotePath ?? AGENT_ROOT;
+
   useEffect(() => {
     (async () => {
-      const remembered = localStorage.getItem(remotePathStorageKey(workspaceId));
-      await remote.navigate(profileId, remembered ?? AGENT_ROOT);
+      const remembered = rememberRemotePath ? localStorage.getItem(remotePathStorageKey(workspaceId)) : null;
+      await remote.navigate(profileId, remembered ?? defaultRemote);
+      // 记住的目录可能已经被删除/改名，或者这台机器第一次浏览还没有记忆——
+      // 两种情况都退回调用方给的默认目录，不留在一个报错状态里死等用户手动处理。
       if (remembered && useAgentBrowseStore.getState().error) {
-        await remote.navigate(profileId, AGENT_ROOT);
+        await remote.navigate(profileId, defaultRemote);
       }
     })();
 
     (async () => {
-      const remembered = localStorage.getItem(localPathStorageKey(workspaceId));
+      const remembered = initialLocalPath ?? localStorage.getItem(localPathStorageKey(workspaceId));
       if (remembered) {
         await local.navigate(remembered);
       }
@@ -122,24 +176,32 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, workspaceId]);
+  }, [profileId, workspaceId, defaultRemote, initialLocalPath]);
 
   useEffect(() => {
     if (!local.cwd) return;
     localStorage.setItem(localPathStorageKey(workspaceId), local.cwd);
   }, [workspaceId, local.cwd]);
 
+  // 工作区模式：两侧任意一边目录变化都往后端写一次。
   useEffect(() => {
+    if (!onPathsChange || !local.cwd || !remote.cwd) return;
+    onPathsChange(local.cwd, remote.cwd);
+  }, [onPathsChange, local.cwd, remote.cwd]);
+
+  // 只在 rememberRemotePath 打开时才存，工作区模式（默认回到工作区根目录）不受影响。
+  useEffect(() => {
+    if (!rememberRemotePath || !remote.cwd) return;
     localStorage.setItem(remotePathStorageKey(workspaceId), remote.cwd);
-  }, [workspaceId, remote.cwd]);
+  }, [rememberRemotePath, workspaceId, remote.cwd]);
 
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;
     const requestId = crypto.randomUUID();
-    setTransfer({ count: 0, path: payload.path });
+    setTransfer({ requestId, count: 0, path: payload.path });
     const unlisten = await listen<SftpTransferProgressEvent>("agent:transfer-progress", (event) => {
       if (event.payload.requestId !== requestId) return;
-      setTransfer((s) => ({ count: (s?.count ?? 0) + 1, path: event.payload.path }));
+      setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
     });
     try {
       if (payload.side === "remote") {
@@ -152,12 +214,56 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
         push("success", `已上传 ${payload.name}`);
       }
     } catch (e) {
-      push("error", `传输失败：${formatError(e)}`);
+      if (isCancelledTransferError(e)) {
+        push("info", "已停止传输");
+        await Promise.all([remote.navigate(profileId, remote.cwd), local.navigate(local.cwd)]);
+      } else {
+        push("error", `传输失败：${formatError(e)}`);
+      }
     } finally {
       unlisten();
       setTransfer(null);
     }
   };
+
+  /** 从 Windows 资源管理器等外部窗口拖真实文件进远程面板——路径是操作系统给的
+   * 绝对路径，不在本地面板当前列出的那批 entries 里，所以不能直接复用
+   * runTransfer（它假设 payload 来自某一侧面板已经渲染出来的行），得先各自问一次
+   * 是不是目录，再挨个传，避免并发写同一个 `transfer` 进度状态导致进度串台。 */
+  const uploadExternalPaths = async (paths: string[]) => {
+    for (const path of paths) {
+      const name = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
+      const requestId = crypto.randomUUID();
+      setTransfer({ requestId, count: 0, path });
+      const unlisten = await listen<SftpTransferProgressEvent>("agent:transfer-progress", (event) => {
+        if (event.payload.requestId !== requestId) return;
+        setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
+      });
+      let cancelled = false;
+      try {
+        const isDir = await localFsService.isDir(path);
+        await agentService.uploadEntry(profileId, path, isDir, remote.cwd, requestId);
+        push("success", `已上传 ${name}`);
+      } catch (e) {
+        if (isCancelledTransferError(e)) {
+          cancelled = true;
+          push("info", "已停止传输");
+        } else {
+          push("error", `上传失败：${formatError(e)}`);
+        }
+      } finally {
+        unlisten();
+        setTransfer(null);
+      }
+      if (cancelled) break;
+    }
+    await remote.navigate(profileId, remote.cwd);
+  };
+
+  const { remoteRef, localRef, dragOverSide, beginDrag } = useDualPaneDnd({
+    onInternalTransfer: (payload, targetSide) => void runTransfer(payload, targetSide),
+    onExternalUpload: (paths) => void uploadExternalPaths(paths),
+  });
 
   const importToLogSearch = async (path: string) => {
     try {
@@ -229,16 +335,8 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
 
     return (
       <div
+        ref={remoteRef}
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === "remote" ? "var(--accent-dim)" : undefined }}
-        onDragOver={(e) => { e.preventDefault(); setDragOverSide("remote"); }}
-        onDragLeave={() => setDragOverSide((s) => (s === "remote" ? null : s))}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOverSide(null);
-          const raw = e.dataTransfer.getData(DRAG_MIME);
-          if (!raw) return;
-          runTransfer(JSON.parse(raw) as DragPayload, "remote");
-        }}
       >
         <div className="sftp-toolbar">
           <HardDrive style={{ width: 14, height: 14 }} />
@@ -283,6 +381,12 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
           <button className="btn ghost sm" onClick={() => remote.navigate(profileId, agentParentPath(state.cwd))} disabled={atRoot}>
             <ArrowUp style={{ width: 14, height: 14 }} />
           </button>
+          <button className="btn ghost sm" title="刷新" onClick={() => remote.navigate(profileId, state.cwd)}>
+            <RotateCw style={{ width: 14, height: 14 }} />
+          </button>
+          <button className="btn ghost sm" title="传输日志" onClick={() => setShowLog(true)}>
+            <History style={{ width: 14, height: 14 }} />
+          </button>
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -302,12 +406,8 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
               <div
                 key={entry.path}
                 className={`file-row ${state.selectedPath === entry.path ? "selected" : ""}`}
-                draggable={!atRoot}
-                onDragStart={(e) => {
-                  const payload: DragPayload = { side: "remote", path: entry.path, isDir: entry.is_dir, name: entry.name };
-                  e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
+                style={{ cursor: atRoot ? undefined : "grab" }}
+                onMouseDown={atRoot ? undefined : beginDrag({ side: "remote", path: entry.path, isDir: entry.is_dir, name: entry.name })}
                 onClick={() => remote.select(entry.path)}
                 onDoubleClick={() => remote.navigate(profileId, entry.path)}
                 onContextMenu={(e) => {
@@ -328,7 +428,7 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
           )}
         </div>
 
-        <div className="sftp-footer">拖到右侧下载到本地</div>
+        <div className="sftp-footer">拖到右侧下载到本地 · 也可从资源管理器拖文件到此上传</div>
       </div>
     );
   };
@@ -353,16 +453,8 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
 
     return (
       <div
+        ref={localRef}
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === "local" ? "var(--accent-dim)" : undefined }}
-        onDragOver={(e) => { e.preventDefault(); setDragOverSide("local"); }}
-        onDragLeave={() => setDragOverSide((s) => (s === "local" ? null : s))}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOverSide(null);
-          const raw = e.dataTransfer.getData(DRAG_MIME);
-          if (!raw) return;
-          runTransfer(JSON.parse(raw) as DragPayload, "local");
-        }}
       >
         <div className="sftp-toolbar">
           <Laptop style={{ width: 14, height: 14 }} />
@@ -413,6 +505,9 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
           >
             <ArrowUp style={{ width: 14, height: 14 }} />
           </button>
+          <button className="btn ghost sm" title="刷新" onClick={() => local.navigate(state.cwd)}>
+            <RotateCw style={{ width: 14, height: 14 }} />
+          </button>
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -432,12 +527,8 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
               <div
                 key={entry.path}
                 className={`file-row ${state.selectedPath === entry.path ? "selected" : ""}`}
-                draggable
-                onDragStart={(e) => {
-                  const payload: DragPayload = { side: "local", path: entry.path, isDir: entry.is_dir, name: entry.name };
-                  e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
+                style={{ cursor: "grab" }}
+                onMouseDown={beginDrag({ side: "local", path: entry.path, isDir: entry.is_dir, name: entry.name })}
                 onClick={() => local.select(entry.path)}
                 onDoubleClick={() => entry.is_dir && local.navigate(entry.path)}
                 onContextMenu={(e) => {
@@ -465,19 +556,29 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({ profileId, workspace
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {transfer && (
-        <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          传输中…{transfer.count > 0 ? ` 已完成 ${transfer.count} 项 · ${transfer.path}` : ""}
+        <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--accent)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            传输中…{transfer.count > 0 ? ` 已完成 ${transfer.count} 项 · ${transfer.path}` : ""}
+          </span>
+          <button className="btn ghost sm" style={{ flexShrink: 0 }} onClick={() => transferService.cancel(transfer.requestId)}>
+            停止
+          </button>
         </div>
       )}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
-        {renderRemotePane()}
-        <div style={{ width: 1, background: "var(--border-default)", flexShrink: 0 }} />
-        {renderLocalPane()}
+      <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
+        <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderRemotePane()}
+        </div>
+        <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderLocalPane()}
+        </div>
       </div>
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menu.side === "remote" ? remoteMenuItems(menu.entry) : localMenuItems(menu.entry)} onClose={() => setMenu(null)} />
       )}
+      {showLog && <TransferLogDialog onClose={() => setShowLog(false)} />}
     </div>
   );
 };

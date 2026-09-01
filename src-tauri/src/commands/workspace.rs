@@ -60,3 +60,18 @@ pub async fn workspace_close(state: State<'_, AppState>, id: Uuid) -> Result<(),
     state.workspaces.write().await.remove(&id);
     Ok(())
 }
+
+/// SFTP/Agent 双栏浏览器每次导航都调一次（用户需求："下次启动工作区中的SFTP或
+/// 文件传输时，直接定位到最后记住的目录"）——写完就地生效，不需要返回最新的
+/// `WorkspaceProfile`：这次打开期间前端手上那份 `current` 就算过期也无所谓，
+/// 下次真正重新打开这个工作区时 `workspace_open_local`/`workspace_open_remote`
+/// 会取到最新值，中途没有谁会去读这两个字段。
+#[tauri::command]
+pub async fn workspace_update_last_sftp_paths(
+    state: State<'_, AppState>,
+    id: Uuid,
+    local_path: String,
+    remote_path: String,
+) -> Result<(), AppError> {
+    state.workspace_manager.update_last_sftp_paths(id, &local_path, &remote_path)
+}

@@ -17,6 +17,11 @@ impl WorkspaceRepo {
 
     pub fn upsert(&self, profile: &WorkspaceProfile) -> Result<(), AppError> {
         let conn = self.pool.get()?;
+        // 故意不在 ON CONFLICT 的 UPDATE SET 里包含 last_sftp_local_path/
+        // last_sftp_remote_path——`upsert` 是"打开工作区"时调的（`open_local`/
+        // `open_remote`），新建的 `WorkspaceProfile` 字面量里这两个字段总是 None，
+        // 如果也跟着更新会把已经记住的目录每次打开工作区都冲掉。这两个字段只应该由
+        // `update_last_sftp_paths` 改，`upsert` 对已存在的行完全不碰它们。
         conn.execute(
             "INSERT INTO workspaces (id, kind, root_path, connection_id, display_name, last_opened_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -46,11 +51,23 @@ impl WorkspaceRepo {
         Ok(())
     }
 
+    /// SFTP/Agent 双栏浏览器每次导航都会调一次（见 `commands::workspace::
+    /// workspace_update_last_sftp_paths`）——两个参数都是"当前值"，不是增量，
+    /// 一次性整体覆盖，调用方负责传完整的一对。
+    pub fn update_last_sftp_paths(&self, id: Uuid, local_path: &str, remote_path: &str) -> Result<(), AppError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE workspaces SET last_sftp_local_path = ?1, last_sftp_remote_path = ?2 WHERE id = ?3",
+            params![local_path, remote_path, id.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn find_by_local_path(&self, root_path: &str) -> Result<Option<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let result = conn
             .query_row(
-                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at, last_sftp_local_path, last_sftp_remote_path
                  FROM workspaces WHERE kind = 'local' AND root_path = ?1",
                 params![root_path],
                 Self::map_row,
@@ -68,7 +85,7 @@ impl WorkspaceRepo {
         let conn = self.pool.get()?;
         let result = conn
             .query_row(
-                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at, last_sftp_local_path, last_sftp_remote_path
                  FROM workspaces WHERE kind = 'remote' AND connection_id = ?1 AND root_path = ?2",
                 params![connection_id.to_string(), root_path],
                 Self::map_row,
@@ -81,7 +98,7 @@ impl WorkspaceRepo {
         let conn = self.pool.get()?;
         let result = conn
             .query_row(
-                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+                "SELECT id, kind, root_path, connection_id, display_name, last_opened_at, last_sftp_local_path, last_sftp_remote_path
                  FROM workspaces WHERE id = ?1",
                 params![id.to_string()],
                 Self::map_row,
@@ -93,7 +110,7 @@ impl WorkspaceRepo {
     pub fn list_recent(&self, limit: usize) -> Result<Vec<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, kind, root_path, connection_id, display_name, last_opened_at
+            "SELECT id, kind, root_path, connection_id, display_name, last_opened_at, last_sftp_local_path, last_sftp_remote_path
              FROM workspaces
              ORDER BY last_opened_at DESC
              LIMIT ?1",
@@ -121,6 +138,8 @@ impl WorkspaceRepo {
             connection_id: connection_id.and_then(|s| Uuid::parse_str(&s).ok()),
             display_name: row.get(4)?,
             last_opened_at: row.get(5)?,
+            last_sftp_local_path: row.get(6)?,
+            last_sftp_remote_path: row.get(7)?,
         })
     }
 }

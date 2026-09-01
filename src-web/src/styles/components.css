@@ -671,6 +671,23 @@
 }
 .sidebar-resize-handle:hover, .sidebar-resize-handle:active { background: var(--accent); }
 
+/* SFTP/Agent 双栏浏览器的左右分隔条，规则和 .sidebar-resize-handle 完全一致，
+   分开命名只是语义上区分"侧边栏宽度"和"双栏浏览器分隔比例"这两种拖拽场景。 */
+.sftp-pane-resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--border-default);
+  position: relative;
+}
+.sftp-pane-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -2px; right: -2px;
+}
+.sftp-pane-resize-handle:hover, .sftp-pane-resize-handle:active { background: var(--accent); }
+
 /* === Context Menu（文件树右键菜单，参考 VS Code） === */
 .context-menu {
   min-width: 180px;

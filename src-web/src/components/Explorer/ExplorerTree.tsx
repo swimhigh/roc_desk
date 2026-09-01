@@ -63,7 +63,7 @@ function baseName(path: string): string {
  * 索引，不用先切到日志搜索面板再找一遍文件。
  */
 export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPath, onOpenFile, onSearchInFolder, onCompare }) => {
-  const { children, expanded, loadRoot, toggleDir, reloadDir, selectedPath, select, compareSource, setCompareSource, rootError } =
+  const { children, expanded, loadRoot, toggleDir, reloadDir, refreshAll, selectedPath, select, compareSource, setCompareSource, rootError } =
     useExplorerStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
@@ -183,7 +183,10 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     if (!entry.is_dir) {
       items.push({ label: "打开", onClick: () => onOpenFile(entry.path) });
     } else {
-      items.push({ label: "在此文件夹中搜索", onClick: () => onSearchInFolder(entry.path, relativePath) });
+      items.push(
+        { label: "在此文件夹中搜索", onClick: () => onSearchInFolder(entry.path, relativePath) },
+        { label: "刷新", onClick: () => reloadDir(workspaceId, entry.path) },
+      );
     }
     if (runCommandFor(entry.path)) {
       items.push({ label: "运行脚本", onClick: () => runScript(entry) });
@@ -290,8 +293,12 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
       className="project-tree"
       onContextMenu={(e) => {
         // 只在真正点到空白背景（没冒泡自某一行，那些行已经 stopPropagation 了）时
-        // 才弹这个"根目录"菜单，粘贴目标是工作区根目录。
-        if (e.target !== e.currentTarget || !clipboard) return;
+        // 才处理——但不管有没有剪贴板内容都要先 preventDefault，不然空剪贴板时
+        // 直接 return 会漏掉这一步，让 WebView2 自己的原生右键菜单（含"刷新"，
+        // 效果等于 F5 重载整个应用）露出来（2026-09-01 真实 bug）。这里始终弹菜单
+        // （至少有"刷新"，2026-09-01 用户反馈目录树完全没有刷新入口），有剪贴板
+        // 内容时再加一条"粘贴"，目标是工作区根目录。
+        if (e.target !== e.currentTarget) return;
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY, entry: null });
       }}
@@ -316,9 +323,10 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
           items={
             menu.entry
               ? menuItems(menu.entry)
-              : clipboard
-                ? [{ label: "粘贴", onClick: () => pasteInto(rootPath) }]
-                : []
+              : [
+                  { label: "刷新", onClick: () => refreshAll(workspaceId, rootPath) },
+                  ...(clipboard ? [{ label: "粘贴", onClick: () => pasteInto(rootPath), separatorBefore: true }] : []),
+                ]
           }
           onClose={() => setMenu(null)}
         />

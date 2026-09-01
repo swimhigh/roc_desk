@@ -8,4 +8,5 @@ pub mod connections_repo;
 pub mod known_hosts_repo;
 pub mod mcp_servers_repo;
 pub mod permission_rules_repo;
+pub mod transfer_log_repo;
 pub mod workspace_repo;

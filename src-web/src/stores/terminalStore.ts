@@ -22,8 +22,9 @@ export interface TerminalTab {
 
 /** 有界保活的 LRU 上限——同时"活着"（后端 PTY 进程/SSH Channel 不被关闭，前端
  * xterm.js 实例不被销毁）的工作区数量。和 `codingStore.ts` 的同名常量各自独立
- * 维护，不共享同一份状态，因为终端 Channel 和 AI 会话是两类不同的后端资源。 */
-const MAX_RESIDENT_WORKSPACES = 3;
+ * 维护，不共享同一份状态，因为终端 Channel 和 AI 会话是两类不同的后端资源。
+ * 2026-09-01 用户要求从 3 调到 10。 */
+const MAX_RESIDENT_WORKSPACES = 10;
 
 interface TerminalState {
   /** 当前正在显示的工作区 id；null 表示还没有任何工作区切换过。 */

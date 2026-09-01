@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server, RotateCw, History } from "lucide-react";
+import { TransferLogDialog } from "./TransferLogDialog";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
 import { sftpService } from "../../services/sftpService";
@@ -9,7 +10,9 @@ import { logSearchService } from "../../services/logSearchService";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useToastStore } from "../shared/Toast";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
-import { formatError } from "../../utils/error";
+import { formatError, isCancelledTransferError } from "../../utils/error";
+import { transferService } from "../../services/transferService";
+import { useDualPaneDnd, type DndPayload, type PaneSide } from "../../hooks/useDualPaneDnd";
 import type { FileEntry, SftpTransferProgressEvent } from "../../types/bindings";
 
 function formatBytes(size: number | null): string {
@@ -26,7 +29,7 @@ function formatTime(epochSeconds: number | null): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-type Side = "remote" | "local";
+type Side = PaneSide;
 
 type SortField = "name" | "size" | "modified";
 interface SortState {
@@ -51,14 +54,11 @@ function sortEntries(entries: FileEntry[], sort: SortState): FileEntry[] {
   });
 }
 
-interface DragPayload {
-  side: Side;
-  path: string;
-  isDir: boolean;
-  name: string;
-}
+type DragPayload = DndPayload;
 
-const DRAG_MIME = "application/x-roc-desk-sftp-entry";
+/** 左右两栏分隔比例记忆 key——和 AgentBrowser 共用同一个 key，两种双栏浏览器是
+ * 同一种交互习惯，没必要分开记两份。*/
+const SPLIT_STORAGE_KEY = "roc_desk-dual-pane-split-percent";
 
 interface SftpBrowserProps {
   profileId: string;
@@ -69,9 +69,19 @@ interface SftpBrowserProps {
    * 目录为当前工作区目录"），只在没有记忆或记忆的目录打不开时才会用到。*/
   initialRemotePath: string;
   /** 远程一侧要不要也按 `workspaceId` 记忆上次停留的目录（2026-08-25 需求，远程工具
-   * 模式下"两边目录需要按远程会话记忆，下次进入时自动恢复"）——工作区模式故意不开
-   * 这个，那边的"默认回到工作区根目录"是有意为之的设计，不能被记忆覆盖掉。*/
+   * 模式下"两边目录需要按远程会话记忆，下次进入时自动恢复"）——工作区模式不用这个，
+   * 那边两侧目录改走 `initialLocalPath`/`onPathsChange`，由调用方存进后端工作区
+   * 档案，不是这里的 localStorage 记忆。*/
   rememberRemotePath?: boolean;
+  /** 本地一侧的初始目录——工作区模式传 `WorkspaceProfile.last_sftp_local_path`
+   * （见 `onPathsChange`），不传就退回下面 localStorage 那套旧逻辑（远程工具模式的
+   * SFTP 标签用这条路径，那边没有"工作区"概念，找不到地方存后端字段）。*/
+  initialLocalPath?: string;
+  /** 两侧目录任意一边变化都会调一次，工作区模式用它把最新路径写回
+   * `workspace_update_last_sftp_paths`——下次重新打开这个工作区的 SFTP 直接定位
+   * 到这里（2026-09-01 用户需求："保存到工作区信息里"，比 2026-08-18 那次改的
+   * localStorage 方案更进一步：不只是记住，还要成为工作区身份的一部分）。 */
+  onPathsChange?: (localPath: string, remotePath: string) => void;
   onOpenFile: (entry: FileEntry) => void;
 }
 
@@ -91,23 +101,26 @@ function remotePathStorageKey(id: string): string {
  * **本地目录按工作区记忆**（2026-08-18，用户原话："工作区对应的本地目录要记住，
  * 下次用户打开工作区的SFTP时保持这两个目录对应"）：之前本地侧每次都硬编码回到
  * 用户主目录，重新打开同一个工作区的 SFTP 面板时，上次手动导航到的本地目录（比如
- * 对应这个远程项目的本地检出目录）就丢了，得重新点几次。存 `localStorage`（key 带
- * `workspaceId`），不是后端 SQLite——这是纯前端会话便利性状态，不是需要备份/跨机器
- * 同步的业务数据，和侧边栏宽度记忆是同一类东西，犯不上为它加一次数据库迁移。
+ * 对应这个远程项目的本地检出目录）就丢了，得重新点几次。远程工具模式的 SFTP
+ * 标签（没有工作区概念）仍然用这套 localStorage 记忆；工作区模式改成
+ * `initialLocalPath`/`onPathsChange`，两侧目录都存进后端工作区档案（2026-09-01
+ * 需求），不再只存本地这一侧、也不再只是前端本地存储。
  */
 export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   profileId,
   workspaceId,
   initialRemotePath,
   rememberRemotePath,
+  initialLocalPath,
+  onPathsChange,
   onOpenFile,
 }) => {
   const remote = useSftpStore();
   const local = useLocalFsStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side; entry: FileEntry } | null>(null);
-  const [dragOverSide, setDragOverSide] = useState<Side | null>(null);
-  const [transfer, setTransfer] = useState<{ count: number; path: string } | null>(null);
+  const [transfer, setTransfer] = useState<{ requestId: string; count: number; path: string } | null>(null);
+  const [showLog, setShowLog] = useState(false);
   const [editingSide, setEditingSide] = useState<Side | null>(null);
   const [editValue, setEditValue] = useState("");
   const [sort, setSort] = useState<Record<Side, SortState>>({ remote: DEFAULT_SORT, local: DEFAULT_SORT });
@@ -118,6 +131,31 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
       const asc = current.field === field ? !current.asc : true;
       return { ...s, [side]: { field, asc } };
     });
+  };
+
+  // 左右两栏比例可拖拽调整（用户反馈：文件名长的时候单栏挤不下，需要能拉宽）——
+  // 和 HomeShell.tsx/App.tsx 里侧边栏宽度拖拽是同一种模式，只是这里按容器宽度的
+  // 百分比算，不是固定像素，因为面板本身会随窗口缩放。
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [splitPercent, setSplitPercent] = useState(() => {
+    const stored = Number(localStorage.getItem(SPLIT_STORAGE_KEY));
+    return stored >= 20 && stored <= 80 ? stored : 50;
+  });
+  const onSplitDragStart = () => {
+    const rect = splitContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    let latest = splitPercent;
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.max(20, Math.min(80, ((ev.clientX - rect.left) / rect.width) * 100));
+      setSplitPercent(latest);
+    };
+    const onUp = () => {
+      localStorage.setItem(SPLIT_STORAGE_KEY, String(latest));
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   useEffect(() => {
@@ -132,7 +170,9 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     })();
 
     (async () => {
-      const remembered = localStorage.getItem(localPathStorageKey(workspaceId));
+      // `initialLocalPath`（工作区模式，来自后端）优先于 localStorage 记忆
+      // （远程工具模式，没有这个 prop 时才会走到 localStorage）。
+      const remembered = initialLocalPath ?? localStorage.getItem(localPathStorageKey(workspaceId));
       if (remembered) {
         await local.navigate(remembered);
       }
@@ -144,13 +184,21 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, initialRemotePath, workspaceId]);
+  }, [profileId, initialRemotePath, initialLocalPath, workspaceId]);
 
-  // 本地一侧每次导航成功都存一下，下次打开这个工作区的 SFTP 面板直接回到这里。
+  // 本地一侧每次导航成功都存一下，下次打开这个工作区的 SFTP 面板直接回到这里
+  // （远程工具模式的 fallback；工作区模式还会额外走下面的 onPathsChange）。
   useEffect(() => {
     if (!local.cwd) return;
     localStorage.setItem(localPathStorageKey(workspaceId), local.cwd);
   }, [workspaceId, local.cwd]);
+
+  // 工作区模式：两侧任意一边目录变化都往后端写一次（`workspace_update_last_sftp_paths`）
+  // ——`onPathsChange` 不传就什么都不做（远程工具模式没有工作区可存）。
+  useEffect(() => {
+    if (!onPathsChange || !local.cwd || !remote.cwd) return;
+    onPathsChange(local.cwd, remote.cwd);
+  }, [onPathsChange, local.cwd, remote.cwd]);
 
   // 远程一侧同理（只在 rememberRemotePath 打开时才存，工作区模式不受影响）。
   useEffect(() => {
@@ -161,12 +209,12 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;
     const requestId = crypto.randomUUID();
-    setTransfer({ count: 0, path: payload.path });
+    setTransfer({ requestId, count: 0, path: payload.path });
     // 粗粒度进度（按完成的文件数，不是字节百分比）：目录传输过程较长时至少能看出
     // "还在动"而不是卡死，见后端 emit_progress 的文档注释。
     const unlisten = await listen<SftpTransferProgressEvent>("sftp:transfer-progress", (event) => {
       if (event.payload.requestId !== requestId) return;
-      setTransfer((s) => ({ count: (s?.count ?? 0) + 1, path: event.payload.path }));
+      setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
     });
     try {
       if (payload.side === "remote") {
@@ -179,12 +227,60 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
         push("success", `已上传 ${payload.name}`);
       }
     } catch (e) {
-      push("error", `传输失败：${formatError(e)}`);
+      if (isCancelledTransferError(e)) {
+        push("info", "已停止传输");
+        // 目录传输可能已经写了一部分——把两侧目录都刷新一下，让用户看到实际
+        // 停在哪，而不是留着一份和磁盘状态对不上的旧列表。
+        await Promise.all([remote.navigate(profileId, remote.cwd), local.navigate(local.cwd)]);
+      } else {
+        push("error", `传输失败：${formatError(e)}`);
+      }
     } finally {
       unlisten();
       setTransfer(null);
     }
   };
+
+  /** 从 Windows 资源管理器等外部窗口拖真实文件进远程面板——路径是操作系统给的
+   * 绝对路径，不在本地面板当前列出的那批 entries 里，所以不能直接复用
+   * runTransfer（它假设 payload 来自某一侧面板已经渲染出来的行），得先各自问一次
+   * 是不是目录，再挨个传，避免并发写同一个 `transfer` 进度状态导致进度串台。 */
+  const uploadExternalPaths = async (paths: string[]) => {
+    for (const path of paths) {
+      const name = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
+      const requestId = crypto.randomUUID();
+      setTransfer({ requestId, count: 0, path });
+      const unlisten = await listen<SftpTransferProgressEvent>("sftp:transfer-progress", (event) => {
+        if (event.payload.requestId !== requestId) return;
+        setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
+      });
+      let cancelled = false;
+      try {
+        const isDir = await localFsService.isDir(path);
+        await sftpService.uploadEntry(profileId, path, isDir, remote.cwd, requestId);
+        push("success", `已上传 ${name}`);
+      } catch (e) {
+        if (isCancelledTransferError(e)) {
+          cancelled = true;
+          push("info", "已停止传输");
+        } else {
+          push("error", `上传失败：${formatError(e)}`);
+        }
+      } finally {
+        unlisten();
+        setTransfer(null);
+      }
+      // 用户点了停止就不用再接着传后面拖进来的文件了——批量拖入时"停止"应该是
+      // 停整批，不是只跳过当前这一个。
+      if (cancelled) break;
+    }
+    await remote.navigate(profileId, remote.cwd);
+  };
+
+  const { remoteRef, localRef, dragOverSide, beginDrag } = useDualPaneDnd({
+    onInternalTransfer: (payload, targetSide) => void runTransfer(payload, targetSide),
+    onExternalUpload: (paths) => void uploadExternalPaths(paths),
+  });
 
   // 右键"导入到本地搜索引擎"（2026-08-18 需求，用户原话："右键选中.LOG等文本类型的
   // 文件可以将他导入本地搜索引擎进行搜索"），SFTP 浏览器和 Explorer 各有一份是因为
@@ -273,19 +369,8 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
 
     return (
       <div
+        ref={side === "remote" ? remoteRef : localRef}
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === side ? "var(--accent-dim)" : undefined }}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOverSide(side);
-        }}
-        onDragLeave={() => setDragOverSide((s) => (s === side ? null : s))}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOverSide(null);
-          const raw = e.dataTransfer.getData(DRAG_MIME);
-          if (!raw) return;
-          runTransfer(JSON.parse(raw) as DragPayload, side);
-        }}
       >
         <div className="sftp-toolbar">
           {icon}
@@ -350,6 +435,15 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
           >
             <ArrowUp style={{ width: 14, height: 14 }} />
           </button>
+          <button className="btn ghost sm" title="刷新" onClick={() => navigate(state.cwd)}>
+            <RotateCw style={{ width: 14, height: 14 }} />
+          </button>
+          {/* 传输历史只在远程一侧放一份入口——记录本身不分左右栏，放两份是多余的。 */}
+          {side === "remote" && (
+            <button className="btn ghost sm" title="传输日志" onClick={() => setShowLog(true)}>
+              <History style={{ width: 14, height: 14 }} />
+            </button>
+          )}
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -369,12 +463,8 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
               <div
                 key={entry.path}
                 className={`file-row ${state.selectedPath === entry.path ? "selected" : ""}`}
-                draggable
-                onDragStart={(e) => {
-                  const payload: DragPayload = { side, path: entry.path, isDir: entry.is_dir, name: entry.name };
-                  e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
+                style={{ cursor: "grab" }}
+                onMouseDown={beginDrag({ side, path: entry.path, isDir: entry.is_dir, name: entry.name })}
                 onClick={() => select(entry.path)}
                 onDoubleClick={() => onRowDoubleClick(entry)}
                 onContextMenu={(e) => {
@@ -396,6 +486,7 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
 
         <div className="sftp-footer">
           {dirCount} 目录, {fileCount} 文件 · 拖到{side === "remote" ? "右侧下载" : "左侧上传"}
+          {side === "remote" && " · 也可从资源管理器拖文件到此上传"}
         </div>
       </div>
     );
@@ -404,35 +495,45 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {transfer && (
-        <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          传输中…{transfer.count > 0 ? ` 已完成 ${transfer.count} 项 · ${transfer.path}` : ""}
+        <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--accent)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+            传输中…{transfer.count > 0 ? ` 已完成 ${transfer.count} 项 · ${transfer.path}` : ""}
+          </span>
+          <button className="btn ghost sm" style={{ flexShrink: 0 }} onClick={() => transferService.cancel(transfer.requestId)}>
+            停止
+          </button>
         </div>
       )}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
-        {renderPane(
-          "remote",
-          <Server style={{ width: 14, height: 14 }} />,
-          "远程",
-          remote,
-          (p) => remote.navigate(profileId, p),
-          remote.select,
-          (entry) => (entry.is_dir ? remote.navigate(profileId, entry.path) : onOpenFile(entry)),
-        )}
-        <div style={{ width: 1, background: "var(--border-default)", flexShrink: 0 }} />
-        {renderPane(
-          "local",
-          <Laptop style={{ width: 14, height: 14 }} />,
-          "本地",
-          local,
-          (p) => local.navigate(p),
-          local.select,
-          (entry) => entry.is_dir && local.navigate(entry.path),
-        )}
+      <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
+        <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderPane(
+            "remote",
+            <Server style={{ width: 14, height: 14 }} />,
+            "远程",
+            remote,
+            (p) => remote.navigate(profileId, p),
+            remote.select,
+            (entry) => (entry.is_dir ? remote.navigate(profileId, entry.path) : onOpenFile(entry)),
+          )}
+        </div>
+        <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {renderPane(
+            "local",
+            <Laptop style={{ width: 14, height: 14 }} />,
+            "本地",
+            local,
+            (p) => local.navigate(p),
+            local.select,
+            (entry) => entry.is_dir && local.navigate(entry.path),
+          )}
+        </div>
       </div>
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menu.side === "remote" ? remoteMenuItems(menu.entry) : localMenuItems(menu.entry)} onClose={() => setMenu(null)} />
       )}
+      {showLog && <TransferLogDialog onClose={() => setShowLog(false)} />}
     </div>
   );
 };

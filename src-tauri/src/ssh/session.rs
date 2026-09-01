@@ -112,6 +112,19 @@ impl SshSession {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ChannelCommand>();
 
         tokio::spawn(async move {
+            // 打开 Channel 到这里为止全是同步返回给前端 `local_id` 之前的准备工作；
+            // 前端拿到 `local_id` 之后还要经过一次 IPC 往返、Zustand 状态更新、
+            // React 挂载 `TerminalView`、创建 xterm 实例，才会真正注册好
+            // `listen("ssh:data", ...)` 监听——这段时间里如果这里已经开始
+            // `channel.wait()` 读并 `emit`，服务器登录时的 MOTD/"Last login" 横幅
+            // 大概率会在没人监听的窗口期被发出去，直接丢失（真实 bug：新开的 SSH
+            // 终端永远只看到光秃秃的提示符，banner 从来没出现过）。Tauri 的事件
+            // 没有"补发给迟到的监听者"这回事，丢了就是丢了。修法不是去猜一个刚好
+            // 够用的延时，而是干脆不猜——服务器这时候发的数据只是安静地攒在 russh
+            // 自己的 Channel 缓冲区里（`channel.wait()` 不调用它就不会被消费掉，
+            // 不会丢），等前面这个小延时过去、前端十有八九已经把监听器挂上了，再
+            // 一次性读出来往前端发，banner 自然就跟着第一批数据一起出现了。
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             loop {
                 tokio::select! {
                     msg = channel.wait() => {
@@ -231,5 +244,15 @@ impl SshSession {
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await
             .map_err(|e| AppError::Connection(e.to_string()))
+    }
+
+    /// `SshConnectionPool::get_or_connect` 在把缓存的会话交给调用方之前先问一句
+    /// （真实 bug：网络掉线/服务器重启后，缓存的 `Handle` 已经死了，之前
+    /// `get_or_connect` 不管三七二十一直接把它返回出去，之后开新 Channel/SFTP
+    /// 全部失败，"重新连接"点了跟没点一样，不重启整个 app 这个连接就永远废了）。
+    /// `Handle::is_closed()` 反映的是驱动这条连接的后台任务是不是已经退出——
+    /// 网络断开、服务器主动断开都会让那个任务的读/写出错退出。
+    pub fn is_alive(&self) -> bool {
+        !self.handle.is_closed()
     }
 }

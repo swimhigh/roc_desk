@@ -12,6 +12,11 @@ pub struct WorkspaceProfile {
     pub connection_id: Option<Uuid>,
     pub display_name: String,
     pub last_opened_at: Option<String>,
+    /// 这个工作区里 SFTP/Agent 双栏文件浏览器最后停留的两边目录（用户需求：
+    /// "下次启动工作区中的SFTP或文件传输时，直接定位到最后记住的目录"）。NULL
+    /// 表示还没打开过，前端退回默认值（远程退回 `root_path`，本地退回主目录）。
+    pub last_sftp_local_path: Option<String>,
+    pub last_sftp_remote_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

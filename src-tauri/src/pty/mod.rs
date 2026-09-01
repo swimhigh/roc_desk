@@ -135,6 +135,12 @@ fn spawn_reader_thread(id: Uuid, mut reader: Box<dyn Read + Send>, app_handle: A
     // 一直阻塞在 read() 上，扔进 tokio::task::spawn_blocking 也可以，但那个池子是
     // 有限且共享的，专用线程更简单直接，生命周期就是这一个终端 Tab 的生命周期。
     std::thread::spawn(move || {
+        // 和 SSH/Agent 的 open_shell 同一个理由：前端拿到 channelId 后还要走一次 IPC
+        // 往返 + React 挂载才会挂上 `listen("pty:data", ...)`，本地 shell 起来几乎
+        // 是瞬间的事，比这个窗口期快得多，第一行提示符/MOTD 很容易在没人监听时被
+        // `emit` 掉、白白丢失。这段时间里没人读，字节就安静地留在 PTY 主端的内核
+        // 缓冲区里，不会丢——延后一小会儿再开始读，等前端监听器大概率已经挂上。
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {

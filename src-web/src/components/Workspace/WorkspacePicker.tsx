@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Code2, FolderOpen, Server, Laptop, Pencil } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useTerminalStore } from "../../stores/terminalStore";
 import { RemoteWorkspaceDialog } from "./RemoteWorkspaceDialog";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
 import { connectionService } from "../../services/connectionService";
@@ -14,6 +15,7 @@ import type { ConnectionProfile, WorkspaceProfile } from "../../types/bindings";
 /** 应用入口（DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）：打开本地文件夹 / 连接远程主机 / 最近工作区。*/
 export const WorkspacePicker: React.FC = () => {
   const {
+    current,
     recent,
     loading,
     error,
@@ -23,7 +25,13 @@ export const WorkspacePicker: React.FC = () => {
     openRemoteWorkspace,
     removeFromRecent,
     updatePath,
+    returnToCurrentWorkspace,
   } = useWorkspaceStore();
+  /** 有界保活的 LRU 常驻工作区集合（terminalStore.ts）——和 App.tsx 顶部"切换
+   * 工作区"下拉菜单同一个用途，这里标在首页的"最近打开的工作区"列表上（2026-09-01
+   * 用户需求：首页也要能看到在线状态）：在集合里说明这个工作区的终端 Channel/
+   * xterm 实例还活着，切过去是原样恢复；不在集合里则是全新终端。 */
+  const residentWorkspaceIds = useTerminalStore((s) => s.residentOrder);
   const [showRemoteDialog, setShowRemoteDialog] = useState(false);
   const [editRemote, setEditRemote] = useState<WorkspaceProfile | null>(null);
   const [passwordPrompt, setPasswordPrompt] = useState<{ profile: ConnectionProfile; remotePath: string } | null>(
@@ -56,6 +64,13 @@ export const WorkspacePicker: React.FC = () => {
   }, [loadRecent]);
 
   const reopenRecent = async (w: (typeof recent)[number]) => {
+    // 点的正好是已经打开着的那个工作区（比如从首页切回去）——不需要重新走一遍
+    // workspace_open_local/remote，直接把首页收起来，工作区那边的所有状态
+    // （含终端）本来就一直原样挂在下面，没被动过。
+    if (w.id === current?.id) {
+      returnToCurrentWorkspace();
+      return;
+    }
     if (w.kind === "local") {
       try {
         await openLocalPath(w.root_path);
@@ -143,6 +158,10 @@ export const WorkspacePicker: React.FC = () => {
           <div className="wp-recent-list">
             {recent.map((w) => (
               <div key={w.id} className="wp-recent-item" onClick={() => reopenRecent(w)}>
+                <span
+                  className={`status-dot ${residentWorkspaceIds.includes(w.id) ? "connected" : "disconnected"}`}
+                  title={residentWorkspaceIds.includes(w.id) ? "终端会话保持中，切过去原样恢复" : "没有保持中的终端会话"}
+                />
                 <span className="wp-kind-icon">
                   {w.kind === "local" ? <Laptop size={16} /> : <Server size={16} />}
                 </span>

@@ -18,6 +18,13 @@ use encoding::decode_text_detect;
 pub use binary_info::{BinaryInfo, SectionInfo};
 pub use jar_info::{JarEntryInfo, JarInfo, ManifestAttribute};
 
+/// `copy_between`/`download_recursive`/`upload_recursive` 在 `should_cancel()`
+/// 命中时统一返回的错误信息——用一个共享常量而不是各处各写一份字面量字符串，
+/// 是因为命令层（`commands::sftp`/`commands::agent`）要靠这个消息字符串区分
+/// "用户主动停止" 和 "真的传输失败"，写进 `transfer_log` 的 `status` 字段
+/// （'cancelled' vs 'failed'），两边对不上这条消息就会误判成失败。
+pub const TRANSFER_CANCELLED_MESSAGE: &str = "传输已取消";
+
 /// 全文搜索/替换单个目录内跳过的噪音目录名（构建产物/依赖/VCS 元数据），
 /// 和常见二进制文件扩展名——不进这些目录、不读这些扩展名的文件，避免把
 /// node_modules 里几万个文件也扫一遍，或者把图片/压缩包当文本读出乱码。
@@ -330,10 +337,16 @@ pub async fn copy_between(
     dst_path: &str,
     is_dir: bool,
     progress: &Option<(AppHandle, Uuid)>,
+    should_cancel: &(dyn Fn() -> bool + Send + Sync),
+    file_count: &std::sync::atomic::AtomicU64,
 ) -> Result<(), AppError> {
+    if should_cancel() {
+        return Err(AppError::Internal(TRANSFER_CANCELLED_MESSAGE.into()));
+    }
     if !is_dir {
         let (bytes, _) = src.read_file_raw(src_path).await?;
         dst.write_file_bytes(dst_path, &bytes, None).await?;
+        file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some((app, request_id)) = progress {
             let _ = app.emit("agent:transfer-progress", serde_json::json!({ "requestId": request_id, "path": src_path }));
         }
@@ -342,7 +355,7 @@ pub async fn copy_between(
     dst.create_dir(dst_path).await?;
     for entry in src.list_dir(src_path).await? {
         let child_dst = format!("{}/{}", dst_path.trim_end_matches(['/', '\\']), entry.name);
-        Box::pin(copy_between(src, &entry.path, dst, &child_dst, entry.is_dir, progress)).await?;
+        Box::pin(copy_between(src, &entry.path, dst, &child_dst, entry.is_dir, progress, should_cancel, file_count)).await?;
     }
     Ok(())
 }

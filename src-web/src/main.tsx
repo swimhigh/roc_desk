@@ -20,6 +20,27 @@ window.addEventListener("unhandledrejection", (event) => {
   logFrontendError(message, stack, "unhandledrejection");
 });
 
+// 全局兜底（2026-09-01 用户反馈：在文件树空白处右键点了"刷新"，整个工作区直接
+// 回到了首页，重新进工作区后终端 su root 的会话状态也丢了）：WebView2 有一套自己
+// 的原生右键菜单（重新加载/后退/前进等），只要某个区域没有组件自己 preventDefault
+// 掉，右键就会露出这套菜单——点"重新加载"效果等于按 F5，整个 React 应用连同
+// Zustand 里所有内存状态（当前工作区、终端会话）一起被扔掉重新起来，但后端的
+// SSH/Agent 连接池和 PTY 进程并不知道前端刚刚"重生"了一次，重新打开工作区时
+// 前端只能新开一个 channel/shell，旧的 su root 状态自然接不回去。这不是某一个
+// 组件的 bug，是这个桌面应用压根不应该暴露浏览器那套原生右键菜单——所有自定义
+// 右键菜单都是组件自己 preventDefault 之后再弹的，不依赖这个全局兜底；这里只是
+// 把"没人处理的空白区域"也一并盖住，和大多数 Electron/Tauri 桌面应用的默认做法
+// 一致。
+//
+// 终端（xterm.js）是唯一的例外：这个应用没有自己实现终端的复制/粘贴，一直是靠
+// WebView2 原生右键菜单里的"复制"/"粘贴"（2026-09-01 用户反馈这个功能被这次改动
+// 顺手弄没了）——所以 contextmenu 落在 `.xterm` 容器里（xterm.js 渲染出来的根
+// 节点自带这个 class）时放行，只在终端以外的区域才吞掉原生菜单。
+window.addEventListener("contextmenu", (event) => {
+  if (event.target instanceof Element && event.target.closest(".xterm")) return;
+  event.preventDefault();
+});
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
