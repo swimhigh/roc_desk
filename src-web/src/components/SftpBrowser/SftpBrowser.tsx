@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server, RotateCw, History } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server, RotateCw, History, ArrowLeftRight } from "lucide-react";
 import { TransferLogDialog } from "./TransferLogDialog";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
@@ -59,6 +59,10 @@ type DragPayload = DndPayload;
 /** 左右两栏分隔比例记忆 key——和 AgentBrowser 共用同一个 key，两种双栏浏览器是
  * 同一种交互习惯，没必要分开记两份。*/
 const SPLIT_STORAGE_KEY = "roc_desk-dual-pane-split-percent";
+/** "远程在左/本地在右"还是反过来——纯 UI 布局偏好，和上面 SPLIT_STORAGE_KEY
+ * 一样和 AgentBrowser 共用同一个 key（用户需求：习惯反过来的人可以调，记住
+ * 最后一次的选择，不分连接/工作区，是一个全局的显示偏好）。 */
+const SWAP_SIDES_KEY = "roc_desk-dual-pane-swap-sides";
 
 interface SftpBrowserProps {
   profileId: string;
@@ -156,6 +160,18 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  };
+
+  // "远程在左/本地在右" 还是反过来（用户需求：有的人习惯反过来，要能调，并且记住
+  // 最后一次的选择，下次打开还是这样）——纯前端展示状态，不影响 remote/local 两个
+  // store 本身，只是渲染时把两个面板塞进哪个 flex 槽位的问题。
+  const [swapSides, setSwapSides] = useState(() => localStorage.getItem(SWAP_SIDES_KEY) === "1");
+  const toggleSwapSides = () => {
+    setSwapSides((s) => {
+      const next = !s;
+      localStorage.setItem(SWAP_SIDES_KEY, next ? "1" : "0");
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -444,6 +460,9 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
               <History style={{ width: 14, height: 14 }} />
             </button>
           )}
+          <button className="btn ghost sm" title={swapSides ? "恢复默认左右布局" : "远程/本地左右调换"} onClick={toggleSwapSides}>
+            <ArrowLeftRight style={{ width: 14, height: 14 }} />
+          </button>
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -485,7 +504,10 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
         </div>
 
         <div className="sftp-footer">
-          {dirCount} 目录, {fileCount} 文件 · 拖到{side === "remote" ? "右侧下载" : "左侧上传"}
+          {/* 拖拽提示的方向要跟着 swapSides 走，不能假设远程永远在左——两边随时
+              可能被用户调换过。 */}
+          {dirCount} 目录, {fileCount} 文件 · 拖到{(side === "remote") === swapSides ? "左侧" : "右侧"}
+          {side === "remote" ? "下载" : "上传"}
           {side === "remote" && " · 也可从资源管理器拖文件到此上传"}
         </div>
       </div>
@@ -504,31 +526,38 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
           </button>
         </div>
       )}
-      <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
-        <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {renderPane(
-            "remote",
-            <Server style={{ width: 14, height: 14 }} />,
-            "远程",
-            remote,
-            (p) => remote.navigate(profileId, p),
-            remote.select,
-            (entry) => (entry.is_dir ? remote.navigate(profileId, entry.path) : onOpenFile(entry)),
-          )}
-        </div>
-        <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {renderPane(
-            "local",
-            <Laptop style={{ width: 14, height: 14 }} />,
-            "本地",
-            local,
-            (p) => local.navigate(p),
-            local.select,
-            (entry) => entry.is_dir && local.navigate(entry.path),
-          )}
-        </div>
-      </div>
+      {(() => {
+        const remotePane = renderPane(
+          "remote",
+          <Server style={{ width: 14, height: 14 }} />,
+          "远程",
+          remote,
+          (p) => remote.navigate(profileId, p),
+          remote.select,
+          (entry) => (entry.is_dir ? remote.navigate(profileId, entry.path) : onOpenFile(entry)),
+        );
+        const localPane = renderPane(
+          "local",
+          <Laptop style={{ width: 14, height: 14 }} />,
+          "本地",
+          local,
+          (p) => local.navigate(p),
+          local.select,
+          (entry) => entry.is_dir && local.navigate(entry.path),
+        );
+        const [firstPane, secondPane] = swapSides ? [localPane, remotePane] : [remotePane, localPane];
+        return (
+          <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
+            <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {firstPane}
+            </div>
+            <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
+            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {secondPane}
+            </div>
+          </div>
+        );
+      })()}
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menu.side === "remote" ? remoteMenuItems(menu.entry) : localMenuItems(menu.entry)} onClose={() => setMenu(null)} />

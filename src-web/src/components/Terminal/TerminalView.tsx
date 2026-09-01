@@ -41,15 +41,38 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
 
+  const writeToBackend = (data: Uint8Array) =>
+    tab.kind === "ssh"
+      ? sshService.write(tab.profileId!, tab.id, data)
+      : tab.kind === "agent"
+        ? agentService.write(tab.profileId!, tab.id, data)
+        : ptyService.write(tab.id, data);
+
+  /** 选中内容复制到剪贴板，成功复制了才返回 true——调用方（Enter 键 / 右键）据此
+   * 决定是不是要接着做"正常"的那个动作（Enter 提交命令 / 右键粘贴）。和 CMD 的
+   * QuickEdit 模式同一个语义：有选区就是"复制"，没有就是原来的动作。 */
+  const copySelectionToClipboard = (): boolean => {
+    const text = termRef.current?.getSelection();
+    if (!text) return false;
+    navigator.clipboard.writeText(text).catch(() => {});
+    termRef.current?.clearSelection();
+    return true;
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) await writeToBackend(new TextEncoder().encode(text));
+    } catch {
+      // 剪贴板读取失败（权限被拒、窗口没焦点等）静默忽略，不用错误 toast 打断
+      // 用户正在敲的命令。
+    }
+  };
+
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const write = (data: Uint8Array) =>
-      tab.kind === "ssh"
-        ? sshService.write(tab.profileId!, tab.id, data)
-        : tab.kind === "agent"
-          ? agentService.write(tab.profileId!, tab.id, data)
-          : ptyService.write(tab.id, data);
+    const write = writeToBackend;
     const resize = (rows: number, cols: number) =>
       tab.kind === "ssh"
         ? sshService.resize(tab.profileId!, tab.id, rows, cols)
@@ -77,6 +100,17 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
     term.open(containerRef.current);
     fitAddon.fit();
     termRef.current = term;
+
+    // CMD 的 QuickEdit 模式：选中文本后按 Enter 是"复制"，不是"提交这行命令"
+    // （用户需求：和 CMD 一样选中文本回车默认复制出来）。`attachCustomKeyEventHandler`
+    // 在 xterm 把按键转成终端输入之前拦截，返回 false 就吞掉这次按键，不会真的
+    // 发一个回车字符给后端 shell。没有选区时正常放行，走原来的提交命令逻辑。
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type === "keydown" && event.key === "Enter" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        if (copySelectionToClipboard()) return false;
+      }
+      return true;
+    });
 
     const onDataDisposable = term.onData((data) => {
       const bytes = new TextEncoder().encode(data);
@@ -133,7 +167,21 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ tab, cwd, onDisconne
       {/* 背景色必须和 terminalTheme.ts 里 Dracula 主题的 background 完全一致——
           这层 padding 容器是 xterm 画布外的留白，颜色对不上会在边缘露出一圈
           不一样的深色。 */}
-      <div ref={containerRef} style={{ width: "100%", height: "100%", padding: 8, background: "#282A36" }} />
+      <div
+        ref={containerRef}
+        style={{ width: "100%", height: "100%", padding: 8, background: "#282A36" }}
+        // 和 CMD 的 QuickEdit 模式一致（用户需求）：右键——有选区就复制，没有就
+        // 粘贴到光标处；双击——xterm 自己的双击选词逻辑先跑完，选出来的词是空的
+        // （比如双击在提示符后面的空白处）才当成"粘贴"，双击到真的有文字的地方
+        // 仍然是选词，不抢这个更常用的操作。
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (!copySelectionToClipboard()) void pasteFromClipboard();
+        }}
+        onDoubleClick={() => {
+          if (!termRef.current?.hasSelection()) void pasteFromClipboard();
+        }}
+      />
       {tab.disconnected && (
         <div className="terminal-disconnected-overlay">
           <button

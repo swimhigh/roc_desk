@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, HardDrive, RotateCw, History } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, HardDrive, RotateCw, History, ArrowLeftRight } from "lucide-react";
 import { TransferLogDialog } from "./TransferLogDialog";
 import { useAgentBrowseStore } from "../../stores/agentBrowseStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
@@ -57,6 +57,8 @@ type DragPayload = DndPayload;
 /** 左右两栏分隔比例记忆 key——和 SftpBrowser 共用同一个 key，两种双栏浏览器是
  * 同一种交互习惯，没必要分开记两份。*/
 const SPLIT_STORAGE_KEY = "roc_desk-dual-pane-split-percent";
+/** "远程在左/本地在右"还是反过来，和 SftpBrowser 共用同一个 key。 */
+const SWAP_SIDES_KEY = "roc_desk-dual-pane-swap-sides";
 
 interface AgentBrowserProps {
   profileId: string;
@@ -150,6 +152,16 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  };
+
+  // "远程在左/本地在右" 还是反过来，和 SftpBrowser.tsx 同一套实现。
+  const [swapSides, setSwapSides] = useState(() => localStorage.getItem(SWAP_SIDES_KEY) === "1");
+  const toggleSwapSides = () => {
+    setSwapSides((s) => {
+      const next = !s;
+      localStorage.setItem(SWAP_SIDES_KEY, next ? "1" : "0");
+      return next;
+    });
   };
 
   const defaultRemote = initialRemotePath ?? AGENT_ROOT;
@@ -387,6 +399,9 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
           <button className="btn ghost sm" title="传输日志" onClick={() => setShowLog(true)}>
             <History style={{ width: 14, height: 14 }} />
           </button>
+          <button className="btn ghost sm" title={swapSides ? "恢复默认左右布局" : "远程/本地左右调换"} onClick={toggleSwapSides}>
+            <ArrowLeftRight style={{ width: 14, height: 14 }} />
+          </button>
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -428,7 +443,7 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
           )}
         </div>
 
-        <div className="sftp-footer">拖到右侧下载到本地 · 也可从资源管理器拖文件到此上传</div>
+        <div className="sftp-footer">拖到{swapSides ? "左侧" : "右侧"}下载到本地 · 也可从资源管理器拖文件到此上传</div>
       </div>
     );
   };
@@ -508,6 +523,9 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
           <button className="btn ghost sm" title="刷新" onClick={() => local.navigate(state.cwd)}>
             <RotateCw style={{ width: 14, height: 14 }} />
           </button>
+          <button className="btn ghost sm" title={swapSides ? "恢复默认左右布局" : "远程/本地左右调换"} onClick={toggleSwapSides}>
+            <ArrowLeftRight style={{ width: 14, height: 14 }} />
+          </button>
         </div>
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
@@ -548,7 +566,7 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
           )}
         </div>
 
-        <div className="sftp-footer">拖到左侧上传到远程</div>
+        <div className="sftp-footer">拖到{swapSides ? "右侧" : "左侧"}上传到远程</div>
       </div>
     );
   };
@@ -565,15 +583,22 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
           </button>
         </div>
       )}
-      <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
-        <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {renderRemotePane()}
-        </div>
-        <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {renderLocalPane()}
-        </div>
-      </div>
+      {(() => {
+        const [firstPane, secondPane] = swapSides
+          ? [renderLocalPane(), renderRemotePane()]
+          : [renderRemotePane(), renderLocalPane()];
+        return (
+          <div ref={splitContainerRef} style={{ flex: 1, display: "flex", overflow: "hidden", borderTop: "1px solid var(--border-default)" }}>
+            <div style={{ width: `${splitPercent}%`, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {firstPane}
+            </div>
+            <div className="sftp-pane-resize-handle" onMouseDown={onSplitDragStart} />
+            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {secondPane}
+            </div>
+          </div>
+        );
+      })()}
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menu.side === "remote" ? remoteMenuItems(menu.entry) : localMenuItems(menu.entry)} onClose={() => setMenu(null)} />

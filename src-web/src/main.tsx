@@ -32,12 +32,12 @@ window.addEventListener("unhandledrejection", (event) => {
 // 把"没人处理的空白区域"也一并盖住，和大多数 Electron/Tauri 桌面应用的默认做法
 // 一致。
 //
-// 终端（xterm.js）是唯一的例外：这个应用没有自己实现终端的复制/粘贴，一直是靠
-// WebView2 原生右键菜单里的"复制"/"粘贴"（2026-09-01 用户反馈这个功能被这次改动
-// 顺手弄没了）——所以 contextmenu 落在 `.xterm` 容器里（xterm.js 渲染出来的根
-// 节点自带这个 class）时放行，只在终端以外的区域才吞掉原生菜单。
+// 终端（xterm.js）曾经是例外——那时候这个应用没有自己实现终端复制/粘贴，靠的是
+// WebView2 原生右键菜单（2026-09-01 一度被这条全局屏蔽误伤）。现在
+// `TerminalView.tsx` 自己实现了一套 CMD QuickEdit 风格的右键（有选区就复制、
+// 没有就粘贴到光标处，见那边 `onContextMenu`），会在事件冒泡到这里之前就
+// `preventDefault()`，不再需要放行原生菜单这个特例了——统一交给这里兜底屏蔽。
 window.addEventListener("contextmenu", (event) => {
-  if (event.target instanceof Element && event.target.closest(".xterm")) return;
   event.preventDefault();
 });
 
