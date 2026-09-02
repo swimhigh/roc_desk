@@ -348,7 +348,7 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
     return (
       <div
         ref={remoteRef}
-        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === "remote" ? "var(--accent-dim)" : undefined }}
+        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: dragOverSide === "remote" ? "var(--accent-dim)" : undefined }}
       >
         <div className="sftp-toolbar">
           <HardDrive style={{ width: 14, height: 14 }} />
@@ -469,7 +469,7 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
     return (
       <div
         ref={localRef}
-        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === "local" ? "var(--accent-dim)" : undefined }}
+        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: dragOverSide === "local" ? "var(--accent-dim)" : undefined }}
       >
         <div className="sftp-toolbar">
           <Laptop style={{ width: 14, height: 14 }} />

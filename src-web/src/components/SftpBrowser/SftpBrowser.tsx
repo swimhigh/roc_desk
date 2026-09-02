@@ -386,7 +386,7 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     return (
       <div
         ref={side === "remote" ? remoteRef : localRef}
-        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: dragOverSide === side ? "var(--accent-dim)" : undefined }}
+        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: dragOverSide === side ? "var(--accent-dim)" : undefined }}
       >
         <div className="sftp-toolbar">
           {icon}
