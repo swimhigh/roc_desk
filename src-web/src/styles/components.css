@@ -865,6 +865,15 @@
   border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
 }
+.sftp-filter-bar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
 .breadcrumb { display: flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); color: var(--text-secondary); flex-wrap: wrap; }
 .breadcrumb .crumb { cursor: pointer; }
 .breadcrumb .crumb:hover { color: var(--accent); }

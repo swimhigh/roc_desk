@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server, RotateCw, History, ArrowLeftRight } from "lucide-react";
+import { Folder, File as FileIcon, ArrowUp, ArrowUpNarrowWide, ArrowDownNarrowWide, Laptop, Pencil, Server, RotateCw, History, ArrowLeftRight, Search, X } from "lucide-react";
 import { TransferLogDialog } from "./TransferLogDialog";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useLocalFsStore } from "../../stores/localFsStore";
@@ -52,6 +52,20 @@ function sortEntries(entries: FileEntry[], sort: SortState): FileEntry[] {
     }
     return dir * ((a.modified ?? 0) - (b.modified ?? 0));
   });
+}
+
+/** 高亮文件名里匹配到过滤关键词的那一段（只高亮第一处，简单子串过滤没必要做多段）。*/
+function highlightMatch(name: string, query: string): React.ReactNode {
+  if (!query) return name;
+  const idx = name.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return name;
+  return (
+    <>
+      {name.slice(0, idx)}
+      <mark>{name.slice(idx, idx + query.length)}</mark>
+      {name.slice(idx + query.length)}
+    </>
+  );
 }
 
 type DragPayload = DndPayload;
@@ -128,6 +142,12 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   const [editingSide, setEditingSide] = useState<Side | null>(null);
   const [editValue, setEditValue] = useState("");
   const [sort, setSort] = useState<Record<Side, SortState>>({ remote: DEFAULT_SORT, local: DEFAULT_SORT });
+  // 按文件名快速过滤（用户需求："SFTP和文件传输两边都需要加一个搜索过滤功能，
+  // 以便能快速找到文件"）——纯前端子串匹配，不是重新拉一次目录，两侧各自独立。
+  const [filter, setFilter] = useState<Record<Side, string>>({ remote: "", local: "" });
+  // 文件列表容器的 DOM 引用，用于点击某一行后把键盘焦点移过去（键盘上下键导航要
+  // 用），以及给上下键选中的新行调用 scrollIntoView。
+  const listRefs = useRef<Record<Side, HTMLDivElement | null>>({ remote: null, local: null });
 
   const toggleSort = (side: Side, field: SortField) => {
     setSort((s) => {
@@ -221,6 +241,11 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     if (!rememberRemotePath || !remote.cwd) return;
     localStorage.setItem(remotePathStorageKey(workspaceId), remote.cwd);
   }, [rememberRemotePath, workspaceId, remote.cwd]);
+
+  // 切到新目录时清空过滤关键词——上一个目录里输入的过滤词在新目录基本对不上，
+  // 留着只会让人以为"怎么突然找不到文件了"。
+  useEffect(() => setFilter((f) => (f.remote ? { ...f, remote: "" } : f)), [remote.cwd]);
+  useEffect(() => setFilter((f) => (f.local ? { ...f, local: "" } : f)), [local.cwd]);
 
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;
@@ -367,6 +392,10 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     const fileCount = state.entries.length - dirCount;
     const paneSort = sort[side];
     const sortedEntries = sortEntries(state.entries, paneSort);
+    const filterQuery = filter[side].trim();
+    const visibleEntries = filterQuery
+      ? sortedEntries.filter((e) => e.name.toLowerCase().includes(filterQuery.toLowerCase()))
+      : sortedEntries;
     const sortIcon = (field: SortField) => {
       if (paneSort.field !== field) return null;
       const Icon = paneSort.asc ? ArrowUpNarrowWide : ArrowDownNarrowWide;
@@ -382,6 +411,27 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
         {sortIcon(field)}
       </span>
     );
+    /** 点某一行选中后，上下键在当前（过滤后）列表里移动选中项并把新行滚进视野——
+     * 用户需求："点SFTP这里后按上下键应该需要滚动定位文件"。焦点落在列表容器上
+     * （点击某一行时顺带 focus 过去，见下面 onClick），不是全局快捷键，不会跟
+     * 别的面板的键盘操作打架。 */
+    const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      if (visibleEntries.length === 0) return;
+      e.preventDefault();
+      const idx = visibleEntries.findIndex((it) => it.path === state.selectedPath);
+      const nextIdx =
+        idx === -1
+          ? e.key === "ArrowDown"
+            ? 0
+            : visibleEntries.length - 1
+          : e.key === "ArrowDown"
+            ? Math.min(idx + 1, visibleEntries.length - 1)
+            : Math.max(idx - 1, 0);
+      const next = visibleEntries[nextIdx];
+      select(next.path);
+      listRefs.current[side]?.querySelector<HTMLElement>(`[data-path="${CSS.escape(next.path)}"]`)?.scrollIntoView({ block: "nearest" });
+    };
 
     return (
       <div
@@ -467,7 +517,37 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
 
         {state.error && <div className="toast error" style={{ margin: 8 }}>{state.error}</div>}
 
-        <div style={{ flex: 1, overflowY: "auto" }}>
+        <div className="sftp-filter-bar">
+          <Search style={{ width: 12, height: 12, color: "var(--text-secondary)", flexShrink: 0 }} />
+          <input
+            className="form-input"
+            style={{ flex: 1, height: 22, fontSize: 12 }}
+            placeholder="过滤文件名…"
+            value={filter[side]}
+            onChange={(e) => setFilter((f) => ({ ...f, [side]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && filter[side]) {
+                e.stopPropagation();
+                setFilter((f) => ({ ...f, [side]: "" }));
+              }
+            }}
+          />
+          {filterQuery && (
+            <>
+              <span style={{ fontSize: 11, color: "var(--text-secondary)", flexShrink: 0 }}>{visibleEntries.length} 项匹配</span>
+              <button className="btn ghost sm" title="清空过滤" onClick={() => setFilter((f) => ({ ...f, [side]: "" }))}>
+                <X style={{ width: 12, height: 12 }} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div
+          ref={(el) => { listRefs.current[side] = el; }}
+          tabIndex={0}
+          onKeyDown={onListKeyDown}
+          style={{ flex: 1, overflowY: "auto", outline: "none" }}
+        >
           <div className="file-header">
             {headerCell("name", "名称")}
             {headerCell("size", "大小")}
@@ -477,14 +557,20 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
             <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>加载中…</div>
           ) : state.entries.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>此目录是空的</div>
+          ) : visibleEntries.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>没有匹配"{filterQuery}"的文件</div>
           ) : (
-            sortedEntries.map((entry) => (
+            visibleEntries.map((entry) => (
               <div
                 key={entry.path}
+                data-path={entry.path}
                 className={`file-row ${state.selectedPath === entry.path ? "selected" : ""}`}
                 style={{ cursor: "grab" }}
                 onMouseDown={beginDrag({ side, path: entry.path, isDir: entry.is_dir, name: entry.name })}
-                onClick={() => select(entry.path)}
+                onClick={() => {
+                  select(entry.path);
+                  listRefs.current[side]?.focus();
+                }}
                 onDoubleClick={() => onRowDoubleClick(entry)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -494,7 +580,7 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
                   {entry.is_dir ? <Folder className="file-icon is-dir" /> : <FileIcon className="file-icon" />}
-                  <span className="file-name">{entry.name}</span>
+                  <span className="file-name">{highlightMatch(entry.name, filterQuery)}</span>
                 </span>
                 <span className="file-size">{entry.is_dir ? "—" : formatBytes(entry.size)}</span>
                 <span className="file-time">{formatTime(entry.modified)}</span>
