@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, Globe, Plus, Trash2, X } from "lucide-react";
 import { useBrowserStore } from "../../stores/browserStore";
+import { useModalStackStore } from "../../stores/modalStackStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
 import { browserService, type PanelBounds } from "../../services/browserService";
@@ -42,6 +43,10 @@ interface WebBrowserPanelProps {
 export const WebBrowserPanel: React.FC<WebBrowserPanelProps> = ({ visible }) => {
   const { history, loading, error, loadHistory, removeEntry, clearHistory } = useBrowserStore();
   const push = useToastStore((s) => s.push);
+  // 任何 ConfirmDialog 系弹窗打开时，即使浏览器面板本身仍是激活 Tab，也要临时把
+  // 原生子 WebView 隐藏掉，否则弹窗会被它盖住（见 modalStackStore 注释）。
+  const hasOpenModal = useModalStackStore((s) => s.count > 0);
+  const effectiveVisible = visible && !hasOpenModal;
   const [tabs, setTabs] = useState<BrowserTab[]>(() => [newTab()]);
   const [activeTabId, setActiveTabId] = useState(() => tabs[0].id);
   const [input, setInput] = useState("");
@@ -86,17 +91,18 @@ export const WebBrowserPanel: React.FC<WebBrowserPanelProps> = ({ visible }) => 
   }, []);
 
   // 面板整体（顶层"网页浏览"Tab）可见性变化：显示/隐藏当前激活标签页对应的子 WebView。
+  // 弹窗打开导致的临时隐藏也走这里（effectiveVisible 叠加了 hasOpenModal）。
   useEffect(() => {
     const tab = activeTabRef.current;
     if (!tab?.url) return;
-    if (visible) {
+    if (effectiveVisible) {
       const bounds = readBounds();
       if (bounds) browserService.show(tab.id, bounds).catch(() => {});
     } else {
       browserService.hide(tab.id).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [effectiveVisible]);
 
   // 面板内部切换标签页：隐藏旧标签页的子 WebView，显示新标签页的（如果它已经打开过网页）。
   useEffect(() => {
@@ -105,7 +111,7 @@ export const WebBrowserPanel: React.FC<WebBrowserPanelProps> = ({ visible }) => 
     if (prev && prev !== activeTabId) {
       browserService.hide(prev).catch(() => {});
     }
-    if (visible && activeTab?.url) {
+    if (effectiveVisible && activeTab?.url) {
       const bounds = readBounds();
       if (bounds) browserService.show(activeTabId, bounds).catch(() => {});
     }
@@ -115,7 +121,7 @@ export const WebBrowserPanel: React.FC<WebBrowserPanelProps> = ({ visible }) => 
   // 面板尺寸变化（侧边栏拖拽调宽、窗口缩放、终端面板展开收起）时同步当前激活标签页的
   // 子 WebView 位置/大小。
   useEffect(() => {
-    if (!visible || !activeTab?.url) return;
+    if (!effectiveVisible || !activeTab?.url) return;
     const el = viewportRef.current;
     if (!el) return;
     let raf = 0;
@@ -135,7 +141,7 @@ export const WebBrowserPanel: React.FC<WebBrowserPanelProps> = ({ visible }) => 
       window.removeEventListener("resize", sync);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, activeTabId, activeTab?.url]);
+  }, [effectiveVisible, activeTabId, activeTab?.url]);
 
   const handleOpen = async (url: string) => {
     const tab = activeTabRef.current;

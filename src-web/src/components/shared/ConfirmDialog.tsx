@@ -1,4 +1,5 @@
 import React from "react";
+import { useModalStackStore } from "../../stores/modalStackStore";
 
 export type DialogSeverity = "info" | "warning" | "danger";
 
@@ -39,6 +40,15 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, dismissible, onDismiss]);
+
+  // 弹窗打开期间挂到全局计数上，供 WebBrowserPanel 临时隐藏原生子 WebView（否则
+  // 弹窗会被浏览器面板的原生内容盖住，见 modalStackStore 注释）。
+  React.useEffect(() => {
+    if (!open) return;
+    const { push, pop } = useModalStackStore.getState();
+    push();
+    return () => pop();
+  }, [open]);
 
   if (!open) return null;
 
