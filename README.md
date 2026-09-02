@@ -4,6 +4,20 @@
 
 完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 
+## 截图
+
+| 工作区首页 | AI 工具（Plan） |
+|---|---|
+| ![工作区首页](docs/screenshots/home.png) | ![AI 工具 Plan 模式](docs/screenshots/editor-plan.png) |
+
+| AI 工具（Build 执行过程） | SFTP 双栏浏览 |
+|---|---|
+| ![AI 工具 Build 执行过程](docs/screenshots/editor-build.png) | ![SFTP 双栏浏览](docs/screenshots/sftp.png) |
+
+| 终端多会话 | 多终端同步操作 |
+|---|---|
+| ![终端多会话](docs/screenshots/terminal.png) | ![多终端同步操作](docs/screenshots/multi-terminal.png) |
+
 ## 主要功能
 
 - **工作区**：本地目录 / 远程 SSH 目录，按工作区隔离会话、编辑器标签和配置，支持"最近工作区"一键重开。
