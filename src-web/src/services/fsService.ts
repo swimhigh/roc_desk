@@ -91,6 +91,11 @@ export const fsService = {
     return invoke("fs_copy", { workspaceId, from, to, isDir });
   },
 
+  /** Explorer 右键"新建文件夹"。"新建文件"不需要单独命令，直接调 `writeFile(..., "", null)`。*/
+  createDir(workspaceId: string, path: string): Promise<void> {
+    return invoke("fs_create_dir", { workspaceId, path });
+  },
+
   /** 左侧目录树的全文搜索（参考 VS Code 搜索面板）：不直接返回结果，结果通过
    * `search:file-result`/`search:done`/`search:error` 事件流式推送（2026-08-18
    * 需求："能否一个一个目录搜，搜到一部分先展示一部分"），这里只是触发一次搜索。
@@ -121,5 +126,55 @@ export const fsService = {
     options: SearchOptions,
   ): Promise<ReplaceSummary> {
     return invoke("fs_replace", { workspaceId, paths, query, replacement, options });
+  },
+};
+
+/** "游离文件"（不属于任何工作区，靠拖拽/Ctrl+O/系统文件关联直接打开的单个本地文件）
+ * 的读写——和 `fsService` 一一对应，只是不需要 `workspaceId`，命令名对应后端
+ * `commands/local_fs.rs` 里的 `local_*` 系列（不经过工作区边界校验，见该文件注释）。*/
+export const localFileService = {
+  readFile(path: string): Promise<FileContent> {
+    return invoke("local_read_file", { path });
+  },
+
+  readBinaryPreview(path: string): Promise<string> {
+    return invoke("local_read_binary_preview", { path });
+  },
+
+  openExternally(path: string): Promise<void> {
+    return invoke("local_open_externally", { path });
+  },
+
+  convertLegacyOfficeToPdf(path: string): Promise<string> {
+    return invoke("local_convert_legacy_office_to_pdf", { path });
+  },
+
+  inspectBinary(path: string): Promise<BinaryInfo> {
+    return invoke("local_inspect_binary", { path });
+  },
+
+  peekIsBinary(path: string): Promise<boolean> {
+    return invoke("local_peek_is_binary", { path });
+  },
+
+  inspectJar(path: string): Promise<JarInfo> {
+    return invoke("local_inspect_jar", { path });
+  },
+
+  writeFile(path: string, content: string, expectedMtime: number | null): Promise<WriteOutcome> {
+    return invoke("local_write_file", { path, content, expectedMtime });
+  },
+
+  readFileWithEncoding(path: string, encodingLabel: string): Promise<FileContent> {
+    return invoke("local_read_file_with_encoding", { path, encodingLabel });
+  },
+
+  writeFileWithEncoding(
+    path: string,
+    content: string,
+    encodingLabel: string,
+    expectedMtime: number | null,
+  ): Promise<WriteOutcome> {
+    return invoke("local_write_file_with_encoding", { path, content, encodingLabel, expectedMtime });
   },
 };

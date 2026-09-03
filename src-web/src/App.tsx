@@ -1,7 +1,26 @@
-import { useEffect, useRef, useState } from "react";
-import { Code2, FolderCog, Globe, Home, Sparkles, TerminalSquare, FileCode, ScrollText, Files, Search as SearchIcon, RotateCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import {
+  Code2,
+  FolderCog,
+  Globe,
+  Home,
+  Sparkles,
+  TerminalSquare,
+  FileCode,
+  ScrollText,
+  Files,
+  Search as SearchIcon,
+  RotateCw,
+  FilePlus2,
+  FolderOpen,
+} from "lucide-react";
 import { useWorkspaceStore } from "./stores/workspaceStore";
-import { useEditorStore } from "./stores/editorStore";
+import { isDiffId, useEditorStore } from "./stores/editorStore";
+import { openExternalPaths } from "./utils/openExternalPaths";
 import { useExplorerStore } from "./stores/explorerStore";
 import { useTerminalStore } from "./stores/terminalStore";
 import { registerAgentCertPromptListener, registerHostKeyPromptListener } from "./stores/connectionStore";
@@ -60,6 +79,13 @@ function App() {
   const pushToast = useToastStore((s) => s.push);
   const openPreview = useEditorStore((s) => s.openPreview);
   const pinFile = useEditorStore((s) => s.pin);
+  // 没打开任何工作区、只有游离文件标签时的极简编辑器壳是否可见——和下面 `showPicker`
+  // 是同一种"两棵子树都常驻挂载，只切 display"的模式（原因见下面完整 IDE 布局那段
+  // 注释），但这个状态只在"本次会话从没打开过工作区"（`!current`）时才有意义。放在
+  // editorStore 里（不是本地 state）是因为 WorkspacePicker.tsx 首页的"打开文件"
+  // 按钮也要能触发它，那个组件和 App.tsx 没有共同的父组件方便传参。
+  const standaloneShellVisible = useEditorStore((s) => s.standaloneShellVisible);
+  const hideStandaloneShell = useEditorStore((s) => s.hideStandaloneShell);
 
   const [workspaceMenu, setWorkspaceMenu] = useState<{ x: number; y: number } | null>(null);
   // "remote" 工作区可能是 SSH 也可能是 Agent 连接（AGENT_DESIGN.md），底部终端面板
@@ -177,6 +203,12 @@ function App() {
     }
     let cancelled = false;
     let restoring = true;
+    // 只持久化"属于这个工作区"的标签——游离标签（origin: "standalone"）不属于
+    // 任何工作区，混进 `order` 里但不该被当成这个工作区的 tab 记下来，否则下次
+    // 重开这个工作区会把游离文件路径当工作区内路径传给 `openPreview`，触发
+    // `guard_local_path` 校验失败（该路径本就不在工作区根目录下）。
+    const workspaceTabIds = (state: ReturnType<typeof useEditorStore.getState>) =>
+      state.order.filter((id) => isDiffId(id) || state.buffers[id]?.origin === "workspace");
     const restore = async () => {
       for (const path of paths.slice(0, 30)) {
         if (cancelled) return;
@@ -184,12 +216,12 @@ function App() {
       }
       if (!cancelled) {
         restoring = false;
-        localStorage.setItem(key, JSON.stringify(useEditorStore.getState().order));
+        localStorage.setItem(key, JSON.stringify(workspaceTabIds(useEditorStore.getState())));
       }
     };
     void restore();
     const unsubscribe = useEditorStore.subscribe((state) => {
-      if (!restoring && !cancelled) localStorage.setItem(key, JSON.stringify(state.order));
+      if (!restoring && !cancelled) localStorage.setItem(key, JSON.stringify(workspaceTabIds(state)));
     });
     return () => { cancelled = true; terminalCancelled = true; unsubscribe(); };
     /*
@@ -208,6 +240,87 @@ function App() {
     })();*/
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
+
+  // 拖拽/Ctrl+O/系统文件关联("打开方式")打开外部路径——具体逻辑在 utils/
+  // openExternalPaths.ts（WorkspacePicker.tsx 首页"打开文件"按钮也用同一个函数），
+  // 这里只是包一层"打开后把编辑器 tab 切到前台"。
+  const handleOpenExternalPaths = useCallback(async (paths: string[]) => {
+    await openExternalPaths(paths);
+    setActiveView("editor");
+  }, []);
+
+  const openFileDialog = useCallback(async () => {
+    const selected = await open({ directory: false, multiple: true });
+    if (!selected) return;
+    await handleOpenExternalPaths(Array.isArray(selected) ? selected : [selected]);
+  }, [handleOpenExternalPaths]);
+
+  // Ctrl+O 全局快捷键：在首页、独立编辑器壳、完整 IDE 里都要能用（不依赖 Monaco
+  // 实例是否挂载），所以挂在 window 上而不是某个具体组件里。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        void openFileDialog();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openFileDialog]);
+
+  // 全局外部文件拖入：和 `useDualPaneDnd`（SFTP/Agent 双栏内部的拖拽，hooks/
+  // useDualPaneDnd.ts）各管一摊——两边各自独立调用 Tauri 的 `onDragDropEvent`，
+  // 互不冲突（多个监听者都会收到同一个事件），只是要避免同一次拖放被两套逻辑
+  // 重复处理：双栏容器打了 `data-external-drop-zone` 标记，这里落点命中该标记
+  // 就整个让开，交给双栏自己的 hook 处理。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const fn = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        const ratio = window.devicePixelRatio || 1;
+        const x = event.payload.position.x / ratio;
+        const y = event.payload.position.y / ratio;
+        const hitZone = document.elementFromPoint(x, y)?.closest("[data-external-drop-zone]");
+        if (hitZone) return;
+        if (event.payload.paths.length > 0) void handleOpenExternalPaths(event.payload.paths);
+      });
+      if (cancelled) fn();
+      else unlisten = fn;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [handleOpenExternalPaths]);
+
+  // Windows"打开方式"/双击已关联文件（`tauri-plugin-single-instance`，2026-09-03
+  // 需求）：冷启动带的路径存在后端 `AppState.pending_open_paths` 里，这里挂载时
+  // 取走一次；已运行实例收到的第二次启动转发走 `open-file-paths` 事件，两条路径
+  // 最终都汇到同一个处理函数。
+  useEffect(() => {
+    void invoke<string[]>("take_pending_open_paths").then((paths) => {
+      if (paths.length > 0) void handleOpenExternalPaths(paths);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const fn = await listen<string[]>("open-file-paths", (event) => {
+        void handleOpenExternalPaths(event.payload);
+      });
+      if (cancelled) fn();
+      else unlisten = fn;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [handleOpenExternalPaths]);
 
   const onSidebarDragStart = (e: React.MouseEvent) => {
     sidebarDragRef.current = { startX: e.clientX, startWidth: sidebarWidth };
@@ -256,10 +369,49 @@ function App() {
   // 2026-08-25 明确要求："不需要去选会话模式和工作区模式后再展现"）——两边
   // 一直都在，不是需要提前选的两个模式。打开一个工作区后（`current` 非空）
   // 走下面原有的 IDE 布局，和这个首页完全独立。
+  //
+  // 还没打开过工作区、但通过拖拽/Ctrl+O/文件关联打开了游离文件时（2026-09-03
+  // 需求），走第三种极简布局：只有 tab 栏 + 编辑区，没有 Explorer/终端/SFTP/AI
+  // 面板——这些都要求工作区上下文，硬造一个没意义。和下面完整 IDE 布局同样的
+  // "两棵子树都常驻挂载，只切 display" 模式，切回首页不会丢失已打开文件的编辑状态。
   if (!current) {
     return (
       <>
-        <HomeShell />
+        <div style={{ display: standaloneShellVisible ? "none" : "block", height: "100vh" }}>
+          <HomeShell />
+        </div>
+        <div style={{ display: standaloneShellVisible ? "flex" : "none", flexDirection: "column", height: "100vh" }}>
+          <div className="tab-bar">
+            <button className="quick-tool-btn" onClick={hideStandaloneShell} title="返回首页">
+              <Home />
+            </button>
+            <Code2 className="app-icon" />
+            <span className="workspace-name-btn" style={{ cursor: "default" }}>
+              本地文件
+            </span>
+            <div className="quick-tools" style={{ marginLeft: "auto" }}>
+              <button className="quick-tool-btn" title="打开文件 (Ctrl+O)" onClick={() => void openFileDialog()}>
+                <FilePlus2 />
+              </button>
+              <button
+                className="quick-tool-btn"
+                title="打开文件夹作为工作区"
+                onClick={() =>
+                  void useWorkspaceStore
+                    .getState()
+                    .openLocalFolder()
+                    .catch((e) => pushToast("error", `打开文件夹失败：${formatError(e)}`))
+                }
+              >
+                <FolderOpen />
+              </button>
+              <ThemeToggle />
+            </div>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <CodeEditor workspaceId={null} workspaceName="" rootPath="" />
+          </div>
+        </div>
         <ToastStack />
         <HostKeyPromptHost />
         <AgentCertPromptHost />
@@ -418,6 +570,12 @@ function App() {
           >
             <Sparkles />
           </button>
+          {/* 打开一个不属于当前工作区的游离文件（拖拽/文件关联之外的第三个入口，
+              2026-09-03 需求）——和 Explorer 树里打开的文件混在同一个 tab 栏，
+              用 CodeEditor.tsx 里的小图标 + 完整路径 tooltip 区分。 */}
+          <button className="quick-tool-btn" title="打开文件 (Ctrl+O)" onClick={() => void openFileDialog()}>
+            <FilePlus2 />
+          </button>
           <ThemeToggle />
         </div>
       </div>
@@ -465,7 +623,12 @@ function App() {
               </button>
             )}
           </div>
-          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+          {/* display:flex 是关键——`.project-tree`（ExplorerTree.tsx）的 `flex: 1`
+              要靠这个才能真正撑满剩余高度，不然内容少时底部空白区域不属于
+              `.project-tree`，右键在那片区域点没有反应（2026-09-03 用户反馈）。
+              这层本身不再自己 overflow:auto，滚动交给子组件（.project-tree /
+              SearchPanel 都是 height:100% + 自己的 overflow-y:auto）内部处理。 */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             {sidebarMode === "explorer" ? (
               <ExplorerTree
                 workspaceId={current.id}

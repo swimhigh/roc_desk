@@ -267,6 +267,12 @@
 /* === Explorer 文件树（UI_DESIGN.md §3.3） === */
 .project-tree {
   flex: 1;
+  /* 没有这个，flex 子元素的默认最小高度是"内容撑多高就多高"——文件很多时会把
+     自己的滚动条撑没了，反而让外层容器（App.tsx 的侧边栏包装 div）来滚动，
+     内容少时又不会撑满容器高度，导致底部空白区域实际上不属于 .project-tree、
+     右键点上去没反应（2026-09-03 用户反馈：滚动条出现时新建的文件看不到、
+     没有滚动条时空白处右键没反应，两个问题同一个根因）。 */
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-1) 0;
   user-select: none;
@@ -495,6 +501,7 @@
 .editor-tab.active .editor-tab-close { opacity: 1; }
 .editor-tab-close:hover { background: var(--bg-hover); color: var(--text-primary); }
 .editor-tab-diff-icon { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-secondary); }
+.editor-tab-standalone-icon { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-tertiary, var(--text-secondary)); }
 
 /* === Editor Status Bar（底部状态栏：编码/语言/光标位置，参考 VS Code） === */
 .editor-status-bar {

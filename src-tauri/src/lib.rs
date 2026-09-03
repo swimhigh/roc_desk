@@ -19,7 +19,7 @@ pub mod workspace;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 use agent::{AgentCertVerifier, AgentConnectionPool, AgentTrustPromptRegistry};
@@ -72,6 +72,15 @@ fn resolve_app_data_dir() -> std::io::Result<std::path::PathBuf> {
     }
     std::fs::create_dir_all(&app_data_dir)?;
     Ok(app_data_dir)
+}
+
+/// 从命令行参数里挑出"看起来像文件路径"的那些——Windows"打开方式"/双击已关联
+/// 文件时，资源管理器会把文件的完整路径直接拼进 argv（`roc_desk.exe "C:\a\b.txt"`），
+/// 不带任何前缀标记；这里只排除看起来像 flag 的参数（`-` 开头，目前程序没有
+/// 任何命令行 flag，纯粹是防御性过滤，避免以后加了 flag 却被这里当成路径打开）。
+/// 调用方（冷启动 / `tauri-plugin-single-instance` 转发）各自负责跳过 argv[0]。
+fn extract_open_paths(args: &[String]) -> Vec<String> {
+    args.iter().filter(|a| !a.starts_with('-')).cloned().collect()
 }
 
 /// 日志落盘（同时保留 stdout，开发模式下 `cargo tauri dev` 挂着控制台还是照常能看）。
@@ -132,6 +141,20 @@ pub fn run() {
     install_panic_hook();
 
     tauri::Builder::default()
+        // 必须是第一个注册的插件（官方文档要求）：拦截"已有实例在跑，这次启动应该
+        // 转发给它"的情况，发生在窗口/其它插件初始化之前。回调里把新进程 argv 里的
+        // 文件路径（Windows"打开方式"/双击已关联文件，2026-09-03 需求）转发给已有
+        // 窗口，而不是真的再起一个进程实例。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let paths = extract_open_paths(argv.get(1..).unwrap_or(&[]));
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            if !paths.is_empty() {
+                let _ = app.emit("open-file-paths", paths);
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -253,6 +276,7 @@ pub fn run() {
                 permission_rules,
                 question_confirms: coding::QuestionRegistry::default(),
                 mcp_manager,
+                pending_open_paths: std::sync::Mutex::new(extract_open_paths(&std::env::args().skip(1).collect::<Vec<_>>())),
             });
 
             Ok(())
@@ -274,6 +298,7 @@ pub fn run() {
             commands::fs::fs_delete,
             commands::fs::fs_rename,
             commands::fs::fs_copy,
+            commands::fs::fs_create_dir,
             commands::fs::fs_search_stream,
             commands::fs::fs_search_cancel,
             commands::fs::fs_replace,
@@ -341,6 +366,17 @@ pub fn run() {
             commands::local_fs::local_list_dir,
             commands::local_fs::local_home_dir,
             commands::local_fs::local_is_dir,
+            commands::local_fs::local_read_file,
+            commands::local_fs::local_write_file,
+            commands::local_fs::local_read_file_with_encoding,
+            commands::local_fs::local_write_file_with_encoding,
+            commands::local_fs::local_read_binary_preview,
+            commands::local_fs::local_open_externally,
+            commands::local_fs::local_convert_legacy_office_to_pdf,
+            commands::local_fs::local_inspect_binary,
+            commands::local_fs::local_peek_is_binary,
+            commands::local_fs::local_inspect_jar,
+            commands::local_fs::take_pending_open_paths,
             commands::transfer::transfer_cancel,
             commands::transfer::transfer_log_list,
             commands::transfer::transfer_log_clear,

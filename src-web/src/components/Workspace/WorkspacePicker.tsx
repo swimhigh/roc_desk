@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Code2, FolderOpen, Server, Laptop, Pencil } from "lucide-react";
+import { Code2, FolderOpen, Server, Laptop, Pencil, FilePlus2 } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { openExternalPaths } from "../../utils/openExternalPaths";
 import { RemoteWorkspaceDialog } from "./RemoteWorkspaceDialog";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
 import { connectionService } from "../../services/connectionService";
@@ -145,6 +146,19 @@ export const WorkspacePicker: React.FC = () => {
         <button className="wp-entry-btn" onClick={() => setShowRemoteDialog(true)}>
           <Server />
           连接远程主机并选择目录
+        </button>
+        {/* 不建工作区，直接打开单个文件看/改（2026-09-03 需求，像 VSCode/Notepad 一样）——
+            和拖拽文件到窗口、Ctrl+O、Windows"打开方式"是同一套逻辑，见 utils/openExternalPaths.ts。 */}
+        <button
+          className="wp-entry-btn"
+          onClick={async () => {
+            const selected = await open({ directory: false, multiple: true });
+            if (!selected) return;
+            await openExternalPaths(Array.isArray(selected) ? selected : [selected]);
+          }}
+        >
+          <FilePlus2 />
+          打开文件
         </button>
       </div>
 

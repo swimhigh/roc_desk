@@ -80,4 +80,11 @@ pub struct AppState {
     /// MCP 服务器配置 + 懒连接缓存，长期持有、跨工作区/会话共用（和 `ssh_pool`
     /// 是同一种"连接池"模式）。
     pub mcp_manager: Arc<McpServerManager>,
+    /// 冷启动时命令行参数里带的文件路径（Windows"打开方式"/双击已关联文件，
+    /// 2026-09-03 需求）——此时前端 JS 还没跑起来，没法直接 emit 事件给它，
+    /// 先存这里，前端 App.tsx 挂载后调 `take_pending_open_paths` 取走并清空。
+    /// 已运行实例收到第二次启动的 argv 转发（见 `lib.rs` 的
+    /// `tauri_plugin_single_instance::init`）不走这个字段，直接 emit 事件，
+    /// 因为那种情况前端肯定已经跑起来了。
+    pub pending_open_paths: StdMutex<Vec<String>>,
 }

@@ -266,6 +266,17 @@ pub async fn fs_copy(state: State<'_, AppState>, workspace_id: Uuid, from: Strin
     handle.file_ops.copy(&from, &to, is_dir).await
 }
 
+/// Explorer 右键"新建文件夹"（2026-09-03 需求）。`FileOps::create_dir` 之前只被
+/// `copy` 内部递归调用，这里第一次作为独立命令暴露给前端。"新建文件"不需要单独的
+/// 命令——直接复用 `fs_write_file`，传空内容、`expected_mtime: None`（`write_file`
+/// 文档注释里"新建文件"本来就是这个参数为空时的既有语义，不用另起一个命令）。
+#[tauri::command]
+pub async fn fs_create_dir(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<(), AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    guard_local_path(&handle, &path)?;
+    handle.file_ops.create_dir(&path).await
+}
+
 /// 左侧目录树的"搜索"功能（参考 VS Code 全局搜索面板）：流式返回，见
 /// `fsops::search_stream` 的取舍说明。这个命令本身不返回搜索结果——结果通过
 /// `search:file-result` 事件一条条推给前端（`requestId` 用来在前端过滤出属于

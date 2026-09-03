@@ -35,6 +35,14 @@
     "resources": {
       "../vendor/wfreerdp.exe": "wfreerdp.exe",
       "../vendor/wfreerdp.LICENSE.txt": "wfreerdp.LICENSE.txt"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": ["txt", "log", "md", "markdown", "json", "yaml", "yml", "xml", "ini", "conf", "cfg", "env", "properties", "toml", "csv", "sh", "bat", "ps1"],
+        "name": "roc_desk Text/Code File",
+        "description": "Open with roc_desk (available in the right-click Open with menu; does not take over the system default association)",
+        "role": "Editor"
+      }
+    ]
   }
 }

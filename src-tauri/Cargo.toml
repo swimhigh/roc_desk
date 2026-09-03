@@ -1,6 +1,6 @@
 [package]
 name = "roc_desk"
-version = "1.1.3"
+version = "1.2.0"
 description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
 authors = ["you"]
 edition = "2021"
@@ -25,6 +25,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Windows"用...打开"文件关联/双击已关联文件时，系统是把文件路径当命令行参数
+# 拉起一个新进程——如果 roc_desk 已经在运行，需要把这个新进程的 argv 转发给
+# 已有实例（在已有窗口里开一个新标签），而不是真的再起一个进程（2026-09-03 需求）。
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

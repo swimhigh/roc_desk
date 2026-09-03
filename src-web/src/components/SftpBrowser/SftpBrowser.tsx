@@ -436,6 +436,9 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     return (
       <div
         ref={side === "remote" ? remoteRef : localRef}
+        // App.tsx 的全局外部文件拖入 hook 靠这个标记识别"这里已经有自己的拖拽处理"，
+        // 落点命中就整个让开，避免和 `useDualPaneDnd` 重复处理同一次拖放。
+        data-external-drop-zone="dual-pane"
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: dragOverSide === side ? "var(--accent-dim)" : undefined }}
       >
         <div className="sftp-toolbar">

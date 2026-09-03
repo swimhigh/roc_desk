@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Folder, FolderOpen, File as FileIcon } from "lucide-react";
 import { useExplorerStore } from "../../stores/explorerStore";
 import { useEditorStore } from "../../stores/editorStore";
@@ -66,15 +66,44 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   const { children, expanded, loadRoot, toggleDir, reloadDir, refreshAll, selectedPath, select, compareSource, setCompareSource, rootError } =
     useExplorerStore();
   const push = useToastStore((s) => s.push);
-  const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null; depth: number } | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // "新建文件"/"新建文件夹"（2026-09-03 需求）：和重命名同一种"内联输入框"交互
+  // （参考 VS Code），但没有现成的 FileEntry 可以套，所以单独一份状态——
+  // `parentPath` 决定新建在哪个目录下、`depth` 只用来算缩进对齐，`isDir` 决定
+  // 提交时走 `createDir` 还是 `writeFile`。
+  const [creating, setCreating] = useState<{ parentPath: string; depth: number; isDir: boolean } | null>(null);
+  const [createValue, setCreateValue] = useState("");
+  const createRowRef = useRef<HTMLDivElement>(null);
+  const treeContainerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
   const [clipboard, setClipboard] = useState<{ path: string; name: string; isDir: boolean; mode: "cut" | "copy" } | null>(null);
 
   useEffect(() => {
     loadRoot(workspaceId, rootPath);
   }, [workspaceId, rootPath, loadRoot]);
+
+  // 新建文件/文件夹的输入框可能出现在当前滚动区域之外（比如在一个很长的列表
+  // 末尾新建），不滚过去用户根本看不到刚弹出来的输入框在哪（2026-09-03 用户
+  // 反馈）。`creating` 一旦非空就意味着输入框刚挂载，"nearest" 是刚好够看见就
+  // 停，不会像 "center" 那样把已经在视野内的情况也强制重新滚动一下。
+  useEffect(() => {
+    if (creating) createRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [creating]);
+
+  // 新建完成后，输入框所在的位置（列表末尾）和新文件实际排好序后的位置（按目录
+  // 优先、字母序）往往不是同一个地方——列表很长、当前视口只覆盖其中一段时，
+  // 新文件排到了视口外，用户看不到"新建成功了"（2026-09-03 用户反馈：文件树
+  // 内容多、出现滚动条时看不到新建的文件；内容少不需要滚动时是正常的，说明
+  // 新建本身是成功的，只是没滚过去）。`commitCreate`/`commitRename` 都会调
+  // `select(path)`，这里统一在选中项变化时把对应行滚进视口，不用在每个改
+  // `selectedPath` 的地方各自处理一遍滚动。
+  useEffect(() => {
+    if (!selectedPath) return;
+    const el = treeContainerRef.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(selectedPath)}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selectedPath]);
 
   const startRename = (entry: FileEntry) => {
     setRenamingPath(entry.path);
@@ -93,6 +122,49 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
       if (parent !== rootPath) await reloadDir(workspaceId, parent);
     } catch (e) {
       push("error", `重命名失败：${formatError(e)}`);
+    }
+  };
+
+  /** "新建文件"/"新建文件夹"（2026-09-03 需求，参考 VS Code）：先保证目标目录已展开
+   * （懒加载的子目录列表还没拉过时，`children[parentPath]` 是 undefined，输入框无处
+   * 挂载），再进入内联输入态。`toggleDir` 是"切换"语义，只有还没展开时才调用，
+   * 不然对着已展开的目录新建文件反而会把它折叠起来。 */
+  const startCreate = async (parentPath: string, depth: number, isDir: boolean) => {
+    if (!expanded.has(parentPath)) {
+      await toggleDir(workspaceId, parentPath);
+    }
+    setCreateValue("");
+    setCreating({ parentPath, depth, isDir });
+  };
+
+  const cancelCreate = () => setCreating(null);
+
+  const commitCreate = async () => {
+    if (!creating) return;
+    const { parentPath, isDir } = creating;
+    const name = createValue.trim();
+    setCreating(null);
+    if (!name) return;
+    // 客户端先查一遍重名——`fs_write_file` 在 `expected_mtime: null` 时是"新建
+    // 或覆盖"语义（保存冲突检测的既有约定），`create_dir` 对已存在目录也不报错，
+    // 两者都不会自然地给出"已存在"提示，这里主动拦一下，避免用户以为在新建、
+    // 实际上悄悄覆盖/合并了一个同名文件/目录。
+    if ((children[parentPath] ?? []).some((e) => e.name === name)) {
+      push("error", `${name} 已存在`);
+      return;
+    }
+    const path = `${parentPath}/${name}`;
+    try {
+      if (isDir) {
+        await fsService.createDir(workspaceId, path);
+      } else {
+        await fsService.writeFile(workspaceId, path, "", null);
+      }
+      await reloadDir(workspaceId, parentPath);
+      select(path);
+      if (!isDir) onOpenFile(path, { pin: true });
+    } catch (e) {
+      push("error", `新建${isDir ? "文件夹" : "文件"}失败：${formatError(e)}`);
     }
   };
 
@@ -175,7 +247,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     }
   };
 
-  const menuItems = (entry: FileEntry): ContextMenuItem[] => {
+  const menuItems = (entry: FileEntry, depth: number): ContextMenuItem[] => {
     const relativePath = entry.path.startsWith(rootPath)
       ? entry.path.slice(rootPath.length).replace(/^[/\\]/, "")
       : entry.path;
@@ -188,6 +260,14 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
         { label: "刷新", onClick: () => reloadDir(workspaceId, entry.path) },
       );
     }
+    // 对着目录新建=新建在这个目录里（深一层）；对着文件新建=新建成它的同级兄弟
+    // （还是当前这层）——参考 VS Code 右键任意条目都能新建，不需要非得点中目录。
+    const createTargetDir = entry.is_dir ? entry.path : parentOf(entry.path);
+    const createTargetDepth = entry.is_dir ? depth + 1 : depth;
+    items.push(
+      { label: "新建文件", onClick: () => startCreate(createTargetDir, createTargetDepth, false) },
+      { label: "新建文件夹", onClick: () => startCreate(createTargetDir, createTargetDepth, true) },
+    );
     if (runCommandFor(entry.path)) {
       items.push({ label: "运行脚本", onClick: () => runScript(entry) });
     }
@@ -234,6 +314,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
         <div
           className={`tree-item ${selectedPath === entry.path ? "active" : ""}`}
           style={{ paddingLeft: 8 + depth * 16 }}
+          data-path={entry.path}
           onClick={() => {
             if (isRenaming) return;
             select(entry.path);
@@ -252,7 +333,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
             e.preventDefault();
             e.stopPropagation();
             select(entry.path);
-            setMenu({ x: e.clientX, y: e.clientY, entry });
+            setMenu({ x: e.clientX, y: e.clientY, entry, depth });
           }}
         >
           {entry.is_dir ? (
@@ -282,7 +363,32 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
           )}
         </div>
         {entry.is_dir && isExpanded && children[entry.path]?.map((child) => renderNode(child, depth + 1))}
+        {entry.is_dir && isExpanded && creating?.parentPath === entry.path && renderCreateRow()}
       </React.Fragment>
+    );
+  };
+
+  /** "新建文件"/"新建文件夹"的内联输入行——和 `isRenaming` 那个输入框共用同一套
+   * `.tree-rename-input` 样式，视觉上是同一种交互，只是没有对应的 `FileEntry`
+   * 可以复用整个 `tree-item` 渲染分支，单独写一份。 */
+  const renderCreateRow = () => {
+    if (!creating) return null;
+    return (
+      <div ref={createRowRef} className="tree-item" style={{ paddingLeft: 8 + creating.depth * 16 }}>
+        {creating.isDir ? <Folder className="tree-icon is-dir" /> : <FileIcon className="tree-icon" />}
+        <input
+          className="tree-rename-input"
+          autoFocus
+          value={createValue}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => setCreateValue(e.target.value)}
+          onBlur={commitCreate}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitCreate();
+            if (e.key === "Escape") cancelCreate();
+          }}
+        />
+      </div>
     );
   };
 
@@ -290,6 +396,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
 
   return (
     <div
+      ref={treeContainerRef}
       className="project-tree"
       onContextMenu={(e) => {
         // 只在真正点到空白背景（没冒泡自某一行，那些行已经 stopPropagation 了）时
@@ -300,7 +407,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
         // 内容时再加一条"粘贴"，目标是工作区根目录。
         if (e.target !== e.currentTarget) return;
         e.preventDefault();
-        setMenu({ x: e.clientX, y: e.clientY, entry: null });
+        setMenu({ x: e.clientX, y: e.clientY, entry: null, depth: 0 });
       }}
     >
       {rootError ? (
@@ -310,11 +417,12 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
             重试
           </button>
         </div>
-      ) : rootEntries.length === 0 ? (
+      ) : rootEntries.length === 0 && !creating ? (
         <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>此文件夹是空的</div>
       ) : (
         rootEntries.map((entry) => renderNode(entry, 0))
       )}
+      {creating?.parentPath === rootPath && renderCreateRow()}
 
       {menu && (
         <ContextMenu
@@ -322,9 +430,11 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
           y={menu.y}
           items={
             menu.entry
-              ? menuItems(menu.entry)
+              ? menuItems(menu.entry, menu.depth)
               : [
-                  { label: "刷新", onClick: () => refreshAll(workspaceId, rootPath) },
+                  { label: "新建文件", onClick: () => startCreate(rootPath, 0, false) },
+                  { label: "新建文件夹", onClick: () => startCreate(rootPath, 0, true) },
+                  { label: "刷新", onClick: () => refreshAll(workspaceId, rootPath), separatorBefore: true },
                   ...(clipboard ? [{ label: "粘贴", onClick: () => pasteInto(rootPath), separatorBefore: true }] : []),
                 ]
           }

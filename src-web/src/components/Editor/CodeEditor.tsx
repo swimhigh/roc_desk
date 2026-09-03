@@ -19,10 +19,13 @@ import { renderMarkdown } from "../../utils/markdown";
 import { useThemeStore } from "../../stores/themeStore";
 import { formatBytes } from "../../utils/format";
 import { inlineHtmlResources } from "../../utils/inlineHtmlResources";
-import { fsService } from "../../services/fsService";
+import { fsService, localFileService } from "../../services/fsService";
+import { FileStack } from "lucide-react";
 
 interface CodeEditorProps {
-  workspaceId: string;
+  /** 没有打开工作区、只剩游离标签的极简编辑器壳（App.tsx 的"无工作区"三态之一）
+   * 传 `null`——这种情况下打开的所有标签必然都是 `origin: "standalone"`。 */
+  workspaceId: string | null;
   workspaceName: string;
   rootPath: string;
 }
@@ -115,7 +118,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     let cancelled = false;
     setInliningResources(true);
     const baseDir = active.path.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
-    inlineHtmlResources(active.content, baseDir, (p) => fsService.readBinaryPreview(workspaceId, p)).then(
+    const readPreview = (p: string) =>
+      active.origin === "standalone" ? localFileService.readBinaryPreview(p) : fsService.readBinaryPreview(workspaceId!, p);
+    inlineHtmlResources(active.content, baseDir, readPreview).then(
       (html) => {
         if (cancelled) return;
         setHtmlPreviewSrc(html);
@@ -176,14 +181,15 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   }, [workspaceId, activePath]);
 
   const handleOpenExternally = React.useCallback(async () => {
-    if (!activePath) return;
+    if (!activePath || !active) return;
     try {
-      await fsService.openExternally(workspaceId, activePath);
+      if (active.origin === "standalone") await localFileService.openExternally(activePath);
+      else await fsService.openExternally(workspaceId!, activePath);
     } catch (e) {
       push("error", `打开失败：${formatError(e)}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, activePath]);
+  }, [workspaceId, activePath, active?.origin]);
 
   const fileName = (path: string) => path.split(/[/\\]/).filter(Boolean).pop() ?? path;
 
@@ -207,6 +213,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
             }}
           >
             {diff && <GitCompare className="editor-tab-diff-icon" />}
+            {/* 游离文件（不属于当前工作区）在标签上加个小图标区分——title 已经是
+                完整绝对路径，hover 能看到，这里只做"一眼扫过去就能分辨"的视觉提示。 */}
+            {buf?.origin === "standalone" && (
+              <span title="游离文件，不属于当前工作区" style={{ display: "flex" }}>
+                <FileStack className="editor-tab-standalone-icon" />
+              </span>
+            )}
             <span className="editor-tab-name">{label}</span>
             {buf?.dirty && <span className="dirty-dot" />}
             <button
@@ -290,13 +303,19 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
             fontSize: 13,
           }}
         >
-          从左侧 Explorer 中选择一个文件开始编辑
+          {workspaceId ? "从左侧 Explorer 中选择一个文件开始编辑" : "拖拽文件到此处，或按 Ctrl+O 打开文件"}
         </div>
       </div>
     );
   }
 
-  const segments = [workspaceName, ...relOf(active.path).split(/[/\\]/).filter(Boolean)];
+  // 游离文件不属于当前工作区，面包屑用"本地文件 › 完整路径"而不是"工作区名 › 相对路径"
+  // ——套用工作区的相对路径规则毫无意义（rootPath 甚至可能不存在，比如无工作区的
+  // 独立编辑器壳），完整路径才能让人分清这是磁盘上的哪个文件。
+  const segments =
+    active.origin === "standalone"
+      ? ["本地文件", ...active.path.split(/[/\\]/).filter(Boolean)]
+      : [workspaceName, ...relOf(active.path).split(/[/\\]/).filter(Boolean)];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
