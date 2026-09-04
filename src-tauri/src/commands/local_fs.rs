@@ -19,6 +19,28 @@ pub async fn local_list_dir(path: String) -> Result<Vec<FileEntry>, AppError> {
     LocalFileOps.list_dir(&path).await
 }
 
+/// 资源管理器模块的盘符列表（Total Commander 式，Windows 下浏览 D:\、E:\ 等必须
+/// 能切换盘符，只给一个起始目录走不出那一个盘）。没有现成的"列出所有盘符" API 值得
+/// 为这一个小功能引入 Win32 依赖——`A`..`Z` 逐个探测 `X:\` 是否存在就是标准做法
+/// （资源管理器本身内部也是类似逻辑）。非 Windows 平台没有盘符概念，返回根目录。
+#[tauri::command]
+pub fn local_list_drives() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        (b'A'..=b'Z')
+            .filter_map(|b| {
+                let letter = b as char;
+                let root = format!("{letter}:\\");
+                std::path::Path::new(&root).exists().then(|| format!("{letter}:/"))
+            })
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["/".to_string()]
+    }
+}
+
 #[tauri::command]
 pub fn local_home_dir() -> Result<String, AppError> {
     std::env::var("USERPROFILE")
@@ -37,6 +59,43 @@ pub async fn local_is_dir(path: String) -> Result<bool, AppError> {
         .await
         .map(|m| m.is_dir())
         .map_err(|e| AppError::Internal(format!("无法读取 {path}：{e}")))
+}
+
+/// 资源管理器模块（Total Commander 式本地双栏文件管理，`docs/HOME_MODES_DESIGN.md`
+/// §3.2/§6 Phase 4）的文件操作——和上面几个一样不做工作区边界校验，用户就是要在
+/// 任意本地目录之间复制/移动/删除，不像 Explorer 的 `fs_*` 命令那样绑定某个工作区。
+
+#[tauri::command]
+pub async fn local_delete(path: String, is_dir: bool) -> Result<(), AppError> {
+    LocalFileOps.delete(&path, is_dir).await
+}
+
+#[tauri::command]
+pub async fn local_rename(from: String, to: String) -> Result<(), AppError> {
+    LocalFileOps.rename(&from, &to).await
+}
+
+#[tauri::command]
+pub async fn local_copy(from: String, to: String, is_dir: bool) -> Result<(), AppError> {
+    LocalFileOps.copy(&from, &to, is_dir).await
+}
+
+#[tauri::command]
+pub async fn local_create_dir(path: String) -> Result<(), AppError> {
+    LocalFileOps.create_dir(&path).await
+}
+
+/// "移动"（双栏之间的 F6/剪切粘贴）：同一个磁盘卷内先尝试 `rename`，是原子的重命名，
+/// 不需要真的搬运字节；`rename` 在 Windows 上跨盘符会直接报错（这是 `std::fs::rename`
+/// 的固有限制，不是本项目实现的疏漏），这时退化成"整份复制到目的地、复制成功后
+/// 删掉源"——和资源管理器/Total Commander 跨盘移动文件时的实际行为一致。
+#[tauri::command]
+pub async fn local_move(from: String, to: String, is_dir: bool) -> Result<(), AppError> {
+    if LocalFileOps.rename(&from, &to).await.is_ok() {
+        return Ok(());
+    }
+    LocalFileOps.copy(&from, &to, is_dir).await?;
+    LocalFileOps.delete(&from, is_dir).await
 }
 
 /// "游离文件"（没有打开工作区/不属于任何工作区，靠拖拽、Ctrl+O、Windows 文件关联

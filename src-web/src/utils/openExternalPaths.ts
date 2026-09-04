@@ -39,15 +39,11 @@ export async function openExternalPaths(paths: string[]): Promise<void> {
     }
   }
   if (opened === 0) return;
-  // 打开成功后要让用户实际看到这个文件，不能只是悄悄进了 store：
-  // - 没有工作区（本来就没打开过，或者打开的是游离文件而不是文件夹）——把极简
-  //   编辑器壳显示出来；
-  // - 有工作区但用户正停在首页（HomeShell.showPicker）——切回工作区视图，
-  //   否则新开的标签会被后台隐藏的 IDE 子树吞掉，用户什么反馈都看不到。
-  const { current, returnToCurrentWorkspace } = useWorkspaceStore.getState();
-  if (!current) {
+  // 打开成功后要让用户实际看到这个文件，不能只是悄悄进了 store：还没打开过工作区
+  // （或者打开的是游离文件而不是文件夹）时，把极简编辑器壳显示出来；已经打开了
+  // 工作区的话，这个窗口本身就是常驻的工作区 IDE（不再有"首页盖在上面"那层
+  // 需要收起来的东西，见 `docs/HOME_MODES_DESIGN.md` §3.5），不需要额外处理。
+  if (!useWorkspaceStore.getState().current) {
     useEditorStore.getState().showStandaloneShell();
-  } else {
-    returnToCurrentWorkspace();
   }
 }

@@ -2,7 +2,7 @@
 
 集成开发者客户端工具：SSH 终端 + SFTP + 日志搜索 + 统一 AI 工具（问答与编程），基于 Tauri 2.0（Rust 后端 + React/TS 前端）。
 
-完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)。
+完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)；首页/多工作模式（多进程架构：SSH 桌面 / 工作区 / 编辑器 / 资源管理器四个模块各自独立窗口）见 [docs/HOME_MODES_DESIGN.md](docs/HOME_MODES_DESIGN.md)。
 
 ## 截图
 

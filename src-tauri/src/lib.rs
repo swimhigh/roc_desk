@@ -83,6 +83,15 @@ fn extract_open_paths(args: &[String]) -> Vec<String> {
     args.iter().filter(|a| !a.starts_with('-')).cloned().collect()
 }
 
+/// 从 `--key=value` 形式的参数里取值（`docs/HOME_MODES_DESIGN.md` §3.5 的
+/// `--mode`/`--open`）。用 `starts_with`/切片而不是引入一个完整的 CLI 解析 crate——
+/// 这个程序目前只有这两个内部启动参数，不面向终端用户暴露 `--help` 之类的东西，
+/// 犯不上为此加依赖。
+fn parse_arg_value(args: &[String], key: &str) -> Option<String> {
+    let prefix = format!("--{key}=");
+    args.iter().find_map(|a| a.strip_prefix(prefix.as_str()).map(|v| v.to_string()))
+}
+
 /// 日志落盘（同时保留 stdout，开发模式下 `cargo tauri dev` 挂着控制台还是照常能看）。
 /// 用阻塞写入的 `RollingFileAppender`（不是 `tracing_appender::non_blocking` 那种
 /// 后台线程+缓冲的写法）——目的就是崩溃时这一条日志已经真的落盘了，不会因为进程
@@ -140,12 +149,31 @@ pub fn run() {
     init_logging(&app_data_dir.join("logs"));
     install_panic_hook();
 
-    tauri::Builder::default()
+    // 首页/工作模块架构（`docs/HOME_MODES_DESIGN.md`）：不带 `--mode` 启动的是首页
+    // （启动器）进程，带了 `--mode` 的是首页 spawn 出来的某个模块窗口（或者用户自己
+    // 拿命令行/快捷方式直接指定）。`argv[0]` 是可执行文件路径本身，要跳过。
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    let launch_mode = parse_arg_value(&cli_args, "mode");
+    let launch_open = parse_arg_value(&cli_args, "open");
+    let is_launcher = launch_mode.is_none();
+
+    let mut builder = tauri::Builder::default();
+    if is_launcher {
+        // `single-instance` 只对首页角色生效——它天生就应该是全局唯一的一个窗口。
+        // 模块窗口故意不注册这个插件：不然首页 spawn 出来开工作区/编辑器等模块的
+        // 子进程一启动就会撞上这同一个全局互斥体，被首页"吞掉"（转发参数、聚焦
+        // 首页、自己退出），完全没法达到"点一个模块另开一个真进程真窗口"的效果
+        // （见 `docs/HOME_MODES_DESIGN.md` §2.2）。副作用是"同一个模块窗口的固定
+        // 快捷方式被手滑连点两次"不会去重，直接开两个窗口——这在设计文档里是
+        // 明确接受的取舍（§3.7：那类去重是可选便利，不是本次要交付的核心诉求）。
+        //
         // 必须是第一个注册的插件（官方文档要求）：拦截"已有实例在跑，这次启动应该
         // 转发给它"的情况，发生在窗口/其它插件初始化之前。回调里把新进程 argv 里的
         // 文件路径（Windows"打开方式"/双击已关联文件，2026-09-03 需求）转发给已有
-        // 窗口，而不是真的再起一个进程实例。
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        // 窗口，而不是真的再起一个进程实例；模块窗口点"返回首页"重新拉起一个不带
+        // `--mode` 的进程时，也是走这同一条路径被转发/聚焦（`commands::launcher::
+        // spawn_module_window` 的文档注释里有完整说明）。
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let paths = extract_open_paths(argv.get(1..).unwrap_or(&[]));
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -154,10 +182,30 @@ pub fn run() {
             if !paths.is_empty() {
                 let _ = app.emit("open-file-paths", paths);
             }
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            // 首页默认最大化窗口（`docs/HOME_MODES_DESIGN.md` §3.4："类似桌面首页"
+            // 的定位，不是一个可以随便缩小的工具面板）；模块窗口保持 `tauri.conf.json`
+            // 里配置的默认尺寸，不强制最大化。
+            //
+            // `tauri.conf.json` 里这个窗口声明了 `"visible": false`——窗口创建时
+            // 先按声明的 1200x760 尺寸建好但不显示，这里先 `maximize()` 再 `show()`，
+            // 用户才不会看到"先冒出一个小窗口、紧接着跳变成最大化"这一下（真实反馈，
+            // 2026-09-04："明显看到了从一个固定窗口再到最大化窗口的一个过程"）——
+            // 早先直接对已经显示的窗口调 `maximize()`，从 WebView2 完成首帧渲染到
+            // `maximize()` 真正生效之间那一小段时间窗口就是按小尺寸可见的。
+            if let Some(window) = app.get_webview_window("main") {
+                if is_launcher {
+                    let _ = window.maximize();
+                }
+                let _ = window.show();
+            }
+
             let db_path = app_data_dir.join("roc_desk.db");
 
             let pool = db::pool::create_pool(&db_path)?;
@@ -277,11 +325,15 @@ pub fn run() {
                 question_confirms: coding::QuestionRegistry::default(),
                 mcp_manager,
                 pending_open_paths: std::sync::Mutex::new(extract_open_paths(&std::env::args().skip(1).collect::<Vec<_>>())),
+                launch_mode: launch_mode.clone(),
+                launch_open: launch_open.clone(),
             });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::launcher::get_launch_context,
+            commands::launcher::spawn_module_window,
             commands::workspace::workspace_list_recent,
             commands::workspace::workspace_open_local,
             commands::workspace::workspace_open_remote,
@@ -365,6 +417,7 @@ pub fn run() {
             commands::sftp::sftp_upload_entry,
             commands::local_fs::local_list_dir,
             commands::local_fs::local_home_dir,
+            commands::local_fs::local_list_drives,
             commands::local_fs::local_is_dir,
             commands::local_fs::local_read_file,
             commands::local_fs::local_write_file,
@@ -376,6 +429,11 @@ pub fn run() {
             commands::local_fs::local_inspect_binary,
             commands::local_fs::local_peek_is_binary,
             commands::local_fs::local_inspect_jar,
+            commands::local_fs::local_delete,
+            commands::local_fs::local_rename,
+            commands::local_fs::local_copy,
+            commands::local_fs::local_create_dir,
+            commands::local_fs::local_move,
             commands::local_fs::take_pending_open_paths,
             commands::transfer::transfer_cancel,
             commands::transfer::transfer_log_list,

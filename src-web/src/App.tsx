@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  ArrowLeft,
   Code2,
   FolderCog,
   Globe,
@@ -18,6 +19,7 @@ import {
   FilePlus2,
   FolderOpen,
 } from "lucide-react";
+import { useModeStore } from "./stores/modeStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 import { isDiffId, useEditorStore } from "./stores/editorStore";
 import { openExternalPaths } from "./utils/openExternalPaths";
@@ -29,8 +31,10 @@ import { registerCodingListeners } from "./stores/codingStore";
 import { registerSearchListeners, useSearchStore } from "./stores/searchStore";
 import { sshService } from "./services/sshService";
 import { connectionService } from "./services/connectionService";
+import { localFsService } from "./services/localFsService";
 import { ExplorerTree } from "./components/Explorer/ExplorerTree";
 import { CodeEditor } from "./components/Editor/CodeEditor";
+import { LocalFileTree } from "./components/Editor/LocalFileTree";
 import { TerminalPanel } from "./components/Terminal/TerminalPanel";
 import { SftpBrowser } from "./components/SftpBrowser/SftpBrowser";
 import { SftpFileViewer } from "./components/SftpBrowser/SftpFileViewer";
@@ -45,6 +49,9 @@ import { ToastStack, useToastStore } from "./components/shared/Toast";
 import { ThemeToggle } from "./components/shared/ThemeToggle";
 import { ContextMenu, type ContextMenuItem } from "./components/shared/ContextMenu";
 import { HomeShell } from "./components/RemoteTool/HomeShell";
+import { HomeDashboard } from "./components/Home/HomeDashboard";
+import { LocalExplorerScreen } from "./components/LocalExplorer/LocalExplorerScreen";
+import { WorkspacePicker } from "./components/Workspace/WorkspacePicker";
 import { formatError } from "./utils/error";
 import type { WorkspaceProfile } from "./types/bindings";
 
@@ -69,9 +76,10 @@ async function resolveWorkspaceProtocol(connectionId: string): Promise<"ssh" | "
  */
 function App() {
   const current = useWorkspaceStore((s) => s.current);
-  const showPicker = useWorkspaceStore((s) => s.showPicker);
-  const backToPicker = useWorkspaceStore((s) => s.backToPicker);
   const updateLastSftpPaths = useWorkspaceStore((s) => s.updateLastSftpPaths);
+  const mode = useModeStore((s) => s.mode);
+  const modeOpen = useModeStore((s) => s.open);
+  const goHome = useModeStore((s) => s.goHome);
   const recentWorkspaces = useWorkspaceStore((s) => s.recent);
   const loadRecentWorkspaces = useWorkspaceStore((s) => s.loadRecent);
   const openLocalPath = useWorkspaceStore((s) => s.openLocalPath);
@@ -88,6 +96,11 @@ function App() {
   const hideStandaloneShell = useEditorStore((s) => s.hideStandaloneShell);
 
   const [workspaceMenu, setWorkspaceMenu] = useState<{ x: number; y: number } | null>(null);
+  // 编辑器模块左侧文件树当前浏览的根目录（用户 2026-09-04 需求："编辑器桌面需要
+  // 左边有个资源管理器"）——只在 `mode === "editor"` 的进程里用得到，但和其它
+  // 顶层状态一样声明在这里，不放进条件分支（Hooks 规则）。持久化到 localStorage
+  // 是为了下次开编辑器模块窗口还停在上次浏览的目录，不用重新选一次。
+  const [editorRoot, setEditorRoot] = useState<string | null>(() => localStorage.getItem("roc_desk-editor-tree-root"));
   // "remote" 工作区可能是 SSH 也可能是 Agent 连接（AGENT_DESIGN.md），底部终端面板
   // 的 `target` prop 渲染时需要知道具体是哪种协议，才能决定新开的终端走哪条后端
   // 命令——这个状态和下面的"自动打开默认终端"用的是同一次协议解析结果。
@@ -114,6 +127,94 @@ function App() {
     return stored >= 300 && stored <= 800 ? stored : 420;
   });
   const aiToolsDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  // 这个进程冷启动时到底是首页还是某个模块窗口（`docs/HOME_MODES_DESIGN.md` §3.5），
+  // 决定下面整个组件该渲染成什么样——必须在其它任何渲染分支之前先拿到，`mode`
+  // 从 `undefined` 变成确定值之前先不渲染任何东西，避免闪一下首页/工作区再跳走。
+  useEffect(() => {
+    void useModeStore.getState().loadLaunchContext();
+  }, []);
+
+  // 工作区模块窗口带了 `--open=<workspace_id>`（首页点了"最近工作区"里的具体一项）——
+  // 直接按 id 打开，不需要用户在 WorkspacePicker 里再选一次。只在这个模块窗口
+  // 还没打开任何工作区时尝试一次，成功后 `current` 变为非空，条件不再满足。
+  useEffect(() => {
+    if (mode === "workspace" && modeOpen && !current) {
+      useWorkspaceStore.getState().openById(modeOpen).catch((e) => {
+        pushToast("error", `打开工作区失败：${formatError(e)}`);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, modeOpen]);
+
+  // 编辑器模块窗口没有"工作区"这个概念，`terminalStore` 的有界保活池却是按
+  // 工作区 id 分组的（见 terminalStore.ts）——用一个固定的伪 id 把编辑器模块窗口
+  // 的终端也接进同一套保活机制，不用为它另写一套。伪 id 不是合法的工作区 UUID，
+  // 不会和真实工作区撞车。
+  useEffect(() => {
+    if (mode === "editor") void useTerminalStore.getState().switchWorkspace("__standalone_editor__");
+  }, [mode]);
+
+  // 编辑器模块"记住最后一次打开的文件列表"（用户 2026-09-04 需求），和 App.tsx
+  // 下面工作区模式那份"按 workspaceId 记 tab"的逻辑是同一个模式，只是编辑器模块
+  // 没有 workspaceId，用固定 key，且只记 `origin === "standalone"` 的标签（工作区
+  // 标签不会出现在这个模式的进程里，多这一层过滤是为了以防万一，不依赖"这个
+  // 进程里不会有 workspace 标签"这个假设）。
+  //
+  // `--open=<path>`（资源管理器模块双击本地"可编辑"文件时 spawn 出来的编辑器窗口
+  // 就是这么打开目标文件的）必须在"恢复历史标签"的循环**之后**再打开——`openStandaloneFile`
+  // 每次都会把刚打开的文件设成当前激活标签，这两件事以前是分成两个各自独立的
+  // `useEffect`，触发时机都是 `[mode, modeOpen]`，会并发跑：历史标签恢复循环里有
+  // 多次 await，`--open` 那次只有一次，谁先跑完全看时序——真实反馈（2026-09-04）：
+  // "新打开的可编辑文档跳转到 roc_desk 编辑器界面时，默认展示的文件不是本文件"，
+  // 就是这个竞态，历史记录里排在后面的某个文件在 `--open` 目标文件之后才恢复完，
+  // 把它顶掉了。合并成一个效果、显式排好"先恢复历史、再打开目标文件"的顺序即可。
+  useEffect(() => {
+    if (mode !== "editor") return;
+    const key = "roc_desk-editor-standalone-tabs";
+    let paths: string[] = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+      paths = Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+    } catch {
+      paths = [];
+    }
+    let cancelled = false;
+    let restoring = true;
+    const standaloneTabIds = (state: ReturnType<typeof useEditorStore.getState>) =>
+      state.order.filter((id) => !isDiffId(id) && state.buffers[id]?.origin === "standalone");
+    const restore = async () => {
+      for (const path of paths.slice(0, 30)) {
+        if (cancelled) return;
+        try {
+          await useEditorStore.getState().openStandaloneFile(path);
+        } catch {
+          /* file unavailable */
+        }
+      }
+      if (cancelled) return;
+      if (modeOpen) {
+        try {
+          await useEditorStore.getState().openStandaloneFile(modeOpen);
+        } catch (e) {
+          pushToast("error", `打开文件失败：${formatError(e)}`);
+        }
+      }
+      if (!cancelled) {
+        restoring = false;
+        localStorage.setItem(key, JSON.stringify(standaloneTabIds(useEditorStore.getState())));
+      }
+    };
+    void restore();
+    const unsubscribe = useEditorStore.subscribe((state) => {
+      if (!restoring && !cancelled) localStorage.setItem(key, JSON.stringify(standaloneTabIds(state)));
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, modeOpen]);
 
   useEffect(() => {
     const unlistenPromise = registerHostKeyPromptListener();
@@ -245,6 +346,12 @@ function App() {
   // openExternalPaths.ts（WorkspacePicker.tsx 首页"打开文件"按钮也用同一个函数），
   // 这里只是包一层"打开后把编辑器 tab 切到前台"。
   const handleOpenExternalPaths = useCallback(async (paths: string[]) => {
+    // 拖拽/Ctrl+O/文件关联打开外部路径只在"工作区"/"编辑器"这两个模块窗口里有
+    // 意义（会打开工作区或游离文件标签）——`ssh`/`explorer`/首页进程不渲染
+    // Explorer/编辑器，落地在这两种模块的窗口里默默调用 `openLocalPath` 之类
+    // 的 store action 只会产生一堆看不见效果的状态，不如直接跳过。
+    const currentMode = useModeStore.getState().mode;
+    if (currentMode !== "workspace" && currentMode !== "editor") return;
     await openExternalPaths(paths);
     setActiveView("editor");
   }, []);
@@ -254,6 +361,23 @@ function App() {
     if (!selected) return;
     await handleOpenExternalPaths(Array.isArray(selected) ? selected : [selected]);
   }, [handleOpenExternalPaths]);
+
+  // 编辑器模块的终端开关（用户 2026-09-04 需求："下边可以开终端"）——已有终端就
+  // 只是切面板显示/隐藏，没有就新开一个，cwd 优先用左侧文件树当前浏览的目录，
+  // 没选过目录就退回用户主目录（`pty_open` 的 cwd 传空字符串行为未定义，不能
+  // 图省事直接传 undefined）。
+  const handleEditorTerminalToggle = async () => {
+    if (terminalTabs.length > 0) {
+      togglePanel();
+      return;
+    }
+    try {
+      const cwd = editorRoot ?? (await localFsService.homeDir().catch(() => undefined));
+      await openTerminal({ kind: "local", cwd });
+    } catch (error) {
+      pushToast("error", `打开终端失败：${formatError(error)}`);
+    }
+  };
 
   // Ctrl+O 全局快捷键：在首页、独立编辑器壳、完整 IDE 里都要能用（不依赖 Monaco
   // 实例是否挂载），所以挂在 window 上而不是某个具体组件里。
@@ -365,25 +489,124 @@ function App() {
     window.addEventListener("mouseup", onUp);
   };
 
-  // 没有打开工作区时，首页是"左侧会话树 + 右侧工作区列表"的固定布局（用户
-  // 2026-08-25 明确要求："不需要去选会话模式和工作区模式后再展现"）——两边
-  // 一直都在，不是需要提前选的两个模式。打开一个工作区后（`current` 非空）
-  // 走下面原有的 IDE 布局，和这个首页完全独立。
-  //
-  // 还没打开过工作区、但通过拖拽/Ctrl+O/文件关联打开了游离文件时（2026-09-03
-  // 需求），走第三种极简布局：只有 tab 栏 + 编辑区，没有 Explorer/终端/SFTP/AI
-  // 面板——这些都要求工作区上下文，硬造一个没意义。和下面完整 IDE 布局同样的
-  // "两棵子树都常驻挂载，只切 display" 模式，切回首页不会丢失已打开文件的编辑状态。
+  // 这个进程冷启动时到底该渲染成哪个工作模块，由命令行 `--mode` 决定
+  // （`docs/HOME_MODES_DESIGN.md` §3.5）——每个模块窗口只挂载自己这一种模块的
+  // 子树，不再是"一个进程里塞下所有模块、靠内部状态切换"。`mode` 还没从后端
+  // 取到之前不渲染任何东西，避免先闪一下首页再跳到真正的模块内容。
+  if (mode === undefined) return null;
+
+  if (mode === "ssh") {
+    return (
+      <>
+        <div style={{ height: "100vh" }}>
+          <HomeShell />
+        </div>
+        <ToastStack />
+        <HostKeyPromptHost />
+        <AgentCertPromptHost />
+      </>
+    );
+  }
+
+  if (mode === "explorer") {
+    return (
+      <>
+        <LocalExplorerScreen />
+        <ToastStack />
+      </>
+    );
+  }
+
+  if (mode === null) {
+    return (
+      <>
+        <HomeDashboard />
+        <ToastStack />
+      </>
+    );
+  }
+
+  if (mode === "editor") {
+    return (
+      <>
+        <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+          <div className="tab-bar">
+            <button className="quick-tool-btn" onClick={() => void goHome()} title="返回首页">
+              <Home />
+            </button>
+            <Code2 className="app-icon" />
+            <span className="workspace-name-btn" style={{ cursor: "default" }}>
+              本地文件
+            </span>
+            <div className="tab-item" onClick={() => void handleEditorTerminalToggle()} title="切换底部终端面板 (Ctrl+`)">
+              <span className={`tab-dot ${terminalTabs.length > 0 ? "connected" : "connecting"}`} />
+              <TerminalSquare className="tab-icon" />
+              <span>终端</span>
+            </div>
+            <div className="quick-tools" style={{ marginLeft: "auto" }}>
+              <button className="quick-tool-btn" title="打开文件 (Ctrl+O)" onClick={() => void openFileDialog()}>
+                <FilePlus2 />
+              </button>
+              <ThemeToggle />
+            </div>
+          </div>
+          <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+            <div
+              style={{
+                width: sidebarWidth,
+                flexShrink: 0,
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <LocalFileTree
+                root={editorRoot}
+                onRootChange={(path) => {
+                  setEditorRoot(path);
+                  localStorage.setItem("roc_desk-editor-tree-root", path);
+                }}
+                onOpenFile={(path) =>
+                  useEditorStore
+                    .getState()
+                    .openStandaloneFile(path)
+                    .catch((e) => pushToast("error", `打开失败：${formatError(e)}`))
+                }
+              />
+            </div>
+            <div className="sidebar-resize-handle" onMouseDown={onSidebarDragStart} />
+            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <CodeEditor workspaceId={null} workspaceName="" rootPath="" />
+              </div>
+              <TerminalPanel target={{ kind: "local", cwd: editorRoot ?? "" }} />
+            </div>
+          </div>
+        </div>
+        <ToastStack />
+        <HostKeyPromptHost />
+        <AgentCertPromptHost />
+      </>
+    );
+  }
+
+  // 走到这里 `mode === "workspace"`：还没打开任何工作区时展示 WorkspacePicker
+  // （本模块窗口自己的"选一个工作区"页面，不再是合并了会话树的 HomeShell）；
+  // 通过拖拽/Ctrl+O/文件关联打开了游离文件时（2026-09-03 需求），走第三种极简
+  // 布局：只有 tab 栏 + 编辑区，没有 Explorer/终端/SFTP/AI 面板——这些都要求
+  // 工作区上下文，硬造一个没意义。两棵子树都常驻挂载，只切 display，避免来回
+  // 切换时丢失已打开文件的编辑状态。
   if (!current) {
     return (
       <>
         <div style={{ display: standaloneShellVisible ? "none" : "block", height: "100vh" }}>
-          <HomeShell />
+          <WorkspacePicker />
         </div>
         <div style={{ display: standaloneShellVisible ? "flex" : "none", flexDirection: "column", height: "100vh" }}>
           <div className="tab-bar">
-            <button className="quick-tool-btn" onClick={hideStandaloneShell} title="返回首页">
-              <Home />
+            <button className="quick-tool-btn" onClick={hideStandaloneShell} title="返回工作区选择">
+              <ArrowLeft />
             </button>
             <Code2 className="app-icon" />
             <span className="workspace-name-btn" style={{ cursor: "default" }}>
@@ -469,21 +692,15 @@ function App() {
 
   return (
     <>
-      {/* HomeShell（会话树 + RDP/SSH/Agent 远程会话）和下面的工作区 IDE 主界面
-          不能再靠 `!current` 互斥渲染二选一——那样"返回首页"时 `current` 被置空，
-          整棵 IDE 子树（连同它下面常驻的 `TerminalPanel`）被卸载，切回工作区看到
-          的终端是内容清空的新终端；反过来打开工作区时 HomeShell 卸载，它自己
-          正开着的 RDP/SSH/Agent 会话（`remoteSessionStore`）也会丢失渲染状态。
-          现在两棵子树都常驻挂载，只用 `showPicker`（workspaceStore.ts）切换
-          display 可见性——和 HomeShell.tsx 内部"工作区选择页 vs 会话标签"已经在用
-          的同一个模式保持一致（2026-09-01 用户反馈：切到首页做完远程会话操作后
-          回工作区，终端状态没保持住）。 */}
-      <div style={{ display: showPicker ? "block" : "none", height: "100vh" }}>
-        <HomeShell />
-      </div>
-      <div style={{ display: showPicker ? "none" : "flex", flexDirection: "column", height: "100vh" }}>
+      {/* 这个窗口本身就是一个独立的"工作区模块"进程（`docs/HOME_MODES_DESIGN.md`
+          §3.5），不再需要和 HomeShell 共存一屏、靠 `showPicker` 切换可见性——
+          HomeShell 现在是 `ssh` 模块自己独立进程的内容。点"返回首页"是
+          `goHome()`：唤起/聚焦另一个进程里的启动器，不影响这个窗口本身继续开着
+          （现有的 TerminalPanel/编辑器标签保活机制不受影响，这里没有任何子树会
+          被卸载）。 */}
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <div className="tab-bar">
-        <button className="quick-tool-btn" onClick={backToPicker} title="返回首页">
+        <button className="quick-tool-btn" onClick={() => void goHome()} title="返回首页">
           <Home />
         </button>
         <Code2 className="app-icon" />

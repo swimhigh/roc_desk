@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Code2, FolderOpen, Server, Laptop, Pencil, FilePlus2 } from "lucide-react";
+import { Code2, FolderOpen, Home, Server, Laptop, Pencil, FilePlus2 } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
+import { useModeStore } from "../../stores/modeStore";
 import { openExternalPaths } from "../../utils/openExternalPaths";
 import { RemoteWorkspaceDialog } from "./RemoteWorkspaceDialog";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
@@ -16,7 +17,6 @@ import type { ConnectionProfile, WorkspaceProfile } from "../../types/bindings";
 /** 应用入口（DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）：打开本地文件夹 / 连接远程主机 / 最近工作区。*/
 export const WorkspacePicker: React.FC = () => {
   const {
-    current,
     recent,
     loading,
     error,
@@ -26,7 +26,6 @@ export const WorkspacePicker: React.FC = () => {
     openRemoteWorkspace,
     removeFromRecent,
     updatePath,
-    returnToCurrentWorkspace,
   } = useWorkspaceStore();
   /** 有界保活的 LRU 常驻工作区集合（terminalStore.ts）——和 App.tsx 顶部"切换
    * 工作区"下拉菜单同一个用途，这里标在首页的"最近打开的工作区"列表上（2026-09-01
@@ -40,6 +39,7 @@ export const WorkspacePicker: React.FC = () => {
   );
   const [savingPassword, setSavingPassword] = useState(false);
   const push = useToastStore((s) => s.push);
+  const goHome = useModeStore((s) => s.goHome);
 
   /** 目录配错了不用"移除再重新打开"——本地直接弹原生目录选择器改路径；远程复用
    * "连接远程主机并选择目录"里的目录浏览步骤，只是确认时改路径而不是新建工作区
@@ -65,13 +65,6 @@ export const WorkspacePicker: React.FC = () => {
   }, [loadRecent]);
 
   const reopenRecent = async (w: (typeof recent)[number]) => {
-    // 点的正好是已经打开着的那个工作区（比如从首页切回去）——不需要重新走一遍
-    // workspace_open_local/remote，直接把首页收起来，工作区那边的所有状态
-    // （含终端）本来就一直原样挂在下面，没被动过。
-    if (w.id === current?.id) {
-      returnToCurrentWorkspace();
-      return;
-    }
     if (w.kind === "local") {
       try {
         await openLocalPath(w.root_path);
@@ -132,6 +125,14 @@ export const WorkspacePicker: React.FC = () => {
 
   return (
     <div className="workspace-picker-screen">
+      <button
+        className="quick-tool-btn"
+        style={{ position: "absolute", top: "var(--space-4)", left: "var(--space-4)" }}
+        title="返回首页"
+        onClick={() => void goHome().catch((e) => push("error", `返回首页失败：${formatError(e)}`))}
+      >
+        <Home />
+      </button>
       <ThemeToggle className="wp-theme-toggle" />
       <div className="wp-logo">
         <Code2 />

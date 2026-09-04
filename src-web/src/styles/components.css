@@ -978,6 +978,104 @@
 .wp-recent-item .wp-name { font-size: var(--text-sm); color: var(--text-primary); flex-shrink: 0; width: 120px; }
 .wp-recent-item .wp-path { font-size: var(--text-xs); color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* === 资源管理器模块标签页（LocalExplorerScreen，每栏可开本地/SSH/Agent 多个标签） === */
+.explorer-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 100%;
+  max-width: 150px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.explorer-tab.active { background: var(--bg-hover); color: var(--text-primary); }
+.explorer-tab:hover { color: var(--text-primary); }
+.explorer-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-tab-close { flex-shrink: 0; color: var(--text-disabled); }
+.explorer-tab-close:hover { color: var(--danger); }
+
+/* === 首页仪表盘（HomeDashboard，docs/HOME_MODES_DESIGN.md §3.4） === */
+.home-dashboard {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-app);
+  gap: var(--space-8);
+  position: relative;
+  overflow: auto;
+  padding: var(--space-8) 0;
+}
+.home-dashboard-logo { display: flex; align-items: center; gap: var(--space-2); font-size: 26px; font-weight: 700; color: var(--text-primary); }
+.home-dashboard-logo svg { width: 32px; height: 32px; color: var(--accent); }
+.home-dashboard-tagline { margin-top: calc(-1 * var(--space-6)); font-size: var(--text-sm); color: var(--text-secondary); text-align: center; max-width: 640px; }
+.home-dashboard-grid { display: grid; grid-template-columns: repeat(2, 400px); gap: var(--space-6); }
+.home-dashboard-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+/* 每个模块的"大入口"——图标+标题+一句话说明+箭头，整块可点，视觉上比下面的
+   最近列表明显更重（用户反馈："每个大模块的入口要大气"），第一眼就能看懂
+   这个分区是干什么的，不用先扫最近列表才能猜。 */
+.home-dashboard-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-5);
+  text-align: left;
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background var(--transition-duration) var(--transition-easing);
+}
+.home-dashboard-entry:hover { background: var(--bg-hover); }
+.home-dashboard-entry:hover .home-dashboard-entry-arrow { transform: translateX(3px); color: var(--accent); }
+.home-dashboard-entry-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.home-dashboard-entry-icon svg { width: 24px; height: 24px; }
+.home-dashboard-entry-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.home-dashboard-entry-title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.home-dashboard-entry-desc { font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.4; }
+.home-dashboard-entry-arrow { flex-shrink: 0; width: 18px; height: 18px; color: var(--text-disabled); transition: transform var(--transition-duration) var(--transition-easing), color var(--transition-duration) var(--transition-easing); }
+.home-dashboard-card-list { min-height: 76px; max-height: 168px; overflow-y: auto; }
+.home-dashboard-card-item { display: flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-4); cursor: pointer; }
+.home-dashboard-card-item:hover { background: var(--bg-hover); }
+.home-dashboard-card-item svg { flex-shrink: 0; color: var(--text-secondary); }
+.home-dashboard-item-name { font-size: var(--text-sm); color: var(--text-primary); flex-shrink: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-dashboard-item-sub { font-size: var(--text-xs); color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-dashboard-card-empty { padding: var(--space-3) var(--space-4); font-size: var(--text-xs); color: var(--text-secondary); }
+.home-dashboard-card-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  justify-content: center;
+  padding: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+}
+.home-dashboard-card-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+
 /* === Target / Remote-capability badges（AI 编程助手，DESIGN.md §3.8.1/§3.8.7） === */
 .target-badge { font-size: var(--text-xs); padding: 2px var(--space-2); border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 4px; }
 .target-badge.remote { background: rgba(217, 164, 65, 0.1); color: var(--warning); }

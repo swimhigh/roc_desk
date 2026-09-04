@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { X, Terminal as TerminalIcon, FolderCog, Monitor, FolderGit2, Rows3, LogOut, HardDrive, ArrowLeftRight } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { X, Terminal as TerminalIcon, FolderCog, Home, Monitor, Rows3, LogOut, HardDrive, ArrowLeftRight } from "lucide-react";
 import { SessionTree } from "./SessionTree";
 import { SshHostStatsBar } from "./SshHostStatsBar";
 import { RdpView } from "./RdpView";
@@ -7,9 +7,9 @@ import { TerminalView } from "../Terminal/TerminalView";
 import { SftpBrowser } from "../SftpBrowser/SftpBrowser";
 import { SftpFileViewer } from "../SftpBrowser/SftpFileViewer";
 import { AgentBrowser } from "../SftpBrowser/AgentBrowser";
-import { WorkspacePicker } from "../Workspace/WorkspacePicker";
 import { useRemoteSessionStore, type RemoteSessionTab } from "../../stores/remoteSessionStore";
 import { useSessionTreeStore } from "../../stores/sessionTreeStore";
+import { useModeStore } from "../../stores/modeStore";
 import type { ConnectionProfile, FileEntry } from "../../types/bindings";
 
 function defaultRemotePath(username: string): string {
@@ -25,11 +25,12 @@ const TAB_ICON: Record<RemoteSessionTab["kind"], React.ReactNode> = {
 };
 
 /**
- * 首页外壳（DESIGN.md §3.9，用户 2026-08-25 明确要求："首页应该是左边列出所有会话
- * （可以新建），右边和原版本一样列出所有工作区（可以新建）。不需要去选会话模式和
- * 工作区模式后再展现"）——左侧会话树永远在，右侧默认显示原样的 WorkspacePicker，
- * 点开一个会话就多一个可关闭的标签（标签栏里"工作区"是固定首位、不可关闭的入口，
- * 不是又一个可关的会话标签）。不存在需要提前选择的"模式"，两边一直都在。
+ * SSH 桌面模块（`docs/HOME_MODES_DESIGN.md` §3.2/§3.5）——`--mode=ssh` 启动的
+ * 模块窗口只挂载这一个组件：左侧会话树 + 右侧会话标签（SSH/Agent 终端、SFTP、
+ * 文件传输、RDP）。原本（DESIGN.md §3.9）这个组件右侧还内嵌一份 `WorkspacePicker`
+ * 充当"整个应用的首页"，现在"打开工作区"已经拆成独立的 `workspace` 模块窗口，
+ * 这里不再需要那部分——标签栏最左边的固定入口从"工作区"改成"返回首页"，点了是
+ * `useModeStore.goHome()`（唤起/聚焦启动器进程），不是应用内部切视图。
  */
 export const HomeShell: React.FC = () => {
   const tabs = useRemoteSessionStore((s) => s.tabs);
@@ -49,16 +50,9 @@ export const HomeShell: React.FC = () => {
   const toggleExcludedFromMultiExec = useRemoteSessionStore((s) => s.toggleExcludedFromMultiExec);
   const broadcastInput = useRemoteSessionStore((s) => s.broadcastInput);
   const connections = useSessionTreeStore((s) => s.connections);
+  const goHome = useModeStore((s) => s.goHome);
 
-  const [showPicker, setShowPicker] = useState(true);
   const [viewingFile, setViewingFile] = useState<Record<string, string | null>>({});
-
-  // 从会话树打开/激活任何一个会话标签都应该自动切离首页——用户点了就是想看它，
-  // 不需要再手动点一下标签才能看到内容；反过来，关掉最后一个标签（activeId 变回
-  // null）也该自动回到首页，不留在一个"什么都没有"的空白状态里。
-  useEffect(() => {
-    setShowPicker(!activeId);
-  }, [activeId]);
 
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("roc_desk-remote-sidebar-width"));
@@ -143,18 +137,15 @@ export const HomeShell: React.FC = () => {
 
       <div className="remote-tool-shell">
         <div className="remote-session-tabs">
-          <div className={`remote-session-tab ${showPicker ? "active" : ""}`} onClick={() => setShowPicker(true)}>
-            <FolderGit2 />
-            <span>工作区</span>
+          <div className="remote-session-tab" onClick={() => void goHome()} title="唤起/聚焦首页进程">
+            <Home />
+            <span>首页</span>
           </div>
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className={`remote-session-tab ${!showPicker && tab.id === activeId ? "active" : ""}`}
-              onClick={() => {
-                setActive(tab.id);
-                setShowPicker(false);
-              }}
+              className={`remote-session-tab ${tab.id === activeId ? "active" : ""}`}
+              onClick={() => setActive(tab.id)}
             >
               {TAB_ICON[tab.kind]}
               <span>{tab.title}</span>
@@ -183,15 +174,6 @@ export const HomeShell: React.FC = () => {
           )}
         </div>
 
-        {/* "工作区"入口和下面的会话标签区不能再用 showPicker 互斥的三元表达式二选一
-            渲染——那样切到"工作区"再切回来，整棵会话标签子树会被卸载重建，RDP
-            内嵌的是真实原生窗口，SSH/Agent 终端是有状态的 xterm.js 实例，重建就等于
-            "会话没有保持"（真实反馈：点开 RDP 后点一下工作区再切回来，RDP 又得
-            重新连接）。改成两棵子树都常驻，只用 display 切换可见性，和下面
-            "multiExecEnabled 那块 vs 普通标签区"已经在用的同一个模式保持一致。 */}
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: showPicker ? "block" : "none" }}>
-          <WorkspacePicker />
-        </div>
         <>
             {/* SFTP/RDP 标签（尤其是 RDP——内嵌的是真实进程/原生窗口，不是能随便丢的
                 画面）不能因为切进/切出多路执行模式就被卸载重建，所以这块和下面的
@@ -200,7 +182,7 @@ export const HomeShell: React.FC = () => {
                 这里对应位置要跳过，否则同一个 Channel 会有两个 xterm 实例同时收
                 ssh:data 事件。 */}
             {multiExecEnabled && (
-              <div style={{ flex: 1, minHeight: 0, display: showPicker ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                 <div className="host-stats-bar" style={{ borderTop: "none", borderBottom: "1px solid var(--border-default)" }}>
                   <strong>多路执行模式</strong>：在任意未排除的终端里输入，会同步发给其它未排除的终端
                   <button className="btn ghost sm" style={{ marginLeft: "auto" }} onClick={toggleMultiExec}>
@@ -236,7 +218,7 @@ export const HomeShell: React.FC = () => {
               </div>
             )}
 
-            <div style={{ flex: 1, minHeight: 0, display: showPicker || multiExecEnabled ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ flex: 1, minHeight: 0, display: multiExecEnabled ? "none" : "flex", flexDirection: "column", overflow: "hidden" }}>
               {tabs.length === 0 ? (
                 <div className="remote-session-empty">在左侧会话树里双击一个连接，开始一个 SSH / Agent / RDP / SFTP 会话</div>
               ) : (

@@ -87,4 +87,9 @@ pub struct AppState {
     /// `tauri_plugin_single_instance::init`）不走这个字段，直接 emit 事件，
     /// 因为那种情况前端肯定已经跑起来了。
     pub pending_open_paths: StdMutex<Vec<String>>,
+    /// 冷启动命令行参数解析出的模块角色（`--mode`/`--open`，见
+    /// `commands::launcher::get_launch_context`）——不像 `pending_open_paths`
+    /// 那样是一次性事件，这两个值在整个进程生命周期内固定不变，前端可以随时查询。
+    pub launch_mode: Option<String>,
+    pub launch_open: Option<String>,
 }
