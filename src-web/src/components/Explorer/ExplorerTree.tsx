@@ -87,9 +87,10 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   useEffect(() => {
     const handler = async (ev: Event) => {
       const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
-      if (!path || !path.startsWith(rootPath)) return;
+      if (!path) return;
       const normalized = path.replace(/\\/g, "/");
       const root = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+      if (!normalized.toLowerCase().startsWith(root.toLowerCase())) return;
       const parts = normalized.split("/").filter(Boolean);
       const rootParts = root.split("/").filter(Boolean);
       for (let i = rootParts.length; i < parts.length - 1; i++) {

@@ -50,6 +50,7 @@ import { ThemeToggle } from "./components/shared/ThemeToggle";
 import { ContextMenu, type ContextMenuItem } from "./components/shared/ContextMenu";
 import { HomeShell } from "./components/RemoteTool/HomeShell";
 import { HomeDashboard } from "./components/Home/HomeDashboard";
+import { StandaloneFileTree } from "./components/Editor/StandaloneFileTree";
 import { LocalExplorerScreen } from "./components/LocalExplorer/LocalExplorerScreen";
 import { WorkspacePicker } from "./components/Workspace/WorkspacePicker";
 import { formatError } from "./utils/error";
@@ -632,7 +633,7 @@ function App() {
             </div>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
-            <CodeEditor workspaceId={null} workspaceName="" rootPath="" />
+            <div style={{ display: "flex", height: "100%" }}><StandaloneFileTree onOpenFile={(p) => void useEditorStore.getState().openStandaloneFile(p)} /><CodeEditor workspaceId={null} workspaceName="" rootPath="" /></div>
           </div>
         </div>
         <ToastStack />

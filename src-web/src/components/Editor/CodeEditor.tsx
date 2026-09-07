@@ -89,7 +89,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   const isPreviewOnly = isImage || isPdf || isWord || isExcel || isExecutable || isJar || isLegacyOffice || isUnsupportedBinary;
 
   const revealInExplorer = React.useCallback(async (path: string) => {
-    if (!workspaceId) return;
+    if (!workspaceId) {
+      window.dispatchEvent(new CustomEvent("roc:reveal-standalone", { detail: { path } }));
+      return;
+    }
     const explorer = useExplorerStore.getState();
     const normalized = path.replace(/\\/g, "/");
     const root = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
@@ -345,8 +348,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
               {i > 0 && <span className="sep">›</span>}{" "}
               <span className={i === segments.length - 1 ? "crumb current" : "crumb"} onClick={() => {
                 if (i === 0 || !active) return;
-                const segs = active.path.split(/[/\\]/).filter(Boolean);
-                const target = segs.slice(0, i).join(active.path.includes("\\") ? "\\" : "/");
+                const separator = active.path.includes("\\") ? "\\" : "/";
+                const pathSegs = active.path.split(/[/\\]/).filter(Boolean);
+                // standalone 面包屑包含“本地文件”前缀；工作区面包屑第一项是工作区名，
+                // 后续项是相对根目录路径。始终把点击项映射回完整绝对路径。
+                const target = active.origin === "standalone"
+                  ? pathSegs.slice(0, i).join(separator)
+                  : [rootPath.replace(/[\\/]$/, ""), ...segments.slice(1, i)].join(separator);
                 void revealInExplorer(target);
               }}>{seg}</span>
             </span>
