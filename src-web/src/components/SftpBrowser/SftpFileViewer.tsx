@@ -12,6 +12,7 @@ import { useToastStore } from "../shared/Toast";
 import { useThemeStore } from "../../stores/themeStore";
 import { ConflictDialog } from "../Editor/ConflictDialog";
 import { ExcelPreview } from "../Editor/ExcelPreview";
+import { ImageViewer } from "../Editor/ImageViewer";
 import { PdfPreview } from "../Editor/PdfPreview";
 import { UnsupportedBinaryPanel } from "../Editor/UnsupportedBinaryPanel";
 import { BinaryInfoPanel } from "../Editor/BinaryInfoPanel";
@@ -281,19 +282,7 @@ export const SftpFileViewer: React.FC<SftpFileViewerProps> = ({ profileId, path,
       {loading ? (
         <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>加载中…</div>
       ) : kind === "image" ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            overflow: "auto",
-            background: "var(--bg-base)",
-          }}
-        >
-          <img src={content} alt={path} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-        </div>
+        <ImageViewer src={content} alt={path} />
       ) : kind === "pdf" ? (
         <PdfPreview base64={content.split(",")[1] ?? ""} />
       ) : kind === "word" ? (

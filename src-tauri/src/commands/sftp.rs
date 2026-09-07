@@ -1,5 +1,5 @@
 use base64::Engine;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, Emitter};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
@@ -54,6 +54,8 @@ fn finish_transfer_log(
         status,
         error_message: error_message.as_deref(),
         started_at,
+        bytes_transferred: None,
+        total_bytes: None,
     });
 }
 
@@ -169,7 +171,11 @@ pub async fn sftp_download(
     local_path: String,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    ops.download_to_local(&remote_path, &local_path).await
+    let offset = match (tokio::fs::metadata(&local_path).await, ops.file_size(&remote_path).await) {
+        (Ok(local), Ok(remote)) if local.is_file() && local.len() <= remote => local.len(),
+        _ => 0,
+    };
+    ops.download_range_to_local(&remote_path, &local_path, offset, std::sync::Arc::new(|_| {}), std::sync::Arc::new(|| false)).await
 }
 
 #[tauri::command]
@@ -180,7 +186,11 @@ pub async fn sftp_upload(
     remote_path: String,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    ops.upload_from_local(&local_path, &remote_path).await
+    let offset = match (tokio::fs::metadata(&local_path).await, ops.file_size(&remote_path).await) {
+        (Ok(local), Ok(remote)) if local.is_file() && remote <= local.len() => remote,
+        _ => 0,
+    };
+    ops.upload_range_from_local(&local_path, &remote_path, offset, std::sync::Arc::new(|_| {}), std::sync::Arc::new(|| false)).await
 }
 
 /// 双栏 SFTP 浏览器的"下载到本地目录"（DESIGN.md §3.3）：目标文件/目录名沿用远程
@@ -203,15 +213,22 @@ pub async fn sftp_download_entry(
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let cancelled_transfers = state.cancelled_transfers.clone();
-    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> = std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
     let result = if is_dir {
-        ops.download_recursive(&remote_path, &local_target, Some((app_handle, request_id)), &should_cancel, &file_count).await
+        ops.download_recursive(&remote_path, &local_target, Some((app_handle, request_id)), should_cancel.clone(), &file_count).await
     } else {
-        ops.download_to_local(&remote_path, &local_target).await.inspect(|_| {
-            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        })
+        let offset = match (tokio::fs::metadata(&local_target).await, ops.file_size(&remote_path).await) {
+            (Ok(local), Ok(remote)) if local.is_file() && local.len() <= remote => local.len(), _ => 0,
+        };
+        let app = app_handle.clone();
+        let id = request_id;
+        let path = remote_path.clone();
+        let total = ops.file_size(&remote_path).await.unwrap_or(0);
+        ops.download_range_to_local(&remote_path, &local_target, offset, std::sync::Arc::new(move |bytes| {
+            let _ = app.emit("sftp:transfer-progress", serde_json::json!({"requestId": id, "path": path, "bytes": bytes, "totalBytes": total}));
+        }), should_cancel.clone()).await.inspect(|_| { file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed); })
     };
 
     finish_transfer_log(
@@ -246,15 +263,22 @@ pub async fn sftp_upload_entry(
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let cancelled_transfers = state.cancelled_transfers.clone();
-    let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
+    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> = std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
     let result = if is_dir {
-        ops.upload_recursive(&local_path, &remote_target, Some((app_handle, request_id)), &should_cancel, &file_count).await
+        ops.upload_recursive(&local_path, &remote_target, Some((app_handle, request_id)), should_cancel.clone(), &file_count).await
     } else {
-        ops.upload_from_local(&local_path, &remote_target).await.inspect(|_| {
-            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        })
+        let total = tokio::fs::metadata(&local_path).await.map(|m| m.len()).unwrap_or(0);
+        let offset = match ops.file_size(&remote_target).await {
+            Ok(remote) if remote <= total => remote, _ => 0,
+        };
+        let app = app_handle.clone();
+        let id = request_id;
+        let path = local_path.clone();
+        ops.upload_range_from_local(&local_path, &remote_target, offset, std::sync::Arc::new(move |bytes| {
+            let _ = app.emit("sftp:transfer-progress", serde_json::json!({"requestId": id, "path": path, "bytes": bytes, "totalBytes": total}));
+        }), should_cancel.clone()).await.inspect(|_| { file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed); })
     };
 
     finish_transfer_log(

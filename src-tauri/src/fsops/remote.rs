@@ -1,7 +1,9 @@
 use async_trait::async_trait;
-use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use russh_sftp::protocol::OpenFlags;
+use std::io::SeekFrom;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
+use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use super::encoding::decode_text;
@@ -9,14 +11,6 @@ use super::{FileEntry, FileOps, WriteOutcome};
 use crate::error::AppError;
 use crate::ssh::session::SshSession;
 use std::sync::Arc;
-
-/// 目录级传输的粗粒度进度反馈（DESIGN.md §3.3 双栏浏览器）：按"完成了第几个文件"
-/// 报告，不做字节级百分比，见 `download_recursive`/`upload_recursive` 的文档注释。
-fn emit_progress(progress: &Option<(AppHandle, Uuid)>, path: &str) {
-    if let Some((app, request_id)) = progress {
-        let _ = app.emit("sftp:transfer-progress", serde_json::json!({ "requestId": request_id, "path": path }));
-    }
-}
 
 /// 远程文件操作（DESIGN.md §3.1.4、§3.3）：通过 SFTP 读写，`write_file` 的
 /// `expected_mtime` 冲突检测逻辑与 `LocalFileOps` 保持一致的行为契约。
@@ -45,8 +39,38 @@ impl RemoteFileOps {
     }
 
     /// 流式下载到本地磁盘（SFTP 快捷工具的批量传输，不经过 `FileContent` 的
-    /// 整篇字符串转换，避免大文件把内容整个搬进 Rust 侧的 `String`）。
+    /// 整篇字符串转换，避免大文件把内容整个搬进 Rust 侧的 `String`）。一次性传输，
+    /// 不需要断点续传/取消/进度回调的简单调用点（"用系统程序打开"、旧版 Office
+    /// 转 PDF 的临时下载等）复用这个，等价于 `download_range_to_local` 从 0 开始。
     pub async fn download_to_local(&self, remote_path: &str, local_path: &str) -> Result<(), AppError> {
+        self.download_range_to_local(remote_path, local_path, 0, Arc::new(|_| {}), Arc::new(|| false)).await
+    }
+
+    pub async fn upload_from_local(&self, local_path: &str, remote_path: &str) -> Result<(), AppError> {
+        self.upload_range_from_local(local_path, remote_path, 0, Arc::new(|_| {}), Arc::new(|| false)).await
+    }
+
+    /// 断点续传的核心（用户 2026-09-07 需求）：从 `start_offset` 开始把远程文件剩余
+    /// 部分续写到本地文件。调用方（`commands::sftp` 的重试编排）负责算好
+    /// `start_offset`——通常就是本地文件当前已经写到的字节数——重试时只要重新读一次
+    /// 本地文件大小再调一次这个函数，就能从断点接着传，这里本身不记录任何跨调用的
+    /// 状态。分块读写（不用 `tokio::io::copy`）换来两个能力：每个 chunk 之间能检查
+    /// 取消标记（之前整份 `tokio::io::copy` 中途没法取消，见 `download_recursive`
+    /// 原来的"只在文件之间检查"），以及能按字节汇报进度。
+    ///
+    /// `start_offset == 0` 时会截断本地文件——不能假设本地没有同名旧文件，直接用
+    /// "打开不截断"从 0 写会在新内容比旧文件短时留下一截旧数据在文件尾部。
+    pub async fn download_range_to_local(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        start_offset: u64,
+        on_progress: Arc<dyn Fn(u64) + Send + Sync>,
+        should_cancel: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), AppError> {
+        if should_cancel() {
+            return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
+        }
         let remote_path = remote_path.to_string();
         let local_path = local_path.to_string();
         self.with_sftp(move |sftp| {
@@ -55,46 +79,66 @@ impl RemoteFileOps {
                     .open(&remote_path)
                     .await
                     .map_err(|e| AppError::NotFound(format!("open {remote_path} failed: {e}")))?;
-                let mut local_file = tokio::fs::File::create(&local_path)
+                if start_offset > 0 {
+                    remote_file
+                        .seek(SeekFrom::Start(start_offset))
+                        .await
+                        .map_err(|e| AppError::Internal(format!("seek {remote_path} failed: {e}")))?;
+                }
+                let mut local_file = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(start_offset == 0)
+                    .open(&local_path)
                     .await
                     .map_err(AppError::from)?;
-                tokio::io::copy(&mut remote_file, &mut local_file)
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                Ok(())
+                if start_offset > 0 {
+                    local_file.seek(SeekFrom::Start(start_offset)).await.map_err(AppError::from)?;
+                }
+                copy_chunked(remote_file, local_file, start_offset, on_progress, should_cancel).await
             })
         })
         .await
     }
 
-    pub async fn upload_from_local(&self, local_path: &str, remote_path: &str) -> Result<(), AppError> {
+    /// 和 `download_range_to_local` 对称的续传上传。远程文件用 `WRITE`（续传时不带
+    /// `TRUNCATE`）——`start_offset == 0` 才带上 `TRUNCATE`，理由和上面截断本地文件
+    /// 一样：新内容比远程已有内容短时，不截断会留下一截旧数据在文件尾部。
+    pub async fn upload_range_from_local(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+        start_offset: u64,
+        on_progress: Arc<dyn Fn(u64) + Send + Sync>,
+        should_cancel: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), AppError> {
+        if should_cancel() {
+            return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
+        }
         let local_path = local_path.to_string();
         let remote_path = remote_path.to_string();
         self.with_sftp(move |sftp| {
             Box::pin(async move {
                 let mut local_file = tokio::fs::File::open(&local_path).await.map_err(AppError::from)?;
+                if start_offset > 0 {
+                    local_file.seek(SeekFrom::Start(start_offset)).await.map_err(AppError::from)?;
+                }
+                let flags = if start_offset == 0 {
+                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
+                } else {
+                    OpenFlags::CREATE | OpenFlags::WRITE
+                };
                 let mut remote_file = sftp
-                    .create(&remote_path)
+                    .open_with_flags(&remote_path, flags)
                     .await
                     .map_err(|e| AppError::PermissionDenied(format!("create {remote_path} failed: {e}")))?;
-                tokio::io::copy(&mut local_file, &mut remote_file)
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    async fn is_remote_dir(&self, path: &str) -> Result<bool, AppError> {
-        let path = path.to_string();
-        self.with_sftp(move |sftp| {
-            Box::pin(async move {
-                let attrs = sftp
-                    .metadata(&path)
-                    .await
-                    .map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
-                Ok(attrs.is_dir())
+                if start_offset > 0 {
+                    remote_file
+                        .seek(SeekFrom::Start(start_offset))
+                        .await
+                        .map_err(|e| AppError::Internal(format!("seek remote {remote_path} failed: {e}")))?;
+                }
+                copy_chunked(local_file, remote_file, start_offset, on_progress, should_cancel).await
             })
         })
         .await
@@ -115,69 +159,104 @@ impl RemoteFileOps {
         .await
     }
 
-    /// 递归下载整个远程目录（DESIGN.md §3.3 双栏 SFTP 浏览器）。SFTP 协议没有
-    /// "打包传输整个目录"这回事，只能自己遍历——文件复用 `download_to_local`，
-    /// 目录先在本地建好对应子目录再递归。用 `Box::pin` 打破递归 async fn 的
-    /// 无限尺寸问题（标准写法，不需要额外的 crate）。
-    ///
-    /// `progress` 不做字节级百分比——那需要先完整遍历一遍算总大小，再在拷贝循环里
-    /// 手动分块读写替换掉 `tokio::io::copy`，复杂度不小；退而求其次按"已完成第几个
-    /// 文件"报进度，够让用户知道"还在传、没卡死"，这是够用和精确之间的取舍。
-    pub async fn download_recursive(
-        &self,
-        remote_path: &str,
-        local_path: &str,
-        progress: Option<(AppHandle, Uuid)>,
-        should_cancel: &(dyn Fn() -> bool + Send + Sync),
-        file_count: &std::sync::atomic::AtomicU64,
-    ) -> Result<(), AppError> {
-        if should_cancel() {
-            return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
-        }
-        if !self.is_remote_dir(remote_path).await? {
-            self.download_to_local(remote_path, local_path).await?;
-            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            emit_progress(&progress, remote_path);
+    async fn remote_size(&self, path: &str) -> Result<u64, AppError> {
+        let path = path.to_string();
+        self.with_sftp(move |sftp| Box::pin(async move {
+            let attrs = sftp.metadata(&path).await.map_err(|e| AppError::NotFound(format!("stat {path} failed: {e}")))?;
+            Ok(attrs.size.unwrap_or(0))
+        })).await
+    }
+
+    pub async fn download_recursive(&self, remote_path: &str, local_path: &str, progress: Option<(AppHandle, Uuid)>, should_cancel: Arc<dyn Fn() -> bool + Send + Sync>, file_count: &std::sync::atomic::AtomicU64) -> Result<(), AppError> {
+        if should_cancel() { return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into())); }
+        let entry = self.list_dir(remote_path).await;
+        if let Ok(entries) = entry {
+            tokio::fs::create_dir_all(local_path).await.map_err(AppError::from)?;
+            for child in entries {
+                let child_local = format!("{}/{}", local_path.trim_end_matches('/'), child.name);
+                Box::pin(self.download_recursive(&child.path, &child_local, progress.clone(), should_cancel.clone(), file_count)).await?;
+            }
             return Ok(());
         }
-        tokio::fs::create_dir_all(local_path).await.map_err(AppError::from)?;
-        let entries = self.list_dir(remote_path).await?;
-        for entry in entries {
-            let local_child = format!("{}/{}", local_path.trim_end_matches('/'), entry.name);
-            Box::pin(self.download_recursive(&entry.path, &local_child, progress.clone(), should_cancel, file_count)).await?;
-        }
+        let total_len = self.remote_size(remote_path).await.unwrap_or(0);
+        let offset = match tokio::fs::metadata(local_path).await {
+            Ok(meta) if meta.is_file() && meta.len() <= total_len => meta.len(),
+            _ => 0,
+        };
+        let event_path = remote_path.to_string();
+        let on_progress: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes| {
+            if let Some((app, id)) = &progress { let _ = app.emit("sftp:transfer-progress", serde_json::json!({"requestId": id, "path": event_path, "bytes": bytes, "totalBytes": total_len})); }
+        });
+        self.download_range_to_local(remote_path, local_path, offset, on_progress, should_cancel.clone()).await?;
+        file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
-    /// 递归上传整个本地目录，`upload_recursive` 与 `download_recursive` 对称。
-    pub async fn upload_recursive(
-        &self,
-        local_path: &str,
-        remote_path: &str,
-        progress: Option<(AppHandle, Uuid)>,
-        should_cancel: &(dyn Fn() -> bool + Send + Sync),
-        file_count: &std::sync::atomic::AtomicU64,
-    ) -> Result<(), AppError> {
+    pub async fn upload_recursive(&self, local_path: &str, remote_path: &str, progress: Option<(AppHandle, Uuid)>, should_cancel: Arc<dyn Fn() -> bool + Send + Sync>, file_count: &std::sync::atomic::AtomicU64) -> Result<(), AppError> {
+        if should_cancel() { return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into())); }
+        let meta = tokio::fs::metadata(local_path).await.map_err(AppError::from)?;
+        if meta.is_dir() {
+            self.create_remote_dir(remote_path).await?;
+            let mut dir = tokio::fs::read_dir(local_path).await.map_err(AppError::from)?;
+            while let Some(e) = dir.next_entry().await.map_err(AppError::from)? {
+                let child_local = e.path().to_string_lossy().replace('\\', "/");
+                let child_remote = format!("{}/{}", remote_path.trim_end_matches('/'), e.file_name().to_string_lossy());
+                Box::pin(self.upload_recursive(&child_local, &child_remote, progress.clone(), should_cancel.clone(), file_count)).await?;
+            }
+            return Ok(());
+        }
+        let total_len = tokio::fs::metadata(local_path).await.map(|m| m.len()).unwrap_or(0);
+        let offset = match self.remote_size(remote_path).await {
+            Ok(remote_len) if remote_len <= total_len => remote_len,
+            _ => 0,
+        };
+        let event_path = local_path.to_string();
+        let on_progress: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes| {
+            if let Some((app, id)) = &progress { let _ = app.emit("sftp:transfer-progress", serde_json::json!({"requestId": id, "path": event_path, "bytes": bytes, "totalBytes": total_len})); }
+        });
+        self.upload_range_from_local(local_path, remote_path, offset, on_progress, should_cancel.clone()).await?;
+        file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+}
+
+/// 256KB——够大以避免每个 chunk 的 SFTP 往返开销主导传输速度，也够小以让取消/
+/// 进度汇报的粒度对用户体感够用（几十 MB/s 下大约每几毫秒一个 chunk）。
+const TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
+
+/// `download_range_to_local`/`upload_range_from_local` 共用的分块拷贝循环，
+/// 泛型是因为下载和上传里"谁是 reader 谁是 writer"正好相反（远程 `File` 和
+/// `tokio::fs::File` 都实现了 `AsyncRead`/`AsyncWrite`，各自套一次就行，不用重复
+/// 写两遍循环体）。`on_progress` 收到的是"目前为止写入的总字节数"（含调用方传入的
+/// `start_offset`），不是这次调用新写的字节数——续传场景下前端展示的是整体进度。
+async fn copy_chunked<R, W>(
+    mut reader: R,
+    mut writer: W,
+    start_offset: u64,
+    on_progress: Arc<dyn Fn(u64) + Send + Sync>,
+    should_cancel: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<(), AppError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; TRANSFER_CHUNK_BYTES];
+    let mut total = start_offset;
+    loop {
         if should_cancel() {
             return Err(AppError::Internal(super::TRANSFER_CANCELLED_MESSAGE.into()));
         }
-        let meta = tokio::fs::metadata(local_path).await.map_err(AppError::from)?;
-        if !meta.is_dir() {
-            self.upload_from_local(local_path, remote_path).await?;
-            file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            emit_progress(&progress, local_path);
-            return Ok(());
+        let n = reader.read(&mut buf).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        if n == 0 {
+            break;
         }
-        self.create_remote_dir(remote_path).await?;
-        let mut read_dir = tokio::fs::read_dir(local_path).await.map_err(AppError::from)?;
-        while let Some(entry) = read_dir.next_entry().await.map_err(AppError::from)? {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let child_local = entry.path().to_string_lossy().replace('\\', "/");
-            let child_remote = format!("{}/{}", remote_path.trim_end_matches('/'), name);
-            Box::pin(self.upload_recursive(&child_local, &child_remote, progress.clone(), should_cancel, file_count)).await?;
-        }
-        Ok(())
+        writer.write_all(&buf[..n]).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        total += n as u64;
+        on_progress(total);
     }
+    writer.flush().await.map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
 }
 
 fn mtime_of(attrs: &russh_sftp::protocol::FileAttributes) -> i64 {

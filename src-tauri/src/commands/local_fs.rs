@@ -67,7 +67,10 @@ pub async fn local_is_dir(path: String) -> Result<bool, AppError> {
 
 #[tauri::command]
 pub async fn local_delete(path: String, is_dir: bool) -> Result<(), AppError> {
-    LocalFileOps.delete(&path, is_dir).await
+    tokio::task::spawn_blocking(move || {
+        trash::delete(&path).map_err(|e| AppError::Internal(format!("移入回收站失败: {e}")))
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(())
 }
 
 #[tauri::command]

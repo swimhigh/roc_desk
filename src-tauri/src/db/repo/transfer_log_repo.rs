@@ -21,6 +21,11 @@ pub struct TransferLogInput<'a> {
     pub status: &'a str,
     pub error_message: Option<&'a str>,
     pub started_at: &'a str,
+    /// 断点续传诊断信息（用户 2026-09-07 需求）：这次传输结束时确认写入的字节数 /
+    /// 文件总字节数，`None` 表示调用方没算（旧调用路径、或者这次传输还没跑到能
+    /// 知道大小的地方就失败了）。不参与续传本身的判断，只是给传输历史展示用。
+    pub bytes_transferred: Option<u64>,
+    pub total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +43,8 @@ pub struct TransferLogEntry {
     pub error_message: Option<String>,
     pub started_at: String,
     pub finished_at: String,
+    pub bytes_transferred: Option<u64>,
+    pub total_bytes: Option<u64>,
 }
 
 /// 文件传输日志（用户 2026-09-01 需求："传输日志需要记录，并可在界面上查询追溯"）
@@ -56,8 +63,8 @@ impl TransferLogRepo {
         let result = (|| -> Result<(), AppError> {
             let conn = self.pool.get()?;
             conn.execute(
-                "INSERT INTO transfer_log (id, protocol, direction, profile_id, profile_name, local_path, remote_path, is_dir, file_count, status, error_message, started_at, finished_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT INTO transfer_log (id, protocol, direction, profile_id, profile_name, local_path, remote_path, is_dir, file_count, status, error_message, started_at, finished_at, bytes_transferred, total_bytes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     Uuid::new_v4().to_string(),
                     input.protocol,
@@ -72,6 +79,8 @@ impl TransferLogRepo {
                     input.error_message,
                     input.started_at,
                     Utc::now().to_rfc3339(),
+                    input.bytes_transferred.map(|v| v as i64),
+                    input.total_bytes.map(|v| v as i64),
                 ],
             )?;
             Ok(())
@@ -87,7 +96,7 @@ impl TransferLogRepo {
         let conn = self.pool.get()?;
         let like = search.map(|s| format!("%{s}%"));
         let mut stmt = conn.prepare(
-            "SELECT id, protocol, direction, profile_id, profile_name, local_path, remote_path, is_dir, file_count, status, error_message, started_at, finished_at
+            "SELECT id, protocol, direction, profile_id, profile_name, local_path, remote_path, is_dir, file_count, status, error_message, started_at, finished_at, bytes_transferred, total_bytes
              FROM transfer_log
              WHERE ?1 IS NULL OR local_path LIKE ?1 OR remote_path LIKE ?1 OR profile_name LIKE ?1
              ORDER BY finished_at DESC
@@ -110,6 +119,8 @@ impl TransferLogRepo {
                     error_message: r.get(10)?,
                     started_at: r.get(11)?,
                     finished_at: r.get(12)?,
+                    bytes_transferred: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
+                    total_bytes: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

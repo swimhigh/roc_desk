@@ -49,6 +49,9 @@ fn finish_transfer_log(
         status,
         error_message: error_message.as_deref(),
         started_at,
+        // Agent 传输通道暂未接入断点续传（这次只做 SFTP），这两列留空。
+        bytes_transferred: None,
+        total_bytes: None,
     });
 }
 

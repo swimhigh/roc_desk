@@ -454,6 +454,8 @@ export interface CodingGitCommitResultEvent {
 export interface SftpTransferProgressEvent {
   requestId: string;
   path: string;
+  bytes?: number;
+  totalBytes?: number;
 }
 
 /** 传输历史一条记录（`transfer_log_list`），SFTP/Agent 双栏浏览器共用同一张表。

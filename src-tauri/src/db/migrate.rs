@@ -43,6 +43,10 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0014_transfer_log",
         include_str!("../../migrations/0014_transfer_log.sql"),
     ),
+    (
+        "0016_transfer_log_bytes",
+        include_str!("../../migrations/0016_transfer_log_bytes.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[

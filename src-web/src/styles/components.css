@@ -1338,3 +1338,28 @@
 .multiexec-cell-header svg { width: 13px; height: 13px; flex-shrink: 0; }
 .multiexec-exclude { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-disabled); cursor: pointer; white-space: nowrap; }
 .agent-progress-note svg { width: 14px; height: 14px; margin-top: 2px; flex-shrink: 0; color: var(--accent); }
+
+/* === PDF 预览：工具栏 / 目录大纲 / 文字层（缩放、搜索、大纲跳转）=== */
+.pdf-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; height: 32px; padding: 0 var(--space-2); background: var(--bg-surface); border-bottom: 1px solid var(--border-default); }
+.pdf-toolbar-sep { width: 1px; height: 16px; background: var(--border-default); margin: 0 4px; flex-shrink: 0; }
+.pdf-zoom-label { font-size: 12px; color: var(--text-secondary); min-width: 44px; text-align: center; cursor: pointer; user-select: none; }
+.pdf-zoom-label:hover { color: var(--text-primary); }
+.pdf-search-box { display: flex; align-items: center; gap: 4px; }
+.pdf-search-box input { font-size: 12px; padding: 3px 6px; border-radius: 4px; border: 1px solid var(--border-default); background: var(--bg-base); color: var(--text-primary); width: 150px; }
+.pdf-search-count { font-size: 11px; color: var(--text-secondary); min-width: 36px; text-align: center; flex-shrink: 0; }
+
+.pdf-outline-panel { width: 220px; flex-shrink: 0; overflow: auto; background: var(--bg-surface); border-right: 1px solid var(--border-default); padding: 6px 0; }
+.pdf-outline-list { list-style: none; margin: 0; padding: 0; }
+.pdf-outline-item { display: flex; align-items: center; gap: 2px; padding-right: 8px; height: 24px; font-size: 12.5px; color: var(--text-primary); cursor: pointer; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pdf-outline-item:hover { background: var(--bg-hover); }
+.pdf-outline-toggle { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex-shrink: 0; color: var(--text-secondary); }
+.pdf-outline-title { overflow: hidden; text-overflow: ellipsis; }
+
+.pdf-page-wrapper { position: relative; margin: 0 auto 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+.textLayer { position: absolute; top: 0; left: 0; overflow: clip; line-height: 1; opacity: 1; text-align: initial; -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 1; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor, 1) * var(--min-font-size)); }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer .markedContent { display: contents; }
+.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { font-size: calc(var(--text-scale-factor) * var(--font-height)); }
+.textLayer ::selection { background: rgba(0, 100, 255, 0.28); }
+.textLayer .pdf-search-hit { border-radius: 2px; background: rgba(255, 212, 0, 0.45); }
+.textLayer .pdf-search-hit-active { background: rgba(255, 140, 0, 0.75); }

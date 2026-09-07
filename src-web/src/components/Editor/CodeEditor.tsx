@@ -6,6 +6,7 @@ import { useEditorStore } from "../../stores/editorStore";
 import { ConflictDialog } from "./ConflictDialog";
 import { EncodingMenu } from "./EncodingMenu";
 import { ExcelPreview } from "./ExcelPreview";
+import { ImageViewer } from "./ImageViewer";
 import { PdfPreview } from "./PdfPreview";
 import { UnsupportedBinaryPanel } from "./UnsupportedBinaryPanel";
 import { BinaryInfoPanel } from "./BinaryInfoPanel";
@@ -372,19 +373,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
         </div>
       )}
       {isImage ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            overflow: "auto",
-            background: "var(--bg-base)",
-          }}
-        >
-          <img src={active.content} alt={active.path} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-        </div>
+        <ImageViewer src={active.content} alt={active.path} />
       ) : isPdf ? (
         <PdfPreview base64={active.content.split(",")[1] ?? ""} />
       ) : isWord ? (

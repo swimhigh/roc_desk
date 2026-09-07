@@ -137,7 +137,7 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   const local = useLocalFsStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side; entry: FileEntry } | null>(null);
-  const [transfer, setTransfer] = useState<{ requestId: string; count: number; path: string } | null>(null);
+  const [transfer, setTransfer] = useState<{ requestId: string; count: number; path: string; bytes: number; totalBytes: number } | null>(null);
   const [showLog, setShowLog] = useState(false);
   const [editingSide, setEditingSide] = useState<Side | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -250,12 +250,12 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
   const runTransfer = async (payload: DragPayload, targetSide: Side) => {
     if (payload.side === targetSide) return;
     const requestId = crypto.randomUUID();
-    setTransfer({ requestId, count: 0, path: payload.path });
+    setTransfer({ requestId, count: 0, path: payload.path, bytes: 0, totalBytes: 0 });
     // 粗粒度进度（按完成的文件数，不是字节百分比）：目录传输过程较长时至少能看出
     // "还在动"而不是卡死，见后端 emit_progress 的文档注释。
     const unlisten = await listen<SftpTransferProgressEvent>("sftp:transfer-progress", (event) => {
       if (event.payload.requestId !== requestId) return;
-      setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
+      setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path || s.path, bytes: event.payload.bytes ?? s.bytes, totalBytes: event.payload.totalBytes ?? s.totalBytes } : s));
     });
     try {
       if (payload.side === "remote") {
@@ -290,10 +290,10 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     for (const path of paths) {
       const name = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? path;
       const requestId = crypto.randomUUID();
-      setTransfer({ requestId, count: 0, path });
+      setTransfer({ requestId, count: 0, path, bytes: 0, totalBytes: 0 });
       const unlisten = await listen<SftpTransferProgressEvent>("sftp:transfer-progress", (event) => {
         if (event.payload.requestId !== requestId) return;
-        setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path } : s));
+        setTransfer((s) => (s && s.requestId === requestId ? { ...s, count: s.count + 1, path: event.payload.path || s.path, bytes: event.payload.bytes ?? s.bytes, totalBytes: event.payload.totalBytes ?? s.totalBytes } : s));
       });
       let cancelled = false;
       try {
@@ -374,6 +374,11 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
       items.push({ label: "导入到本地搜索引擎", onClick: () => importToLogSearch(entry.path, "local") });
     }
     items.push({ label: "复制路径", onClick: () => navigator.clipboard.writeText(entry.path), separatorBefore: true });
+    items.push({ label: "删除", danger: true, separatorBefore: true, onClick: async () => {
+      if (!window.confirm(`确认删除“${entry.name}”吗？`)) return;
+      try { await localFsService.deletePath(entry.path, entry.is_dir); await local.navigate(local.cwd); push("success", "已删除"); }
+      catch (e) { push("error", `删除失败：${formatError(e)}`); }
+    }});
     return items;
   };
 
@@ -608,7 +613,7 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
       {transfer && (
         <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--accent)", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-            传输中…{transfer.count > 0 ? ` 已完成 ${transfer.count} 项 · ${transfer.path}` : ""}
+            传输中… {transfer.path} {transfer.totalBytes > 0 ? `· ${formatBytes(transfer.bytes)} / ${formatBytes(transfer.totalBytes)}` : transfer.bytes > 0 ? `· ${formatBytes(transfer.bytes)}` : ""}
           </span>
           <button className="btn ghost sm" style={{ flexShrink: 0 }} onClick={() => transferService.cancel(transfer.requestId)}>
             停止
