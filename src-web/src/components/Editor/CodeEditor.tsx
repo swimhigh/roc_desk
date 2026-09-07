@@ -95,9 +95,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     const root = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
     const parts = normalized.split("/").filter(Boolean);
     const rootParts = root.split("/").filter(Boolean);
-    for (let i = rootParts.length; i < parts.length; i++) {
+    // Expand every ancestor below workspace root so the target entry becomes visible.
+    for (let i = rootParts.length; i < parts.length - 1; i++) {
       const dir = parts.slice(0, i + 1).join("/");
-      if (i === rootParts.length) continue;
       if (!explorer.expanded.has(dir)) await explorer.toggleDir(workspaceId, dir);
     }
     explorer.select(path);
