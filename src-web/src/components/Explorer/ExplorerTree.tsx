@@ -84,6 +84,24 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     loadRoot(workspaceId, rootPath);
   }, [workspaceId, rootPath, loadRoot]);
 
+  useEffect(() => {
+    const handler = async (ev: Event) => {
+      const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
+      if (!path || !path.startsWith(rootPath)) return;
+      const normalized = path.replace(/\\/g, "/");
+      const root = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+      const parts = normalized.split("/").filter(Boolean);
+      const rootParts = root.split("/").filter(Boolean);
+      for (let i = rootParts.length; i < parts.length - 1; i++) {
+        const dir = parts.slice(0, i + 1).join("/");
+        if (!useExplorerStore.getState().expanded.has(dir)) await toggleDir(workspaceId, dir);
+      }
+      select(path);
+    };
+    window.addEventListener("roc:reveal-explorer", handler);
+    return () => window.removeEventListener("roc:reveal-explorer", handler);
+  }, [workspaceId, rootPath, toggleDir, select]);
+
   // 新建文件/文件夹的输入框可能出现在当前滚动区域之外（比如在一个很长的列表
   // 末尾新建），不滚过去用户根本看不到刚弹出来的输入框在哪（2026-09-03 用户
   // 反馈）。`creating` 一旦非空就意味着输入框刚挂载，"nearest" 是刚好够看见就

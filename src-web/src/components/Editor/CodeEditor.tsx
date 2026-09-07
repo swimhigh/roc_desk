@@ -101,6 +101,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
       if (!explorer.expanded.has(dir)) await explorer.toggleDir(workspaceId, dir);
     }
     explorer.select(path);
+    window.dispatchEvent(new CustomEvent("roc:reveal-explorer", { detail: { path } }));
   }, [workspaceId, rootPath]);
   const language = active ? detectLanguage(active.path) : "plaintext";
   const isMarkdown = language === "markdown";
