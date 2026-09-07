@@ -93,6 +93,7 @@ export const HomeDashboard: React.FC = () => {
       <div className="home-dashboard-tagline">
         选一个模块开始工作——每个模块会在独立窗口中打开，可以同时开多个，随时用窗口里的"返回首页"按钮回到这里切换
       </div>
+      <div className="home-dashboard-version">版本 v2.0.0&nbsp; · &nbsp;更新日期 2026-09-07</div>
 
       <div className="home-dashboard-grid">
         <ModuleCard

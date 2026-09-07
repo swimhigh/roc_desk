@@ -22,6 +22,7 @@ import { formatBytes } from "../../utils/format";
 import { inlineHtmlResources } from "../../utils/inlineHtmlResources";
 import { fsService, localFileService } from "../../services/fsService";
 import { FileStack } from "lucide-react";
+import { useExplorerStore } from "../../stores/explorerStore";
 
 interface CodeEditorProps {
   /** 没有打开工作区、只剩游离标签的极简编辑器壳（App.tsx 的"无工作区"三态之一）
@@ -86,6 +87,21 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
   // 这几种都是只读展示，不进 Monaco——编码菜单/搜索/Markdown 预览/保存这些跟文本
   // 编辑相关的工具栏按钮对它们没意义。
   const isPreviewOnly = isImage || isPdf || isWord || isExcel || isExecutable || isJar || isLegacyOffice || isUnsupportedBinary;
+
+  const revealInExplorer = React.useCallback(async (path: string) => {
+    if (!workspaceId) return;
+    const explorer = useExplorerStore.getState();
+    const normalized = path.replace(/\\/g, "/");
+    const root = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+    const parts = normalized.split("/").filter(Boolean);
+    const rootParts = root.split("/").filter(Boolean);
+    for (let i = rootParts.length; i < parts.length; i++) {
+      const dir = parts.slice(0, i + 1).join("/");
+      if (i === rootParts.length) continue;
+      if (!explorer.expanded.has(dir)) await explorer.toggleDir(workspaceId, dir);
+    }
+    explorer.select(path);
+  }, [workspaceId, rootPath]);
   const language = active ? detectLanguage(active.path) : "plaintext";
   const isMarkdown = language === "markdown";
   // HTML 文件预览（2026-08-29 需求）：和 Markdown 预览共用同一套"编辑/预览切换"
@@ -326,7 +342,12 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
           {segments.map((seg, i) => (
             <span key={i}>
               {i > 0 && <span className="sep">›</span>}{" "}
-              <span className={i === segments.length - 1 ? "crumb current" : "crumb"}>{seg}</span>
+              <span className={i === segments.length - 1 ? "crumb current" : "crumb"} onClick={() => {
+                if (i === 0 || !active) return;
+                const segs = active.path.split(/[/\\]/).filter(Boolean);
+                const target = segs.slice(0, i).join(active.path.includes("\\") ? "\\" : "/");
+                void revealInExplorer(target);
+              }}>{seg}</span>
             </span>
           ))}
           {active.dirty && <span className="dirty-dot" style={{ marginLeft: 6 }} title="未保存" />}
