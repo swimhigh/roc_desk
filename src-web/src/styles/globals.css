@@ -16,6 +16,10 @@ html, body {
 }
 
 button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+/* 全局兜底：禁用按钮显示"不可用"光标，而不是继续显示手型——很多工具栏按钮
+ * （如资源管理器的"复制到对面""删除"）只在各自 class 里写了 disabled 时的
+ * 颜色/透明度，没单独补光标，鼠标悬停时看着能点、其实点不动。 */
+button:disabled { cursor: not-allowed; }
 input, select, textarea { font-family: inherit; font-size: var(--text-base); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }

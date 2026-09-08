@@ -309,3 +309,9 @@ pub async fn sftp_rename(state: State<'_, AppState>, profile_id: Uuid, from: Str
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     ops.rename(&from, &to).await
 }
+
+#[tauri::command]
+pub async fn sftp_create_dir(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+    let ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    ops.create_dir(&path).await
+}

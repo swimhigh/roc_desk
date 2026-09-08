@@ -190,6 +190,11 @@ pub async fn agent_rename(state: State<'_, AppState>, profile_id: Uuid, from: St
 }
 
 #[tauri::command]
+pub async fn agent_create_dir(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+    file_ops(&state, profile_id).await?.create_dir(&path).await
+}
+
+#[tauri::command]
 pub async fn agent_download(state: State<'_, AppState>, profile_id: Uuid, remote_path: String, local_path: String) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
     let file_count = std::sync::atomic::AtomicU64::new(0);

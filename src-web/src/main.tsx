@@ -38,6 +38,8 @@ window.addEventListener("unhandledrejection", (event) => {
 // 没有就粘贴到光标处，见那边 `onContextMenu`），会在事件冒泡到这里之前就
 // `preventDefault()`，不再需要放行原生菜单这个特例了——统一交给这里兜底屏蔽。
 window.addEventListener("contextmenu", (event) => {
+  // 本地资源管理器交给 Windows 原生菜单；远程目录仍由组件自己的菜单处理。
+  if ((event.target as HTMLElement).closest('[data-local-explorer="local"]')) return;
   event.preventDefault();
 });
 

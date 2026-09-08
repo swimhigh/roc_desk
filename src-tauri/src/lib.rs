@@ -15,6 +15,7 @@ pub mod rdp;
 pub mod ssh;
 pub mod state;
 pub mod workspace;
+pub mod windows_context_menu;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -332,6 +333,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            windows_context_menu::show_windows_context_menu,
             commands::launcher::get_launch_context,
             commands::launcher::spawn_module_window,
             commands::workspace::workspace_list_recent,
@@ -389,6 +391,7 @@ pub fn run() {
             commands::agent::agent_read_file,
             commands::agent::agent_write_file,
             commands::agent::agent_delete,
+            commands::agent::agent_create_dir,
             commands::agent::agent_rename,
             commands::agent::agent_download,
             commands::agent::agent_upload,
@@ -412,6 +415,7 @@ pub fn run() {
             commands::sftp::sftp_download,
             commands::sftp::sftp_upload,
             commands::sftp::sftp_delete,
+            commands::sftp::sftp_create_dir,
             commands::sftp::sftp_rename,
             commands::sftp::sftp_download_entry,
             commands::sftp::sftp_upload_entry,

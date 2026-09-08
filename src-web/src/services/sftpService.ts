@@ -66,4 +66,7 @@ export const sftpService = {
   rename(profileId: string, from: string, to: string): Promise<void> {
     return invoke("sftp_rename", { profileId, from, to });
   },
+  createDir(profileId: string, path: string): Promise<void> {
+    return invoke("sftp_create_dir", { profileId, path });
+  },
 };

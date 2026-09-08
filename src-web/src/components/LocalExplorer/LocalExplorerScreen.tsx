@@ -32,6 +32,8 @@ import { formatBytes } from "../../utils/format";
 import { classifyPreview, hasNoExtension } from "../../utils/previewFile";
 import { AGENT_ROOT, agentParentPath, isAgentRoot } from "../../utils/windowsPath";
 import type { ConnectionProfile, FileEntry } from "../../types/bindings";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Side = "left" | "right";
 type Protocol = "local" | "ssh" | "agent";
@@ -98,6 +100,20 @@ let tabSeq = 0;
 function makeTabId(): string {
   tabSeq += 1;
   return `tab-${Date.now()}-${tabSeq}`;
+}
+
+/** 双击打开文件夹/文件、点工具栏按钮切目录这类操作期间把鼠标换成等待光标——和
+ * `App.tsx` 拖拽分隔条时 `document.body.style.cursor = "col-resize"` 是同一套
+ * 做法，让"点了但还没反应"这段时间有反馈，跟 Windows 资源管理器打开慢目录/
+ * 启动程序时鼠标变沙漏是一个道理。用 try/finally 兜底，即使操作失败报错也会把
+ * 光标还原，不会卡成永久沙漏。 */
+async function withBusyCursor<T>(fn: () => Promise<T>): Promise<T> {
+  document.body.style.cursor = "wait";
+  try {
+    return await fn();
+  } finally {
+    document.body.style.cursor = "";
+  }
 }
 
 function formatTime(epochSeconds: number | null): string {
@@ -268,6 +284,7 @@ export const LocalExplorerScreen: React.FC = () => {
   const [activeSide, setActiveSide] = useState<Side>("left");
   const [drives, setDrives] = useState<string[]>([]);
   const [connections, setConnections] = useState<ConnectionProfile[]>([]);
+  // Total Commander 风格的应用内右键菜单；entry 为空表示在目录空白处右键。
   const [menu, setMenu] = useState<{ side: Side; tabId: string; entry: FileEntry; x: number; y: number } | null>(null);
   const [addTabMenu, setAddTabMenu] = useState<{ side: Side; x: number; y: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ side: Side; tabId: string; entries: FileEntry[] } | null>(null);
@@ -298,7 +315,7 @@ export const LocalExplorerScreen: React.FC = () => {
   const navigate = async (side: Side, tab: FileTab, path: string) => {
     updateTab(side, tab.id, { loading: true });
     try {
-      const entries = await dispatchListDir({ ...tab, path });
+      const entries = await withBusyCursor(() => dispatchListDir({ ...tab, path }));
       const label = tab.protocol === "local" ? path.split(/[\\/]/).filter(Boolean).pop() || path : tab.label;
       updateTab(side, tab.id, { path, entries, loading: false, selected: [], anchor: null, renaming: null, label });
     } catch (e) {
@@ -401,9 +418,9 @@ export const LocalExplorerScreen: React.FC = () => {
         external = await localFileService.peekIsBinary(entry.path).catch(() => false);
       }
       if (external) {
-        await localFileService.openExternally(entry.path);
+        await withBusyCursor(() => localFileService.openExternally(entry.path));
       } else {
-        await spawnModule("editor", entry.path);
+        await withBusyCursor(() => spawnModule("editor", entry.path));
       }
     } catch (e) {
       push("error", `打开失败：${formatError(e)}`);
@@ -419,7 +436,7 @@ export const LocalExplorerScreen: React.FC = () => {
       void openLocalFile(entry);
       return;
     }
-    void dispatchOpenExternally(tab, entry).catch((e) => push("error", `打开失败：${formatError(e)}`));
+    void withBusyCursor(() => dispatchOpenExternally(tab, entry)).catch((e) => push("error", `打开失败：${formatError(e)}`));
   };
 
   const selectEntry = (side: Side, tab: FileTab, entry: FileEntry, e: React.MouseEvent) => {
@@ -451,6 +468,29 @@ export const LocalExplorerScreen: React.FC = () => {
       if (selected.length > 0) setDeleteTarget({ side, tabId: tab.id, entries: selected });
       return;
     }
+    // Total Commander 常用功能键
+    if (e.key === "F3" || e.key === "F4") {
+      e.preventDefault();
+      const entry = list.find((it) => it.path === tab.anchor);
+      if (entry && !entry.is_dir) void openEntry(side, tab, entry);
+      return;
+    }
+    if (e.key === "F5" || e.key === "F6") {
+      e.preventDefault();
+      void transferSelected(side, e.key === "F5" ? "copy" : "move");
+      return;
+    }
+    if (e.key === "F7") {
+      e.preventDefault();
+      void newFolder(side, tab);
+      return;
+    }
+    if (e.key === "F8") {
+      e.preventDefault();
+      const selected = list.filter((it) => tab.selected.includes(it.path));
+      if (selected.length) setDeleteTarget({ side, tabId: tab.id, entries: selected });
+      return;
+    }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     if (list.length === 0) return;
     e.preventDefault();
@@ -479,7 +519,6 @@ export const LocalExplorerScreen: React.FC = () => {
   };
 
   const newFolder = async (side: Side, tab: FileTab) => {
-    if (tab.protocol !== "local") return;
     const existing = new Set(tab.entries.map((e) => e.name));
     let name = "新建文件夹";
     let i = 1;
@@ -489,7 +528,9 @@ export const LocalExplorerScreen: React.FC = () => {
     }
     const path = joinChildPath(tab, tab.path, name);
     try {
-      await localFsService.createDir(path);
+      if (tab.protocol === "local") await localFsService.createDir(path);
+      else if (tab.protocol === "ssh") await sftpService.createDir(tab.connectionId!, path);
+      else await agentService.createDir(tab.connectionId!, path);
       await refresh(side, tab.id);
       updateTab(side, tab.id, { renaming: path, renameValue: name, selected: [path], anchor: path });
     } catch (e) {
@@ -691,10 +732,24 @@ export const LocalExplorerScreen: React.FC = () => {
         </div>
 
         <div
+          data-local-explorer={tab.protocol === "local" ? "local" : "remote"}
           ref={(el) => { listRefs.current[side] = el; }}
           tabIndex={0}
           onFocus={() => setActiveSide(side)}
           onKeyDown={onListKeyDown(side, tab)}
+          onContextMenu={(e) => {
+            if ((e.target as HTMLElement).closest(".file-row")) return;
+            if (tab.protocol === "local") {
+              e.preventDefault();
+              void invoke("show_windows_context_menu", { path: tab.path }).catch((err) =>
+                push("error", `呼出右键菜单失败：${formatError(err)}`),
+              );
+              return;
+            }
+            e.preventDefault();
+            setActiveSide(side);
+            setMenu({ side, tabId: tab.id, entry: { name: "", path: tab.path, is_dir: true, size: null, modified: null }, x: e.clientX, y: e.clientY });
+          }}
           style={{ flex: 1, overflowY: "auto", outline: isActive ? "1px solid var(--accent)" : "none", outlineOffset: -1 }}
         >
           <div className="file-header">
@@ -715,8 +770,16 @@ export const LocalExplorerScreen: React.FC = () => {
                 onClick={(e) => selectEntry(side, tab, entry, e)}
                 onDoubleClick={() => openEntry(side, tab, entry)}
                 onContextMenu={(e) => {
-                  e.preventDefault();
                   selectEntry(side, tab, entry, e);
+                  // 本地目录使用 Windows 原生右键菜单；远程目录使用应用内菜单。
+                  if (tab.protocol === "local") {
+                    e.preventDefault();
+                    void invoke("show_windows_context_menu", { path: entry.path }).catch((err) =>
+                      push("error", `呼出右键菜单失败：${formatError(err)}`),
+                    );
+                    return;
+                  }
+                  e.preventDefault();
                   setMenu({ side, tabId: tab.id, entry, x: e.clientX, y: e.clientY });
                 }}
               >
@@ -732,8 +795,8 @@ export const LocalExplorerScreen: React.FC = () => {
                     onKeyDown={(e) => {
                       if (e.key === "Enter") void commitRename(side, tab, entry);
                       else if (e.key === "Escape") updateTab(side, tab.id, { renaming: null });
-                    }}
-                  />
+                }}
+              />
                 ) : (
                   <span style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
                     {entry.is_dir ? <Folder className="file-icon is-dir" /> : <FileIcon className="file-icon" />}
@@ -753,14 +816,27 @@ export const LocalExplorerScreen: React.FC = () => {
   const activeSrcTab = activeTab(activeSide);
   const activeSelectedCount = activeSrcTab?.selected.length ?? 0;
 
+  const openActiveSelection = (edit: boolean) => {
+    if (!activeSrcTab) return;
+    const entry = activeSrcTab.entries.find((e) => e.path === activeSrcTab.anchor);
+    if (!entry || entry.is_dir) return;
+    if (edit && activeSrcTab.protocol === "local") void withBusyCursor(() => spawnModule("editor", entry.path));
+    else openEntry(activeSide, activeSrcTab, entry);
+  };
+
   const menuItems: ContextMenuItem[] = (() => {
     if (!menu) return [];
     const tab = getTab(menu.side, menu.tabId);
     if (!tab) return [];
-    return [
+    const items: ContextMenuItem[] = [];
+    if (menu.entry.name) {
+      items.push({ label: menu.entry.is_dir ? "Open" : "Open with default program", onClick: () => openEntry(menu.side, tab, menu.entry!) });
+      items.push({ label: "Rename", onClick: () => startRename(menu.side, tab, menu.entry!), separatorBefore: true });
+    }
+    items.push(
       {
         label: menu.entry.is_dir ? "打开" : tab.protocol === "local" ? "打开（可执行用默认程序，其它用编辑器）" : "用默认程序打开",
-        onClick: () => openEntry(menu.side, tab, menu.entry),
+        onClick: () => menu.entry && openEntry(menu.side, tab, menu.entry),
       },
       { label: "重命名", onClick: () => startRename(menu.side, tab, menu.entry), separatorBefore: true },
       { label: `复制到${menu.side === "left" ? "右" : "左"}侧`, onClick: () => void transferSelected(menu.side, "copy") },
@@ -771,10 +847,19 @@ export const LocalExplorerScreen: React.FC = () => {
         separatorBefore: true,
         onClick: () => {
           const entries = tab.entries.filter((e) => tab.selected.includes(e.path));
-          setDeleteTarget({ side: menu.side, tabId: tab.id, entries: entries.length > 0 ? entries : [menu.entry] });
+          if (entries.length > 0 || menu.entry) setDeleteTarget({ side: menu.side, tabId: tab.id, entries: entries.length > 0 ? entries : [menu.entry!] });
         },
       },
-    ];
+    );
+    // 清理旧菜单中重复的打开/重命名项，并为远程目录提供可用的新建目录操作。
+    if (menu.entry.name) items.splice(2, 2);
+    else items.splice(0, 2);
+    items.splice(Math.max(0, items.length - 1), 0, {
+      label: "新建文件夹 (F7)",
+      separatorBefore: true,
+      onClick: () => void newFolder(menu.side, tab),
+    });
+    return items;
   })();
 
   return (
@@ -798,7 +883,17 @@ export const LocalExplorerScreen: React.FC = () => {
         {renderPane("right")}
       </div>
 
-      <div className="host-stats-bar" style={{ gap: 8 }}>
+      <div className="commander-function-bar">
+        <button onClick={() => openActiveSelection(false)} disabled={activeSelectedCount !== 1}><kbd>F3</kbd> 查看</button>
+        <button onClick={() => openActiveSelection(true)} disabled={activeSelectedCount !== 1}><kbd>F4</kbd> 编辑</button>
+        <button onClick={() => void transferSelected(activeSide, "copy")} disabled={activeSelectedCount === 0}><kbd>F5</kbd> 复制</button>
+        <button onClick={() => void transferSelected(activeSide, "move")} disabled={activeSelectedCount === 0}><kbd>F6</kbd> 移动</button>
+        <button onClick={() => activeSrcTab && void newFolder(activeSide, activeSrcTab)} disabled={!activeSrcTab}><kbd>F7</kbd> 新建</button>
+        <button onClick={() => activeSrcTab && setDeleteTarget({ side: activeSide, tabId: activeSrcTab.id, entries: activeSrcTab.entries.filter((e) => activeSrcTab.selected.includes(e.path)) })} disabled={activeSelectedCount === 0}><kbd>F8</kbd> 删除</button>
+        <button onClick={() => void getCurrentWindow().close()}><kbd>Alt+F4</kbd> 退出</button>
+      </div>
+
+      <div className="host-stats-bar explorer-action-bar" style={{ gap: 8 }}>
         <button
           className="btn ghost sm"
           title={activeSrcTab?.protocol === "local" ? "新建文件夹" : "远程目录暂不支持新建文件夹"}

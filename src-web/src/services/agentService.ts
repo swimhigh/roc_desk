@@ -55,6 +55,9 @@ export const agentService = {
   rename(profileId: string, from: string, to: string): Promise<void> {
     return invoke("agent_rename", { profileId, from, to });
   },
+  createDir(profileId: string, path: string): Promise<void> {
+    return invoke("agent_create_dir", { profileId, path });
+  },
   download(profileId: string, remotePath: string, localPath: string): Promise<void> {
     return invoke("agent_download", { profileId, remotePath, localPath });
   },

@@ -712,6 +712,14 @@
 .context-menu-item.danger:hover { background: rgba(229, 83, 75, 0.1); }
 .context-menu-sep { height: 1px; background: var(--border-subtle); margin: 4px 0; }
 
+/* Total Commander 风格底部功能键栏 */
+.commander-function-bar { display: flex; justify-content: center; height: 34px; border-top: 1px solid var(--border-subtle); background: var(--bg-secondary); }
+.commander-function-bar button { flex: 0 1 150px; min-width: 74px; border: 0; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; }
+.commander-function-bar button:hover:not(:disabled) { background: var(--bg-hover); }
+.commander-function-bar button:disabled { color: var(--text-disabled); cursor: default; }
+.commander-function-bar kbd { font-family: var(--font-mono); margin-right: 6px; color: var(--text-secondary); }
+.explorer-action-bar { display: none; }
+
 /* === Encoding Menu（编辑器状态栏编码选择，参考 VS Code） === */
 .encoding-menu {
   position: absolute;
@@ -995,7 +1003,7 @@
 .explorer-tab.active { background: var(--bg-hover); color: var(--text-primary); }
 .explorer-tab:hover { color: var(--text-primary); }
 .explorer-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.explorer-tab-close { flex-shrink: 0; color: var(--text-disabled); }
+.explorer-tab-close { flex-shrink: 0; color: var(--text-disabled); cursor: pointer; }
 .explorer-tab-close:hover { color: var(--danger); }
 
 /* === 首页仪表盘（HomeDashboard，docs/HOME_MODES_DESIGN.md §3.4） === */

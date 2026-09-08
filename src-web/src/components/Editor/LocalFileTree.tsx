@@ -54,6 +54,30 @@ export const LocalFileTree: React.FC<LocalFileTreeProps> = ({ root, onRootChange
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
+  const reveal = async (path: string) => {
+    const norm = path.replace(/\\/g, "/");
+    const parts = norm.split("/").filter(Boolean);
+    let cur = /^[A-Za-z]:$/.test(parts[0] ?? "") ? `${parts.shift()!}/` : "/";
+    setExpanded((prev) => new Set(prev).add(cur));
+    await loadChildren(cur);
+    for (const part of parts) {
+      cur = `${cur.replace(/\/$/, "")}/${part}`;
+      setExpanded((prev) => new Set(prev).add(cur));
+      await loadChildren(cur);
+    }
+    setSelected(path);
+  };
+
+  useEffect(() => {
+    const h = (e: Event) => {
+      const p = (e as CustomEvent<{ path?: string }>).detail?.path;
+      if (p) void reveal(p);
+    };
+    window.addEventListener("roc:reveal-standalone", h);
+    return () => window.removeEventListener("roc:reveal-standalone", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const pickFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
     if (!selected || Array.isArray(selected)) return;

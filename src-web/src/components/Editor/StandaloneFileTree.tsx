@@ -16,6 +16,7 @@ export const StandaloneFileTree: React.FC<{ onOpenFile?: (path: string) => void 
     const norm = path.replace(/\\/g, "/");
     const parts = norm.split("/").filter(Boolean);
     let cur = /^[A-Za-z]:$/.test(parts[0] ?? "") ? `${parts.shift()!}/` : "/";
+    setExpanded((s) => new Set(s).add(cur));
     await load(cur);
     for (const part of parts) { cur = `${cur.replace(/\/$/, "")}/${part}`; setExpanded((s) => new Set(s).add(cur)); await load(cur); }
     setSelected(path);
