@@ -14,8 +14,8 @@ pub mod pty;
 pub mod rdp;
 pub mod ssh;
 pub mod state;
-pub mod workspace;
 pub mod windows_context_menu;
+pub mod workspace;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 use agent::{AgentCertVerifier, AgentConnectionPool, AgentTrustPromptRegistry};
-use ai::{AiChatClient, AiProviderManager};
+use ai::{AiChatClient, AiProviderManager, AiRuntime};
 use coding::CommandConfirmRegistry;
 use connection::{ConnectionGroupManager, ConnectionManager};
 use credential::KeyringStore;
@@ -32,9 +32,9 @@ use db::repo::agent_known_hosts_repo::AgentKnownHostsRepo;
 use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
 use db::repo::browser_history_repo::BrowserHistoryRepo;
+use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
-use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
@@ -57,7 +57,9 @@ use workspace::WorkspaceManager;
 fn resolve_app_data_dir() -> std::io::Result<std::path::PathBuf> {
     let exe_dir = std::env::current_exe()?
         .parent()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位可执行文件所在目录"))?
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "无法定位可执行文件所在目录")
+        })?
         .to_path_buf();
     let mut app_data_dir = exe_dir.join(".rock_desk");
     let legacy_data_dir = exe_dir.join("data");
@@ -81,7 +83,10 @@ fn resolve_app_data_dir() -> std::io::Result<std::path::PathBuf> {
 /// 任何命令行 flag，纯粹是防御性过滤，避免以后加了 flag 却被这里当成路径打开）。
 /// 调用方（冷启动 / `tauri-plugin-single-instance` 转发）各自负责跳过 argv[0]。
 fn extract_open_paths(args: &[String]) -> Vec<String> {
-    args.iter().filter(|a| !a.starts_with('-')).cloned().collect()
+    args.iter()
+        .filter(|a| !a.starts_with('-'))
+        .cloned()
+        .collect()
 }
 
 /// 从 `--key=value` 形式的参数里取值（`docs/HOME_MODES_DESIGN.md` §3.5 的
@@ -90,7 +95,8 @@ fn extract_open_paths(args: &[String]) -> Vec<String> {
 /// 犯不上为此加依赖。
 fn parse_arg_value(args: &[String], key: &str) -> Option<String> {
     let prefix = format!("--{key}=");
-    args.iter().find_map(|a| a.strip_prefix(prefix.as_str()).map(|v| v.to_string()))
+    args.iter()
+        .find_map(|a| a.strip_prefix(prefix.as_str()).map(|v| v.to_string()))
 }
 
 /// 日志落盘（同时保留 stdout，开发模式下 `cargo tauri dev` 挂着控制台还是照常能看）。
@@ -101,13 +107,18 @@ fn parse_arg_value(args: &[String], key: &str) -> Option<String> {
 fn init_logging(log_dir: &std::path::Path) {
     let _ = std::fs::create_dir_all(log_dir);
     let file_writer = tracing_appender::rolling::daily(log_dir, "roc_desk.log");
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(env_filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::fmt::layer().with_writer(file_writer).with_ansi(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
+        )
         .init();
 }
 
@@ -230,7 +241,11 @@ pub fn run() {
                 let conn = sessions_pool.get()?;
                 db::migrate::run_sessions_migrations(&conn)?;
                 if sessions_db_is_new {
-                    db::migrate::migrate_legacy_data(&db_path, &conn, &["connection_groups", "connections", "known_hosts"])?;
+                    db::migrate::migrate_legacy_data(
+                        &db_path,
+                        &conn,
+                        &["connection_groups", "connections", "known_hosts"],
+                    )?;
                 }
             }
 
@@ -250,9 +265,13 @@ pub fn run() {
             let credential_store: Arc<dyn credential::CredentialStore> = Arc::new(KeyringStore);
 
             let connections_repo = Arc::new(ConnectionsRepo::new(sessions_pool.clone()));
-            let connection_manager = Arc::new(ConnectionManager::new(connections_repo, credential_store.clone()));
+            let connection_manager = Arc::new(ConnectionManager::new(
+                connections_repo,
+                credential_store.clone(),
+            ));
             let connection_groups_repo = Arc::new(ConnectionGroupsRepo::new(sessions_pool.clone()));
-            let connection_group_manager = Arc::new(ConnectionGroupManager::new(connection_groups_repo));
+            let connection_group_manager =
+                Arc::new(ConnectionGroupManager::new(connection_groups_repo));
 
             let known_hosts_repo = Arc::new(KnownHostsRepo::new(sessions_pool.clone()));
             let trust_prompts = TrustPromptRegistry::default();
@@ -271,7 +290,10 @@ pub fn run() {
                 agent_trust_prompts.clone(),
                 app.handle().clone(),
             ));
-            let agent_pool = Arc::new(AgentConnectionPool::new(connection_manager.clone(), agent_cert_verifier));
+            let agent_pool = Arc::new(AgentConnectionPool::new(
+                connection_manager.clone(),
+                agent_cert_verifier,
+            ));
 
             let workspace_repo = Arc::new(WorkspaceRepo::new(workspaces_pool.clone()));
             let workspace_manager = Arc::new(WorkspaceManager::new(
@@ -283,18 +305,28 @@ pub fn run() {
             ));
 
             let log_engine = Arc::new(LogSearchEngine::new(pool.clone()));
-            let log_importer = Arc::new(LogImporter::new(log_engine.clone(), app_data_dir.join("log_cache")));
+            let log_importer = Arc::new(LogImporter::new(
+                log_engine.clone(),
+                app_data_dir.join("log_cache"),
+            ));
 
             let ai_providers_repo = Arc::new(AiProvidersRepo::new(pool.clone()));
-            let ai_provider_manager = Arc::new(AiProviderManager::new(ai_providers_repo, credential_store.clone()));
-            let ai_chat_client = Arc::new(AiChatClient::new());
+            let ai_provider_manager = Arc::new(AiProviderManager::new(
+                ai_providers_repo,
+                credential_store.clone(),
+            ));
+            let ai_runtime = Arc::new(AiRuntime::new());
+            let ai_chat_client = Arc::new(AiChatClient::from_runtime(&ai_runtime));
 
             let audit_log = Arc::new(AuditLogRepo::new(pool.clone()));
             let coding_history = Arc::new(CodingHistoryRepo::new(pool.clone()));
             let browser_history = Arc::new(BrowserHistoryRepo::new(pool.clone()));
             let permission_rules = Arc::new(PermissionRulesRepo::new(pool.clone()));
             let mcp_servers_repo = Arc::new(McpServersRepo::new(pool.clone()));
-            let mcp_manager = Arc::new(McpServerManager::new(mcp_servers_repo, credential_store.clone()));
+            let mcp_manager = Arc::new(McpServerManager::new(
+                mcp_servers_repo,
+                credential_store.clone(),
+            ));
             let transfer_log = Arc::new(TransferLogRepo::new(pool.clone()));
 
             app.manage(AppState {
@@ -312,22 +344,31 @@ pub fn run() {
                 log_engine,
                 log_importer,
                 ai_provider_manager,
+                ai_runtime,
                 ai_chat_client,
                 coding_sessions: Arc::new(RwLock::new(HashMap::new())),
+                coding_changes: Arc::new(RwLock::new(HashMap::new())),
                 command_confirms: CommandConfirmRegistry::default(),
                 audit_log,
                 coding_history,
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
-                cancelled_transfers: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                cancelled_transfers: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashSet::new(),
+                )),
                 transfer_log,
                 permission_rules,
                 question_confirms: coding::QuestionRegistry::default(),
                 mcp_manager,
-                pending_open_paths: std::sync::Mutex::new(extract_open_paths(&std::env::args().skip(1).collect::<Vec<_>>())),
+                pending_open_paths: std::sync::Mutex::new(extract_open_paths(
+                    &std::env::args().skip(1).collect::<Vec<_>>(),
+                )),
                 launch_mode: launch_mode.clone(),
                 launch_open: launch_open.clone(),
+                coding_cancel_tokens: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
             });
 
             Ok(())
@@ -453,6 +494,7 @@ pub fn run() {
             commands::ai::ai_provider_update,
             commands::ai::ai_provider_delete,
             commands::ai::ai_chat_send,
+            commands::ai::ai_chat_cancel,
             commands::coding::coding_start,
             commands::coding::coding_new_session,
             commands::coding::coding_close,
@@ -460,15 +502,19 @@ pub fn run() {
             commands::coding::coding_set_provider,
             commands::coding::coding_set_auto_allow_readonly,
             commands::coding::coding_set_auto_git_commit,
+            commands::coding::coding_set_full_auto,
             commands::coding::coding_send_message,
+            commands::coding::coding_cancel_turn,
             commands::coding::coding_optimize_prompt,
             commands::coding::coding_accept_change,
             commands::coding::coding_reject_change,
             commands::coding::coding_undo_change,
             commands::coding::coding_redo_change,
+            commands::coding::coding_revert_turn,
             commands::coding::coding_confirm_command,
             commands::coding::coding_history_list,
             commands::coding::coding_history_get,
+            commands::coding::coding_history_resume,
             commands::coding::coding_history_save,
             commands::coding::coding_history_rename,
             commands::coding::coding_history_delete,

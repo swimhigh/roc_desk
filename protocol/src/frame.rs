@@ -45,7 +45,10 @@ impl FrameType {
             0x02 => Ok(FrameType::DataChunk),
             0x03 => Ok(FrameType::StreamEnd),
             0x04 => Ok(FrameType::Error),
-            other => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown frame type: {other}"))),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown frame type: {other}"),
+            )),
         }
     }
 }
@@ -64,7 +67,10 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     payload: &[u8],
 ) -> io::Result<()> {
     if payload.len() as u64 > MAX_FRAME_PAYLOAD_LEN as u64 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame payload exceeds MAX_FRAME_PAYLOAD_LEN"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame payload exceeds MAX_FRAME_PAYLOAD_LEN",
+        ));
     }
     let mut header = [0u8; FRAME_HEADER_LEN];
     header[0..4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -81,11 +87,18 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Frame> {
     r.read_exact(&mut header).await?;
     let len = u32::from_be_bytes(header[0..4].try_into().unwrap());
     if len > MAX_FRAME_PAYLOAD_LEN {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame payload exceeds MAX_FRAME_PAYLOAD_LEN"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame payload exceeds MAX_FRAME_PAYLOAD_LEN",
+        ));
     }
     let stream_id = u32::from_be_bytes(header[4..8].try_into().unwrap());
     let frame_type = FrameType::from_u8(header[8])?;
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload).await?;
-    Ok(Frame { stream_id, frame_type, payload })
+    Ok(Frame {
+        stream_id,
+        frame_type,
+        payload,
+    })
 }

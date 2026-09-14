@@ -38,8 +38,16 @@ pub struct KnownHostsVerifier {
 }
 
 impl KnownHostsVerifier {
-    pub fn new(repo: Arc<KnownHostsRepo>, prompts: TrustPromptRegistry, app_handle: AppHandle) -> Self {
-        Self { repo, prompts, app_handle }
+    pub fn new(
+        repo: Arc<KnownHostsRepo>,
+        prompts: TrustPromptRegistry,
+        app_handle: AppHandle,
+    ) -> Self {
+        Self {
+            repo,
+            prompts,
+            app_handle,
+        }
     }
 
     pub async fn verify(&self, host: &str, port: u16, fingerprint: &str) -> Result<bool, AppError> {
@@ -86,6 +94,7 @@ impl KnownHostsVerifier {
             )
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        rx.await.map_err(|_| AppError::Internal("host key prompt cancelled".into()))
+        rx.await
+            .map_err(|_| AppError::Internal("host key prompt cancelled".into()))
     }
 }

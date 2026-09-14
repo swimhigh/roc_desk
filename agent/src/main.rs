@@ -17,7 +17,11 @@ use clap::{Parser, Subcommand};
 use config::AgentConfig;
 
 #[derive(Parser)]
-#[command(name = "roc_desk_agent", version, about = "roc_desk 远程 Windows Agent（AGENT_DESIGN.md）")]
+#[command(
+    name = "roc_desk_agent",
+    version,
+    about = "roc_desk 远程 Windows Agent（AGENT_DESIGN.md）"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -69,11 +73,16 @@ fn init_logging() {
     let log_dir = config::exe_dir().join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let file_writer = tracing_appender::rolling::daily(&log_dir, "roc_desk_agent.log");
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     use tracing_subscriber::prelude::*;
     let _ = tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().with_writer(file_writer).with_ansi(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
+        )
         .try_init();
 }
 
@@ -100,7 +109,9 @@ pub async fn run_agent() -> Result<(), String> {
     let config = AgentConfig::load_or_default(&config::config_path()).map_err(|e| e.to_string())?;
     let cert = cert::load_or_generate(&config::exe_dir()).map_err(|e| e.to_string())?;
     let audit = Arc::new(audit::AuditLog::new(&config::exe_dir()));
-    server::run(config, cert, audit).await.map_err(|e| e.to_string())
+    server::run(config, cert, audit)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn cmd_run() {
@@ -112,13 +123,19 @@ fn cmd_run() {
     if !path.exists() {
         let _ = AgentConfig::default().save(&path);
     }
-    if AgentConfig::load_or_default(&path).map(|c| c.security.token_hash.is_none()).unwrap_or(true) {
+    if AgentConfig::load_or_default(&path)
+        .map(|c| c.security.token_hash.is_none())
+        .unwrap_or(true)
+    {
         println!("尚未配对：请先执行 `roc_desk_agent.exe pair` 生成配对令牌，再重新运行 `run`。");
         return;
     }
 
     println!("roc_desk_agent 正在前台运行，Ctrl+C 退出。日志同时写入 logs\\ 子目录。");
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("创建异步运行时失败: {e}");
@@ -159,13 +176,31 @@ fn cmd_status() {
     let path = config::config_path();
     let cfg = AgentConfig::load_or_default(&path).unwrap_or_default();
     println!("监听地址: {}:{}", cfg.server.listen_addr, cfg.server.port);
-    println!("已配对: {}", if cfg.security.token_hash.is_some() { "是" } else { "否" });
+    println!(
+        "已配对: {}",
+        if cfg.security.token_hash.is_some() {
+            "是"
+        } else {
+            "否"
+        }
+    );
     println!(
         "路径访问范围: {}",
-        if cfg.security.allowed_roots.is_empty() { "不限制（整机）".to_string() } else { cfg.security.allowed_roots.join(", ") }
+        if cfg.security.allowed_roots.is_empty() {
+            "不限制（整机）".to_string()
+        } else {
+            cfg.security.allowed_roots.join(", ")
+        }
     );
     let cert_exists = config::exe_dir().join("cert.pem").exists();
-    println!("TLS 证书: {}", if cert_exists { "已生成" } else { "尚未生成（首次 run 时自动生成）" });
+    println!(
+        "TLS 证书: {}",
+        if cert_exists {
+            "已生成"
+        } else {
+            "尚未生成（首次 run 时自动生成）"
+        }
+    );
 }
 
 #[cfg(windows)]

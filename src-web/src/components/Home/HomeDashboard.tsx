@@ -58,7 +58,9 @@ export const HomeDashboard: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const [w, c] = await Promise.all([workspaceService.listRecent(6), connectionService.list()]);
+        // 工作区卡片本身已有固定高度的滚动列表；必须取足够多的记录，不能只取
+        // 前 6 条，否则工作区多时后面的记录根本没有机会通过滚动看到。
+        const [w, c] = await Promise.all([workspaceService.listRecent(), connectionService.list()]);
         if (!cancelled) {
           setWorkspaces(w);
           setConnections(c.slice(0, 6));

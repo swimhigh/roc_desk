@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X } from "lucide-react";
+import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X, Square } from "lucide-react";
 import { useCodingStore } from "../../stores/codingStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
+import { useEditorStore } from "../../stores/editorStore";
+import { detectLanguage } from "../../utils/language";
 import { SegmentedControl } from "../shared/SegmentedControl";
 import { ToggleSwitch } from "../shared/ToggleSwitch";
 import { TargetBadge } from "./TargetBadge";
 import { RemoteCapabilityBadge } from "./RemoteCapabilityBadge";
-import { ToolCallProgress } from "./ToolCallProgress";
+import { ToolCallProgress, toolLabel } from "./ToolCallProgress";
 import { FileChangeCard, type DiffLine as CardDiffLine } from "./FileChangeCard";
 import { CommandConfirmDialog, BlockedCommandMessage } from "./CommandConfirmDialog";
 import { QuestionDialog } from "./QuestionDialog";
@@ -15,7 +17,7 @@ import { McpServerManagerDialog } from "./McpServerManagerDialog";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { ProviderManagerDialog, hasProviderDraft } from "../AiChat/ProviderManagerDialog";
 import { CodingHistoryDialog } from "./CodingHistoryDialog";
-import type { CodingTarget, TodoStatus } from "../../types/bindings";
+import type { CodingTarget, FileChange, TodoStatus } from "../../types/bindings";
 
 function todoIcon(status: TodoStatus) {
   if (status === "completed") return <CircleCheck style={{ width: 13, height: 13, color: "var(--accent)" }} />;
@@ -77,7 +79,9 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     setProvider,
     setAutoAllowReadonly,
     setAutoGitCommit,
+    setFullAuto,
     sendMessage,
+    cancelTurn,
     attachments,
     addAttachments,
     removeAttachment,
@@ -86,6 +90,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     acceptChange,
     rejectChange,
     undoChange,
+    revertTurn,
     resolveConfirm,
     resolveConfirmAndRemember,
     answerQuestion,
@@ -108,6 +113,18 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showMcpServers, setShowMcpServers] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 用户反馈"看不出来 AI 还有没有在运行"——工具调用之间（模型正在琢磨下一步、
+  // 还没吐出新的事件）时间线上什么新条目都不会出现，界面看起来和"已经彻底
+  // 结束"一模一样。这里只是个每 500ms 触发一次重渲染的计时器（`sending` 为
+  // true 时才跑），让下面固定在消息列表底部、composer 上方的状态条能持续
+  // 更新——不依赖任何新的后端事件，纯前端"心跳"。
+  const [liveTick, setLiveTick] = useState(0);
+  useEffect(() => {
+    if (!sending) return;
+    const timer = setInterval(() => setLiveTick((t) => t + 1), 500);
+    return () => clearInterval(timer);
+  }, [sending]);
 
   const restoredWorkspaceRef = useRef<string | null>(null);
 
@@ -150,6 +167,27 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [timeline]);
 
+  // 按 `turn_id`（同一条用户消息触发的一轮工具调用）给 FileChangeCard 分组——
+  // 记下每一轮最后一张卡片在时间线里的 id，只在那张卡片后面挂一次"全部应用/
+  // 全部拒绝/撤销本轮"的批量操作条，而不是每张卡片都重复一份（参考 Cursor/
+  // Windsurf 按对话轮次做批量操作，但这里不依赖 git，见项目内部设计讨论）。
+  const turnStats = React.useMemo(() => {
+    const stats = new Map<string, { changeIds: string[]; lastEntryId: string }>();
+    for (const entry of timeline) {
+      if (entry.kind !== "change") continue;
+      const change = changesById[entry.changeId];
+      if (!change) continue;
+      const existing = stats.get(change.turn_id);
+      if (existing) {
+        existing.changeIds.push(change.id);
+        existing.lastEntryId = entry.id;
+      } else {
+        stats.set(change.turn_id, { changeIds: [change.id], lastEntryId: entry.id });
+      }
+    }
+    return stats;
+  }, [timeline, changesById]);
+
   const handleStart = () => {
     if (!selectedProviderId) return;
     start(workspaceId, selectedProviderId);
@@ -171,6 +209,22 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     if (!files || files.length === 0) return;
     addAttachments(Array.from(files));
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  /** 输入框直接 Ctrl+V 粘贴图片（截图工具/浏览器"复制图片"都是这个路径）走和
+   * 点回形针选文件同一套 `addAttachments`。只在剪贴板里确实带文件时才
+   * `preventDefault()`——普通文本粘贴不会有 `kind === "file"` 的条目，不拦截，
+   * 交给浏览器正常处理，两种粘贴不冲突。 */
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    const files = Array.from(items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    e.preventDefault();
+    addAttachments(files);
   };
 
   if (!sessionInfo) {
@@ -196,6 +250,13 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             <button className="btn primary sm" onClick={handleStart}>
               开始 AI 会话
             </button>
+            {/* `restoreOrStart`（打开工作区时自动触发）失败时只会把 `error` 塞进
+                store，不会抛异常给调用方——之前这个分支完全不渲染 `error`，
+                自动启动失败时界面表现和"从来没启动过、等你手动点"一模一样，
+                用户完全看不出后端到底出没出错、出的什么错（2026-09 用户反馈：
+                远程工作区打开后一直停在这个界面，实际是自动启动超时失败了，
+                但没有任何提示）。 */}
+            {error && <div style={{ padding: "0 12px", fontSize: 12, color: "var(--danger)", textAlign: "center", maxWidth: 320 }}>{error}</div>}
           </>
         )}
       </div>
@@ -206,6 +267,19 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const activeProvider = providers.find((provider) => provider.id === sessionInfo.provider_id);
   const activeThinkingId = [...timeline].reverse().find((entry) => entry.kind === "note")?.id;
   const hasDraft = providerDraftPending || hasProviderDraft();
+
+  // 固定在消息列表底部、composer 上方（不随滚动消失）的"AI 是否还在运行"状态条——
+  // 和时间线里内嵌的 ToolCallProgress/ThinkingBlock 不一样，这条不会被滚动
+  // 滚出视野，也覆盖"两个事件之间的空档期"（模型正在生成下一段回复但还没有
+  // 任何新事件推过来，这时候时间线看起来和"已经彻底结束"完全一样）。
+  const lastEntry = timeline[timeline.length - 1];
+  const liveStatusText = !sending
+    ? null
+    : lastEntry?.kind === "tool" && lastEntry.running
+    ? `正在执行 ${toolLabel(lastEntry.tool)}${lastEntry.detail ? ` · ${lastEntry.detail}` : ""}`
+    : lastEntry?.kind === "note"
+    ? "AI 正在思考…"
+    : "AI 正在处理…";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -287,6 +361,13 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
               />
               自动 Git 提交
             </label>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}
+              title="开启后 AI 的文件改动直接写入磁盘，命令与 MCP 工具不再逐项确认；已弹出的当前会话命令确认也会立即放行。高危命令和显式拒绝的权限规则仍会生效。"
+            >
+              <ToggleSwitch checked={sessionInfo.full_auto} onChange={setFullAuto} label="完全授权模式" />
+              完全授权模式
+            </label>
           </>
         )}
       </div>
@@ -365,7 +446,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
                 <ToolCallProgress
                   key={entry.id}
                   tool={entry.tool}
-                  elapsedMs={0}
+                  elapsedMs={entry.running && entry.startedAt ? Date.now() - entry.startedAt : 0}
                   done={!entry.running}
                   detail={entry.detail}
                   onOpenFile={hasFileTarget && entry.detail && onOpenFile ? () => onOpenFile(entry.detail!) : undefined}
@@ -398,22 +479,72 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             if (!change) return null;
             const diff: CardDiffLine[] = change.diff.map((l) => ({ sign: l.sign, content: l.content }));
             const status = change.status === "undone" ? "rejected" : change.status;
+            const stat = turnStats.get(change.turn_id);
+            const turnChanges = (stat?.changeIds ?? []).map((id) => changesById[id]).filter((c): c is FileChange => Boolean(c));
+            const pendingInTurn = turnChanges.filter((c) => c.status === "pending");
+            const appliedInTurn = turnChanges.filter((c) => c.status === "applied");
+            // 单文件改动同样是一轮完整的 AI 操作，必须提供“撤销本轮”入口；之前
+            // 误加了 `turnChanges.length > 1`，导致最常见的单文件修改只能看到卡片
+            // 级操作，无法按轮回退，也让端到端“改功能后回退”流程无法完成。
+            const showBatchActions = !viewingHistoryId && stat?.lastEntryId === entry.id
+              && (pendingInTurn.length > 0 || appliedInTurn.length > 0);
             return (
-              <FileChangeCard
-                key={entry.id}
-                path={change.path}
-                status={status}
-                diff={diff}
-                onViewDiff={() => onOpenFile?.(change.path)}
-                onAccept={viewingHistoryId ? undefined : () => acceptChange(change.id)}
-                onReject={viewingHistoryId ? undefined : () => rejectChange(change.id)}
-                onUndo={viewingHistoryId ? undefined : () => undoChange(change.id)}
-              />
+              <React.Fragment key={entry.id}>
+                <FileChangeCard
+                  path={change.path}
+                  status={status}
+                  diff={diff}
+                  onViewDiff={() =>
+                    useEditorStore.getState().openDiffContent(
+                      `${change.path}（改动前）`,
+                      change.old_content,
+                      `${change.path}（改动后）`,
+                      change.new_content,
+                      detectLanguage(change.path),
+                    )
+                  }
+                  onAccept={viewingHistoryId ? undefined : () => acceptChange(change.id)}
+                  onReject={viewingHistoryId ? undefined : () => rejectChange(change.id)}
+                  onUndo={viewingHistoryId ? undefined : () => undoChange(change.id)}
+                />
+                {showBatchActions && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {pendingInTurn.length > 0 && (
+                      <>
+                        <button
+                          className="btn ghost sm"
+                          onClick={() => { void (async () => { for (const c of pendingInTurn) await acceptChange(c.id); })(); }}
+                        >
+                          全部应用（{pendingInTurn.length}）
+                        </button>
+                        <button
+                          className="btn ghost sm"
+                          onClick={() => { void (async () => { for (const c of pendingInTurn) await rejectChange(c.id); })(); }}
+                        >
+                          全部拒绝（{pendingInTurn.length}）
+                        </button>
+                      </>
+                    )}
+                    {appliedInTurn.length > 0 && (
+                      <button className="btn ghost sm" onClick={() => void revertTurn(change.turn_id)}>
+                        撤销本轮全部改动（{appliedInTurn.length}）
+                      </button>
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
             );
           })
         )}
       </div>
       </div>
+
+      {liveStatusText && (
+        <div className="agent-live-status" key={liveTick}>
+          <span className="agent-live-dot" />
+          {liveStatusText}
+        </div>
+      )}
 
       {error && <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}
 
@@ -440,7 +571,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           className="agent-composer-input"
           rows={3}
           disabled={Boolean(viewingHistoryId)}
-          placeholder="提问或描述任务，Enter 发送，Shift+Enter 换行"
+          placeholder="提问或描述任务，Enter 发送，Shift+Enter 换行，可直接粘贴图片"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -449,6 +580,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
               handleSend();
             }
           }}
+          onPaste={handlePaste}
         />
         <div className="agent-composer-footer">
           <div className="agent-model-meta" title={activeProvider?.api_base}>
@@ -482,14 +614,24 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           >
             <Wand2 className={optimizing ? "agent-icon-spin" : undefined} />
           </button>
-          <button
-            className="agent-send-btn"
-            onClick={handleSend}
-            disabled={sending || Boolean(viewingHistoryId) || (!input.trim() && attachments.length === 0)}
-            title="发送"
-          >
-            <Send />
-          </button>
+          {sending ? (
+            <button
+              className="agent-send-btn agent-stop-btn"
+              onClick={cancelTurn}
+              title="停止：中断当前正在进行的对话轮次"
+            >
+              <Square fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              className="agent-send-btn"
+              onClick={handleSend}
+              disabled={Boolean(viewingHistoryId) || (!input.trim() && attachments.length === 0)}
+              title="发送"
+            >
+              <Send />
+            </button>
+          )}
         </div>
       </div>
 

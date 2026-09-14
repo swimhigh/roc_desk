@@ -72,7 +72,11 @@ pub struct McpServerManager {
 
 impl McpServerManager {
     pub fn new(repo: Arc<McpServersRepo>, credential_store: Arc<dyn CredentialStore>) -> Self {
-        Self { repo, credential_store, clients: RwLock::new(HashMap::new()) }
+        Self {
+            repo,
+            credential_store,
+            clients: RwLock::new(HashMap::new()),
+        }
     }
 
     pub async fn create(&self, input: McpServerInput) -> Result<McpServer, AppError> {
@@ -103,10 +107,16 @@ impl McpServerManager {
     }
 
     pub async fn update(&self, id: Uuid, input: McpServerInput) -> Result<McpServer, AppError> {
-        let existing = self.repo.get(id)?.ok_or_else(|| AppError::NotFound(format!("mcp server not found: {id}")))?;
+        let existing = self
+            .repo
+            .get(id)?
+            .ok_or_else(|| AppError::NotFound(format!("mcp server not found: {id}")))?;
         let auth_token_ref = match &input.auth_token {
             Some(token) if !token.is_empty() => {
-                let key = existing.auth_token_ref.clone().unwrap_or_else(|| credential_key(id));
+                let key = existing
+                    .auth_token_ref
+                    .clone()
+                    .unwrap_or_else(|| credential_key(id));
                 self.credential_store.set(&key, token).await?;
                 Some(key)
             }
@@ -160,7 +170,10 @@ impl McpServerManager {
         if let Some(client) = self.clients.read().await.get(&server_id).cloned() {
             return Ok(client);
         }
-        let server = self.repo.get(server_id)?.ok_or_else(|| AppError::NotFound(format!("mcp server not found: {server_id}")))?;
+        let server = self
+            .repo
+            .get(server_id)?
+            .ok_or_else(|| AppError::NotFound(format!("mcp server not found: {server_id}")))?;
         let auth_token = match &server.auth_token_ref {
             Some(key) => self.credential_store.get(key).await?,
             None => None,

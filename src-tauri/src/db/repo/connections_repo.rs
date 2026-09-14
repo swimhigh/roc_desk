@@ -110,14 +110,18 @@ impl ConnectionsRepo {
             stmt.query_map(params![gid.to_string()], Self::map_row)?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map([], Self::map_row)?.collect::<Result<Vec<_>, _>>()?
+            stmt.query_map([], Self::map_row)?
+                .collect::<Result<Vec<_>, _>>()?
         };
         Ok(rows)
     }
 
     pub fn delete(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM connections WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM connections WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 

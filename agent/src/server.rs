@@ -14,11 +14,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::pki_types::PrivateKeyDer;
 use roc_desk_protocol::{
-    decode_json, encode_json, read_frame, write_frame, ErrorCode, Frame, FrameType, Request, Response, ResponseBody, DATA_CHUNK_SIZE,
-    PROTOCOL_VERSION,
+    decode_json, encode_json, read_frame, write_frame, ErrorCode, Frame, FrameType, Request,
+    Response, ResponseBody, DATA_CHUNK_SIZE, PROTOCOL_VERSION,
 };
+use rustls::pki_types::PrivateKeyDer;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -40,7 +40,11 @@ pub struct ServerContext {
 type OutMsg = (u32, FrameType, Vec<u8>);
 type OutSender = mpsc::UnboundedSender<OutMsg>;
 
-pub async fn run(config: AgentConfig, cert: AgentCert, audit: Arc<AuditLog>) -> std::io::Result<()> {
+pub async fn run(
+    config: AgentConfig,
+    cert: AgentCert,
+    audit: Arc<AuditLog>,
+) -> std::io::Result<()> {
     let addr = format!("{}:{}", config.server.listen_addr, config.server.port);
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!(%addr, fingerprint = %cert.fingerprint_sha256, "roc_desk_agent listening");
@@ -58,7 +62,9 @@ pub async fn run(config: AgentConfig, cert: AgentCert, audit: Arc<AuditLog>) -> 
         audit,
         hostname: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "roc_desk_agent".to_string()),
     });
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.limits.max_concurrent_connections.max(1)));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.limits.max_concurrent_connections.max(1),
+    ));
 
     loop {
         // 单次 accept 失败（例如瞬时的文件描述符耗尽）不该拖垮整个监听循环——
@@ -92,7 +98,11 @@ pub async fn run(config: AgentConfig, cert: AgentCert, audit: Arc<AuditLog>) -> 
     }
 }
 
-async fn handle_connection<S>(stream: S, peer_addr: SocketAddr, ctx: Arc<ServerContext>) -> Result<(), String>
+async fn handle_connection<S>(
+    stream: S,
+    peer_addr: SocketAddr,
+    ctx: Arc<ServerContext>,
+) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -101,7 +111,10 @@ where
 
     let writer_task = tokio::spawn(async move {
         while let Some((stream_id, frame_type, payload)) = out_rx.recv().await {
-            if write_frame(&mut writer, stream_id, frame_type, &payload).await.is_err() {
+            if write_frame(&mut writer, stream_id, frame_type, &payload)
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -139,17 +152,37 @@ where
         match frame.frame_type {
             FrameType::Control => {
                 let Ok(request) = decode_json::<Request>(&frame.payload) else {
-                    send_error(&out_tx, frame.stream_id, ErrorCode::InvalidArgument, "无法解析请求".into());
+                    send_error(
+                        &out_tx,
+                        frame.stream_id,
+                        ErrorCode::InvalidArgument,
+                        "无法解析请求".into(),
+                    );
                     continue;
                 };
                 match request {
                     Request::Handshake { .. } => {
-                        send_error(&out_tx, frame.stream_id, ErrorCode::InvalidArgument, "已完成握手，不能重复握手".into());
+                        send_error(
+                            &out_tx,
+                            frame.stream_id,
+                            ErrorCode::InvalidArgument,
+                            "已完成握手，不能重复握手".into(),
+                        );
                     }
-                    Request::WriteFile { path, expected_mtime } => {
+                    Request::WriteFile {
+                        path,
+                        expected_mtime,
+                    } => {
                         let (tx, rx) = mpsc::channel::<Frame>(8);
                         stream_waiters.insert(frame.stream_id, tx);
-                        spawn_write_file(path, expected_mtime, frame.stream_id, rx, out_tx.clone(), ctx.clone());
+                        spawn_write_file(
+                            path,
+                            expected_mtime,
+                            frame.stream_id,
+                            rx,
+                            out_tx.clone(),
+                            ctx.clone(),
+                        );
                     }
                     Request::OpenShell { cols, rows, cwd } => {
                         let (tx, rx) = mpsc::channel::<Frame>(32);
@@ -162,7 +195,10 @@ where
             // 到这里说明 stream_id 没有注册等待者——这两类帧只应该跟在一个已经打开的
             // 流后面出现，独立出现就是协议时序错误（客户端 bug 或恶意流量），直接丢弃。
             FrameType::DataChunk | FrameType::StreamEnd => {
-                tracing::debug!(stream_id = frame.stream_id, "收到没有对应等待者的数据帧，丢弃");
+                tracing::debug!(
+                    stream_id = frame.stream_id,
+                    "收到没有对应等待者的数据帧，丢弃"
+                );
             }
             FrameType::Error => {
                 tracing::debug!(stream_id = frame.stream_id, "收到客户端 Error 帧");
@@ -175,15 +211,31 @@ where
     Ok(())
 }
 
-async fn do_handshake<R: AsyncRead + Unpin>(reader: &mut R, out_tx: &OutSender, peer_addr: SocketAddr, ctx: &ServerContext) -> Result<(), String> {
+async fn do_handshake<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    out_tx: &OutSender,
+    peer_addr: SocketAddr,
+    ctx: &ServerContext,
+) -> Result<(), String> {
     let frame = tokio::time::timeout(Duration::from_secs(10), read_frame(reader))
         .await
         .map_err(|_| "等待握手超时".to_string())?
         .map_err(|e| format!("读取握手帧失败: {e}"))?;
 
-    let request = decode_json::<Request>(&frame.payload).map_err(|e| format!("握手帧不是合法请求: {e}"))?;
-    let Request::Handshake { token, protocol_version, client_version } = request else {
-        send_error(out_tx, frame.stream_id, ErrorCode::AuthFailed, "第一个请求必须是 Handshake".into());
+    let request =
+        decode_json::<Request>(&frame.payload).map_err(|e| format!("握手帧不是合法请求: {e}"))?;
+    let Request::Handshake {
+        token,
+        protocol_version,
+        client_version,
+    } = request
+    else {
+        send_error(
+            out_tx,
+            frame.stream_id,
+            ErrorCode::AuthFailed,
+            "第一个请求必须是 Handshake".into(),
+        );
         return Err("握手顺序错误".to_string());
     };
 
@@ -198,18 +250,47 @@ async fn do_handshake<R: AsyncRead + Unpin>(reader: &mut R, out_tx: &OutSender, 
     }
 
     let Some(expected_hash) = &ctx.token_hash else {
-        send_error(out_tx, frame.stream_id, ErrorCode::AuthFailed, "Agent 尚未配对，请先在服务器上执行 pair 子命令".into());
+        send_error(
+            out_tx,
+            frame.stream_id,
+            ErrorCode::AuthFailed,
+            "Agent 尚未配对，请先在服务器上执行 pair 子命令".into(),
+        );
         return Err("未配对".to_string());
     };
     if !auth::verify_token(&token, expected_hash) {
-        ctx.audit.record("handshake_fail", &peer_addr.to_string(), &format!("client_version={client_version}")).await;
-        send_error(out_tx, frame.stream_id, ErrorCode::AuthFailed, "配对令牌不正确".into());
+        ctx.audit
+            .record(
+                "handshake_fail",
+                &peer_addr.to_string(),
+                &format!("client_version={client_version}"),
+            )
+            .await;
+        send_error(
+            out_tx,
+            frame.stream_id,
+            ErrorCode::AuthFailed,
+            "配对令牌不正确".into(),
+        );
         return Err("令牌校验失败".to_string());
     }
 
-    ctx.audit.record("handshake_ok", &peer_addr.to_string(), &format!("client_version={client_version}")).await;
-    let body = ResponseBody::Handshake { server_version: env!("CARGO_PKG_VERSION").to_string(), hostname: ctx.hostname.clone() };
-    let _ = out_tx.send((frame.stream_id, FrameType::Control, encode_json(&Response::Ok(body)).unwrap_or_default()));
+    ctx.audit
+        .record(
+            "handshake_ok",
+            &peer_addr.to_string(),
+            &format!("client_version={client_version}"),
+        )
+        .await;
+    let body = ResponseBody::Handshake {
+        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        hostname: ctx.hostname.clone(),
+    };
+    let _ = out_tx.send((
+        frame.stream_id,
+        FrameType::Control,
+        encode_json(&Response::Ok(body)).unwrap_or_default(),
+    ));
     Ok(())
 }
 
@@ -232,7 +313,10 @@ fn guarded_path(raw: &str, ctx: &ServerContext) -> Result<PathBuf, ErrorCode> {
 fn spawn_request(request: Request, stream_id: u32, out_tx: OutSender, ctx: Arc<ServerContext>) {
     tokio::spawn(async move {
         match request {
-            Request::Handshake { .. } | Request::WriteFile { .. } | Request::OpenShell { .. } | Request::ShellResize { .. } => {
+            Request::Handshake { .. }
+            | Request::WriteFile { .. }
+            | Request::OpenShell { .. }
+            | Request::ShellResize { .. } => {
                 unreachable!("由调用方在 spawn 之前处理")
             }
             Request::ListDir { path } => match guarded_path(&path, &ctx) {
@@ -240,32 +324,56 @@ fn spawn_request(request: Request, stream_id: u32, out_tx: OutSender, ctx: Arc<S
                     Ok(entries) => send_ok(&out_tx, stream_id, ResponseBody::Entries(entries)),
                     Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                 },
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {path}"),
+                ),
             },
             Request::Stat { path } => match guarded_path(&path, &ctx) {
                 Ok(p) => match handlers::fs::stat(&p).await {
-                    Ok((size, mtime, _is_dir)) => send_ok(&out_tx, stream_id, ResponseBody::FileMeta { size, mtime }),
+                    Ok((size, mtime, _is_dir)) => {
+                        send_ok(&out_tx, stream_id, ResponseBody::FileMeta { size, mtime })
+                    }
                     Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                 },
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {path}"),
+                ),
             },
-            Request::ReadFile { path } => handle_read_file(path, None, stream_id, &out_tx, &ctx).await,
-            Request::ReadFileBounded { path, max_bytes } => handle_read_file(path, Some(max_bytes), stream_id, &out_tx, &ctx).await,
+            Request::ReadFile { path } => {
+                handle_read_file(path, None, stream_id, &out_tx, &ctx).await
+            }
+            Request::ReadFileBounded { path, max_bytes } => {
+                handle_read_file(path, Some(max_bytes), stream_id, &out_tx, &ctx).await
+            }
             Request::Delete { path, is_dir } => match guarded_path(&path, &ctx) {
                 Ok(p) => match handlers::fs::delete(&p, is_dir).await {
                     Ok(()) => send_ok(&out_tx, stream_id, ResponseBody::Empty),
                     Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                 },
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {path}"),
+                ),
             },
             Request::Rename { from, to } => {
-                let checked = guarded_path(&from, &ctx).and_then(|f| guarded_path(&to, &ctx).map(|t| (f, t)));
+                let checked =
+                    guarded_path(&from, &ctx).and_then(|f| guarded_path(&to, &ctx).map(|t| (f, t)));
                 match checked {
                     Ok((f, t)) => match handlers::fs::rename(&f, &t).await {
                         Ok(()) => send_ok(&out_tx, stream_id, ResponseBody::Empty),
                         Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                     },
-                    Err(code) => send_error(&out_tx, stream_id, code, "路径不在允许访问的范围内".into()),
+                    Err(code) => {
+                        send_error(&out_tx, stream_id, code, "路径不在允许访问的范围内".into())
+                    }
                 }
             }
             Request::CreateDir { path } => match guarded_path(&path, &ctx) {
@@ -273,61 +381,126 @@ fn spawn_request(request: Request, stream_id: u32, out_tx: OutSender, ctx: Arc<S
                     Ok(()) => send_ok(&out_tx, stream_id, ResponseBody::Empty),
                     Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                 },
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {path}"),
+                ),
             },
             Request::ListRoots => {
                 let roots = handlers::fs::list_roots().await;
                 send_ok(&out_tx, stream_id, ResponseBody::Roots(roots));
             }
-            Request::Exec { command, args, cwd, timeout_secs } => {
+            Request::Exec {
+                command,
+                args,
+                cwd,
+                timeout_secs,
+            } => {
                 // 客户端可以要求更短的超时，但不能超过 Agent 配置的上限。
-                let effective_timeout = if timeout_secs == 0 { ctx.exec_timeout_secs } else { timeout_secs.min(ctx.exec_timeout_secs) };
-                ctx.audit.record("exec", "", &format!("{command} {args:?} (cwd={cwd})")).await;
+                let effective_timeout = if timeout_secs == 0 {
+                    ctx.exec_timeout_secs
+                } else {
+                    timeout_secs.min(ctx.exec_timeout_secs)
+                };
+                ctx.audit
+                    .record("exec", "", &format!("{command} {args:?} (cwd={cwd})"))
+                    .await;
                 match handlers::exec::exec(&command, &args, &cwd, effective_timeout).await {
-                    Ok((exit_code, output)) => send_ok(&out_tx, stream_id, ResponseBody::ExecResult { exit_code, output }),
+                    Ok((exit_code, output)) => send_ok(
+                        &out_tx,
+                        stream_id,
+                        ResponseBody::ExecResult { exit_code, output },
+                    ),
                     Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                 }
             }
-            Request::SearchContent { root, query, options } => match guarded_path(&root, &ctx) {
+            Request::SearchContent {
+                root,
+                query,
+                options,
+            } => match guarded_path(&root, &ctx) {
                 Ok(p) => {
-                    let result = tokio::task::spawn_blocking(move || handlers::search::search_content(&p, &query, &options))
-                        .await
-                        .map_err(|e| (ErrorCode::Internal, e.to_string()))
-                        .and_then(|r| r);
+                    let result = tokio::task::spawn_blocking(move || {
+                        handlers::search::search_content(&p, &query, &options)
+                    })
+                    .await
+                    .map_err(|e| (ErrorCode::Internal, e.to_string()))
+                    .and_then(|r| r);
                     match result {
-                        Ok(results) => send_ok(&out_tx, stream_id, ResponseBody::SearchResults(results)),
+                        Ok(results) => {
+                            send_ok(&out_tx, stream_id, ResponseBody::SearchResults(results))
+                        }
                         Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                     }
                 }
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {root}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {root}"),
+                ),
             },
             Request::SearchFileName { root, query } => match guarded_path(&root, &ctx) {
                 Ok(p) => {
-                    let result = tokio::task::spawn_blocking(move || handlers::search::search_filename(&p, &query))
-                        .await
-                        .map_err(|e| (ErrorCode::Internal, e.to_string()))
-                        .and_then(|r| r);
+                    let result = tokio::task::spawn_blocking(move || {
+                        handlers::search::search_filename(&p, &query)
+                    })
+                    .await
+                    .map_err(|e| (ErrorCode::Internal, e.to_string()))
+                    .and_then(|r| r);
                     match result {
-                        Ok(results) => send_ok(&out_tx, stream_id, ResponseBody::SearchResults(results)),
+                        Ok(results) => {
+                            send_ok(&out_tx, stream_id, ResponseBody::SearchResults(results))
+                        }
                         Err((code, msg)) => send_error(&out_tx, stream_id, code, msg),
                     }
                 }
-                Err(code) => send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {root}")),
+                Err(code) => send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {root}"),
+                ),
             },
         }
     });
 }
 
-async fn handle_read_file(path: String, max_bytes: Option<u64>, stream_id: u32, out_tx: &OutSender, ctx: &ServerContext) {
+async fn handle_read_file(
+    path: String,
+    max_bytes: Option<u64>,
+    stream_id: u32,
+    out_tx: &OutSender,
+    ctx: &ServerContext,
+) {
     let p = match guarded_path(&path, ctx) {
         Ok(p) => p,
-        Err(code) => return send_error(out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+        Err(code) => {
+            return send_error(
+                out_tx,
+                stream_id,
+                code,
+                format!("路径不在允许访问的范围内: {path}"),
+            )
+        }
     };
     match handlers::fs::read_file(&p, max_bytes).await {
         Ok((bytes, mtime)) => {
-            send_ok(out_tx, stream_id, ResponseBody::FileMeta { size: bytes.len() as u64, mtime });
+            send_ok(
+                out_tx,
+                stream_id,
+                ResponseBody::FileMeta {
+                    size: bytes.len() as u64,
+                    mtime,
+                },
+            );
             for chunk in bytes.chunks(DATA_CHUNK_SIZE) {
-                if out_tx.send((stream_id, FrameType::DataChunk, chunk.to_vec())).is_err() {
+                if out_tx
+                    .send((stream_id, FrameType::DataChunk, chunk.to_vec()))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -340,11 +513,25 @@ async fn handle_read_file(path: String, max_bytes: Option<u64>, stream_id: u32, 
 /// `WriteFile` 的后续 `DataChunk`/`StreamEnd` 帧由读循环通过 `rx` 转发过来
 /// （见 `handle_connection` 里的 `write_waiters`），这个任务只管攒字节、等结束、
 /// 落盘、回一个 Control 响应。
-fn spawn_write_file(path: String, expected_mtime: Option<i64>, stream_id: u32, mut rx: mpsc::Receiver<Frame>, out_tx: OutSender, ctx: Arc<ServerContext>) {
+fn spawn_write_file(
+    path: String,
+    expected_mtime: Option<i64>,
+    stream_id: u32,
+    mut rx: mpsc::Receiver<Frame>,
+    out_tx: OutSender,
+    ctx: Arc<ServerContext>,
+) {
     tokio::spawn(async move {
         let p = match guarded_path(&path, &ctx) {
             Ok(p) => p,
-            Err(code) => return send_error(&out_tx, stream_id, code, format!("路径不在允许访问的范围内: {path}")),
+            Err(code) => {
+                return send_error(
+                    &out_tx,
+                    stream_id,
+                    code,
+                    format!("路径不在允许访问的范围内: {path}"),
+                )
+            }
         };
 
         let mut buf = Vec::new();
@@ -379,16 +566,32 @@ fn spawn_write_file(path: String, expected_mtime: Option<i64>, stream_id: u32, m
 /// 只是这里的流是长期双向的——PTY 输出经独立 OS 线程阻塞读、`out_tx` 推回去；
 /// 客户端方向的帧（键盘输入 `DataChunk`/`ShellResize` Control/关闭 `StreamEnd`）
 /// 由本任务消费 `rx` 处理。
-fn spawn_shell(cols: u16, rows: u16, cwd: String, stream_id: u32, mut rx: mpsc::Receiver<Frame>, out_tx: OutSender) {
+fn spawn_shell(
+    cols: u16,
+    rows: u16,
+    cwd: String,
+    stream_id: u32,
+    mut rx: mpsc::Receiver<Frame>,
+    out_tx: OutSender,
+) {
     tokio::spawn(async move {
-        let opened = match tokio::task::spawn_blocking(move || handlers::shell::open(cols, rows, &cwd)).await {
+        let opened = match tokio::task::spawn_blocking(move || {
+            handlers::shell::open(cols, rows, &cwd)
+        })
+        .await
+        {
             Ok(Ok(o)) => o,
             Ok(Err((code, msg))) => return send_error(&out_tx, stream_id, code, msg),
             Err(e) => return send_error(&out_tx, stream_id, ErrorCode::Internal, e.to_string()),
         };
         send_ok(&out_tx, stream_id, ResponseBody::Empty);
 
-        let handlers::shell::OpenedShell { master, mut writer, mut child, reader } = opened;
+        let handlers::shell::OpenedShell {
+            master,
+            mut writer,
+            mut child,
+            reader,
+        } = opened;
 
         // 阻塞读用独立 OS 线程，不占 tokio 工作线程池——PTY 读端在 shell 退出前会
         // 一直阻塞在 read() 上（和 src-tauri/src/pty/mod.rs 同一个理由）。
@@ -400,7 +603,10 @@ fn spawn_shell(cols: u16, rows: u16, cwd: String, stream_id: u32, mut rx: mpsc::
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if out_tx_reader.send((stream_id, FrameType::DataChunk, buf[..n].to_vec())).is_err() {
+                        if out_tx_reader
+                            .send((stream_id, FrameType::DataChunk, buf[..n].to_vec()))
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -417,7 +623,9 @@ fn spawn_shell(cols: u16, rows: u16, cwd: String, stream_id: u32, mut rx: mpsc::
                     }
                 }
                 FrameType::Control => {
-                    if let Ok(Request::ShellResize { cols, rows }) = decode_json::<Request>(&frame.payload) {
+                    if let Ok(Request::ShellResize { cols, rows }) =
+                        decode_json::<Request>(&frame.payload)
+                    {
                         handlers::shell::resize(master.as_ref(), cols, rows);
                     }
                 }

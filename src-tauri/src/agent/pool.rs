@@ -18,8 +18,15 @@ pub struct AgentConnectionPool {
 }
 
 impl AgentConnectionPool {
-    pub fn new(connection_manager: Arc<ConnectionManager>, cert_verifier: Arc<AgentCertVerifier>) -> Self {
-        Self { sessions: RwLock::new(HashMap::new()), connection_manager, cert_verifier }
+    pub fn new(
+        connection_manager: Arc<ConnectionManager>,
+        cert_verifier: Arc<AgentCertVerifier>,
+    ) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            connection_manager,
+            cert_verifier,
+        }
     }
 
     pub async fn get_or_connect(&self, profile_id: Uuid) -> Result<Arc<AgentSession>, AppError> {
@@ -44,7 +51,10 @@ impl AgentConnectionPool {
 
         let session = Arc::new(AgentSession::connect(&profile, token, &self.cert_verifier).await?);
         self.connection_manager.touch_last_connected(profile_id)?;
-        self.sessions.write().await.insert(profile_id, session.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(profile_id, session.clone());
         Ok(session)
     }
 

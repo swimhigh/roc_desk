@@ -18,7 +18,10 @@ pub fn generate_diff(old: &str, new: &str) -> Vec<DiffLine> {
                 ChangeTag::Insert => '+',
                 ChangeTag::Equal => ' ',
             };
-            DiffLine { sign, content: change.to_string().trim_end_matches('\n').to_string() }
+            DiffLine {
+                sign,
+                content: change.to_string().trim_end_matches('\n').to_string(),
+            }
         })
         .collect()
 }

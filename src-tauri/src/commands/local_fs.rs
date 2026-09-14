@@ -5,8 +5,8 @@ use tauri_plugin_opener::OpenerExt;
 use crate::error::AppError;
 use crate::fsops::local::LocalFileOps;
 use crate::fsops::{
-    binary_info, encoding, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps, JarInfo,
-    WriteOutcome, BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
+    binary_info, encoding, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps,
+    JarInfo, WriteOutcome, BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
 };
 use crate::state::AppState;
 
@@ -31,7 +31,9 @@ pub fn local_list_drives() -> Vec<String> {
             .filter_map(|b| {
                 let letter = b as char;
                 let root = format!("{letter}:\\");
-                std::path::Path::new(&root).exists().then(|| format!("{letter}:/"))
+                std::path::Path::new(&root)
+                    .exists()
+                    .then(|| format!("{letter}:/"))
             })
             .collect()
     }
@@ -67,9 +69,12 @@ pub async fn local_is_dir(path: String) -> Result<bool, AppError> {
 
 #[tauri::command]
 pub async fn local_delete(path: String, is_dir: bool) -> Result<(), AppError> {
+    let _ = is_dir;
     tokio::task::spawn_blocking(move || {
         trash::delete(&path).map_err(|e| AppError::Internal(format!("移入回收站失败: {e}")))
-    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
     Ok(())
 }
 
@@ -114,15 +119,30 @@ pub async fn local_read_file(path: String) -> Result<FileContent, AppError> {
 }
 
 #[tauri::command]
-pub async fn local_write_file(path: String, content: String, expected_mtime: Option<i64>) -> Result<WriteOutcome, AppError> {
-    LocalFileOps.write_file(&path, &content, expected_mtime).await
+pub async fn local_write_file(
+    path: String,
+    content: String,
+    expected_mtime: Option<i64>,
+) -> Result<WriteOutcome, AppError> {
+    LocalFileOps
+        .write_file(&path, &content, expected_mtime)
+        .await
 }
 
 #[tauri::command]
-pub async fn local_read_file_with_encoding(path: String, encoding_label: String) -> Result<FileContent, AppError> {
+pub async fn local_read_file_with_encoding(
+    path: String,
+    encoding_label: String,
+) -> Result<FileContent, AppError> {
     let (bytes, mtime, total_size, truncated) = LocalFileOps.read_bytes_for_editor(&path).await?;
     let text = encoding::decode_with(&bytes, &encoding_label).map_err(AppError::Internal)?;
-    Ok(FileContent { text, encoding: encoding_label, mtime, total_size, truncated })
+    Ok(FileContent {
+        text,
+        encoding: encoding_label,
+        mtime,
+        total_size,
+        truncated,
+    })
 }
 
 #[tauri::command]
@@ -133,12 +153,16 @@ pub async fn local_write_file_with_encoding(
     expected_mtime: Option<i64>,
 ) -> Result<WriteOutcome, AppError> {
     let bytes = encoding::encode_with(&content, &encoding_label).map_err(AppError::Internal)?;
-    LocalFileOps.write_file_bytes(&path, &bytes, expected_mtime).await
+    LocalFileOps
+        .write_file_bytes(&path, &bytes, expected_mtime)
+        .await
 }
 
 #[tauri::command]
 pub async fn local_read_binary_preview(path: String) -> Result<String, AppError> {
-    let bytes = LocalFileOps.read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES).await?;
+    let bytes = LocalFileOps
+        .read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES)
+        .await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
@@ -160,7 +184,9 @@ pub async fn local_convert_legacy_office_to_pdf(path: String) -> Result<String, 
 
 #[tauri::command]
 pub async fn local_inspect_binary(path: String) -> Result<BinaryInfo, AppError> {
-    let bytes = LocalFileOps.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    let bytes = LocalFileOps
+        .read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES)
+        .await?;
     binary_info::inspect(&bytes)
 }
 
@@ -172,7 +198,9 @@ pub async fn local_peek_is_binary(path: String) -> Result<bool, AppError> {
 
 #[tauri::command]
 pub async fn local_inspect_jar(path: String) -> Result<JarInfo, AppError> {
-    let bytes = LocalFileOps.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    let bytes = LocalFileOps
+        .read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES)
+        .await?;
     jar_info::inspect(&bytes)
 }
 

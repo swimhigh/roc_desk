@@ -308,6 +308,19 @@ export interface FileChange {
   new_content: string;
   diff: DiffLine[];
   status: ChangeStatus;
+  /** 产生这条变更的用户消息轮次 id——同一轮里的变更共享同一个值，前端据此
+   * 分组做"这一轮全部应用/全部拒绝/整体撤销"。 */
+  turn_id: string;
+}
+
+/** AI 写盘（Accept/Undo/Redo/整轮撤销）落地后的同步信息——如果这个路径当前
+ * 正在编辑器里开着，前端要用它刷新对应的 buffer，否则打开的 Tab 会和磁盘内容
+ * 脱节（见 `editorStore.syncExternalWrite`）。 */
+export interface FileSyncInfo {
+  change_id: string;
+  path: string;
+  content: string;
+  mtime: number;
 }
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
@@ -326,6 +339,9 @@ export interface CodingSessionInfo {
   auto_allow_readonly: boolean;
   git_repo: boolean;
   auto_git_commit: boolean;
+  /** "完全授权模式"：开启后 AI 提出的文件改动不再生成 Diff 等 Accept，直接落盘
+   * （用户反馈"一次改 20 多个文件还要逐个确认太繁琐"）。会话级开关。 */
+  full_auto: boolean;
   changes: FileChange[];
   todos: TodoItem[];
   project_memory_loaded: string[];
@@ -408,6 +424,7 @@ export interface CodingAssistantNoteEvent {
 export interface CodingHistorySummary {
   id: string;
   title: string;
+  provider_id: string;
   provider_label: string;
   model: string;
   mode: string;
@@ -425,6 +442,9 @@ export interface CodingHistoryDetail extends CodingHistorySummary {
 export interface CodingFileChangeEvent {
   sessionId: string;
   change: FileChange;
+  /** "完全授权模式"下这条改动已经直接落盘时才有——前端据此刷新对应路径可能
+   * 已经打开的编辑器 buffer，否则磁盘内容变了、编辑器里显示的还是旧内容。 */
+  sync?: FileSyncInfo | null;
 }
 
 export interface CodingCommandBlockedEvent {

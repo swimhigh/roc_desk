@@ -25,10 +25,16 @@ fn credential_key(id: Uuid) -> String {
 
 impl ConnectionManager {
     pub fn new(repo: Arc<ConnectionsRepo>, credential_store: Arc<dyn CredentialStore>) -> Self {
-        Self { repo, credential_store }
+        Self {
+            repo,
+            credential_store,
+        }
     }
 
-    pub async fn create(&self, input: ConnectionProfileInput) -> Result<ConnectionProfile, AppError> {
+    pub async fn create(
+        &self,
+        input: ConnectionProfileInput,
+    ) -> Result<ConnectionProfile, AppError> {
         let id = Uuid::new_v4();
         let credential_ref = if let Some(secret) = &input.secret {
             let key = credential_key(id);
@@ -58,14 +64,21 @@ impl ConnectionManager {
         Ok(profile)
     }
 
-    pub async fn update(&self, id: Uuid, input: ConnectionProfileInput) -> Result<ConnectionProfile, AppError> {
+    pub async fn update(
+        &self,
+        id: Uuid,
+        input: ConnectionProfileInput,
+    ) -> Result<ConnectionProfile, AppError> {
         let existing = self
             .repo
             .get(id)?
             .ok_or_else(|| AppError::NotFound(format!("connection not found: {id}")))?;
 
         let credential_ref = if let Some(secret) = &input.secret {
-            let key = existing.credential_ref.clone().unwrap_or_else(|| credential_key(id));
+            let key = existing
+                .credential_ref
+                .clone()
+                .unwrap_or_else(|| credential_key(id));
             self.credential_store.set(&key, secret).await?;
             Some(key)
         } else {
@@ -110,7 +123,10 @@ impl ConnectionManager {
         self.repo.get(id)
     }
 
-    pub async fn resolve_secret(&self, profile: &ConnectionProfile) -> Result<Option<String>, AppError> {
+    pub async fn resolve_secret(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Result<Option<String>, AppError> {
         match &profile.credential_ref {
             Some(key) => self.credential_store.get(key).await,
             None => Ok(None),
@@ -140,23 +156,39 @@ impl ConnectionGroupManager {
 
     pub fn create(&self, input: ConnectionGroupInput) -> Result<ConnectionGroup, AppError> {
         if let Some(parent_id) = input.parent_id {
-            self.repo
-                .get(parent_id)?
-                .ok_or_else(|| AppError::NotFound(format!("parent group not found: {parent_id}")))?;
+            self.repo.get(parent_id)?.ok_or_else(|| {
+                AppError::NotFound(format!("parent group not found: {parent_id}"))
+            })?;
         }
-        let group = ConnectionGroup { id: Uuid::new_v4(), name: input.name, parent_id: input.parent_id };
+        let group = ConnectionGroup {
+            id: Uuid::new_v4(),
+            name: input.name,
+            parent_id: input.parent_id,
+        };
         self.repo.create(&group)?;
         Ok(group)
     }
 
-    pub fn update(&self, id: Uuid, input: ConnectionGroupInput) -> Result<ConnectionGroup, AppError> {
-        self.repo.get(id)?.ok_or_else(|| AppError::NotFound(format!("group not found: {id}")))?;
+    pub fn update(
+        &self,
+        id: Uuid,
+        input: ConnectionGroupInput,
+    ) -> Result<ConnectionGroup, AppError> {
+        self.repo
+            .get(id)?
+            .ok_or_else(|| AppError::NotFound(format!("group not found: {id}")))?;
         if let Some(parent_id) = input.parent_id {
             if parent_id == id || self.is_descendant(parent_id, id)? {
-                return Err(AppError::Conflict("不能把分组移动到它自己的子分组里".into()));
+                return Err(AppError::Conflict(
+                    "不能把分组移动到它自己的子分组里".into(),
+                ));
             }
         }
-        let group = ConnectionGroup { id, name: input.name, parent_id: input.parent_id };
+        let group = ConnectionGroup {
+            id,
+            name: input.name,
+            parent_id: input.parent_id,
+        };
         self.repo.update(&group)?;
         Ok(group)
     }

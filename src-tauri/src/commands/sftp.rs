@@ -1,13 +1,14 @@
 use base64::Engine;
-use tauri::{AppHandle, State, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::db::repo::transfer_log_repo::TransferLogInput;
 use crate::error::AppError;
 use crate::fsops::{
-    binary_info, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps, JarInfo, WriteOutcome,
-    BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES, TRANSFER_CANCELLED_MESSAGE,
+    binary_info, jar_info, office_convert, BinaryInfo, FileContent, FileEntry, FileOps, JarInfo,
+    WriteOutcome, BINARY_PREVIEW_MAX_BYTES, EXECUTABLE_INSPECT_MAX_BYTES,
+    TRANSFER_CANCELLED_MESSAGE,
 };
 use crate::state::AppState;
 
@@ -28,7 +29,11 @@ fn finish_transfer_log(
     started_at: &str,
     result: &Result<(), AppError>,
 ) {
-    state.cancelled_transfers.lock().unwrap().remove(&request_id);
+    state
+        .cancelled_transfers
+        .lock()
+        .unwrap()
+        .remove(&request_id);
     let profile_name = state
         .connection_manager
         .get(profile_id)
@@ -86,22 +91,34 @@ pub async fn sftp_read_file(
 /// SFTP 快捷浏览器的图片/PDF/Word/Excel 预览，语义和 `commands::fs::fs_read_binary_preview`
 /// 一致，见那边注释。
 #[tauri::command]
-pub async fn sftp_read_binary_preview(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<String, AppError> {
+pub async fn sftp_read_binary_preview(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<String, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let bytes = ops.read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES).await?;
+    let bytes = ops
+        .read_binary_for_preview(&path, BINARY_PREVIEW_MAX_BYTES)
+        .await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// "用系统默认程序打开"：SFTP 快捷浏览器天然都是远程路径，不需要 `fs_open_externally`
 /// 那样区分本地/远程——一律先下载到本地临时目录再拉起系统默认程序。
 #[tauri::command]
-pub async fn sftp_open_externally(app_handle: AppHandle, state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+pub async fn sftp_open_externally(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     let file_name = path.rsplit('/').next().unwrap_or(&path);
     let tmp_dir = std::env::temp_dir().join("roc_desk_open");
     std::fs::create_dir_all(&tmp_dir)?;
     let local_path = tmp_dir.join(file_name);
-    ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+    ops.download_to_local_file(&path, &local_path.to_string_lossy())
+        .await?;
     app_handle
         .opener()
         .open_path(local_path.to_string_lossy().to_string(), None::<&str>)
@@ -112,13 +129,18 @@ pub async fn sftp_open_externally(app_handle: AppHandle, state: State<'_, AppSta
 /// `commands::fs::fs_convert_legacy_office_to_pdf` 一致——这里天然都是远程路径，
 /// 不需要区分本地/远程分支，直接下载到本地临时目录再转换。
 #[tauri::command]
-pub async fn sftp_convert_legacy_office_to_pdf(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<String, AppError> {
+pub async fn sftp_convert_legacy_office_to_pdf(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<String, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     let tmp_dir = std::env::temp_dir().join("roc_desk_office_convert");
     std::fs::create_dir_all(&tmp_dir)?;
     let file_name = path.rsplit('/').next().unwrap_or(&path);
     let local_path = tmp_dir.join(file_name);
-    ops.download_to_local_file(&path, &local_path.to_string_lossy()).await?;
+    ops.download_to_local_file(&path, &local_path.to_string_lossy())
+        .await?;
 
     let pdf_path = office_convert::convert_to_pdf(&local_path, &tmp_dir).await?;
     let bytes = tokio::fs::read(&pdf_path).await.map_err(AppError::from)?;
@@ -127,9 +149,15 @@ pub async fn sftp_convert_legacy_office_to_pdf(state: State<'_, AppState>, profi
 
 /// SFTP 版的 EXE/DLL/SO 基本信息 + 依赖库查看，语义和 `commands::fs::fs_inspect_binary` 一致。
 #[tauri::command]
-pub async fn sftp_inspect_binary(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<BinaryInfo, AppError> {
+pub async fn sftp_inspect_binary(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<BinaryInfo, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let bytes = ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    let bytes = ops
+        .read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES)
+        .await?;
     binary_info::inspect(&bytes)
 }
 
@@ -137,7 +165,11 @@ pub async fn sftp_inspect_binary(state: State<'_, AppState>, profile_id: Uuid, p
 /// `commands::fs::fs_peek_is_binary` 一致——Linux 远程主机上的可执行文件同样习惯上
 /// 不带扩展名，SFTP 快捷浏览器这边也要有同样的兜底。
 #[tauri::command]
-pub async fn sftp_peek_is_binary(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<bool, AppError> {
+pub async fn sftp_peek_is_binary(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<bool, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     let (head, _mtime) = ops.read_file_raw_bounded(&path, 64).await?;
     Ok(binary_info::looks_like_binary(&head))
@@ -145,9 +177,15 @@ pub async fn sftp_peek_is_binary(state: State<'_, AppState>, profile_id: Uuid, p
 
 /// SFTP 版的 JAR 包查看，语义和 `commands::fs::fs_inspect_jar` 一致。
 #[tauri::command]
-pub async fn sftp_inspect_jar(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<JarInfo, AppError> {
+pub async fn sftp_inspect_jar(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<JarInfo, AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let bytes = ops.read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES).await?;
+    let bytes = ops
+        .read_binary_for_preview(&path, EXECUTABLE_INSPECT_MAX_BYTES)
+        .await?;
     jar_info::inspect(&bytes)
 }
 
@@ -171,11 +209,21 @@ pub async fn sftp_download(
     local_path: String,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let offset = match (tokio::fs::metadata(&local_path).await, ops.file_size(&remote_path).await) {
+    let offset = match (
+        tokio::fs::metadata(&local_path).await,
+        ops.file_size(&remote_path).await,
+    ) {
         (Ok(local), Ok(remote)) if local.is_file() && local.len() <= remote => local.len(),
         _ => 0,
     };
-    ops.download_range_to_local(&remote_path, &local_path, offset, std::sync::Arc::new(|_| {}), std::sync::Arc::new(|| false)).await
+    ops.download_range_to_local(
+        &remote_path,
+        &local_path,
+        offset,
+        std::sync::Arc::new(|_| {}),
+        std::sync::Arc::new(|| false),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -186,11 +234,21 @@ pub async fn sftp_upload(
     remote_path: String,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let offset = match (tokio::fs::metadata(&local_path).await, ops.file_size(&remote_path).await) {
+    let offset = match (
+        tokio::fs::metadata(&local_path).await,
+        ops.file_size(&remote_path).await,
+    ) {
         (Ok(local), Ok(remote)) if local.is_file() && remote <= local.len() => remote,
         _ => 0,
     };
-    ops.upload_range_from_local(&local_path, &remote_path, offset, std::sync::Arc::new(|_| {}), std::sync::Arc::new(|| false)).await
+    ops.upload_range_from_local(
+        &local_path,
+        &remote_path,
+        offset,
+        std::sync::Arc::new(|_| {}),
+        std::sync::Arc::new(|| false),
+    )
+    .await
 }
 
 /// 双栏 SFTP 浏览器的"下载到本地目录"（DESIGN.md §3.3）：目标文件/目录名沿用远程
@@ -208,19 +266,35 @@ pub async fn sftp_download_entry(
     request_id: Uuid,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let name = remote_path.trim_end_matches('/').rsplit('/').next().unwrap_or(&remote_path);
+    let name = remote_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(&remote_path);
     let local_target = format!("{}/{}", local_dir.trim_end_matches('/'), name);
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let cancelled_transfers = state.cancelled_transfers.clone();
-    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> = std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
+    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> =
+        std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
     let result = if is_dir {
-        ops.download_recursive(&remote_path, &local_target, Some((app_handle, request_id)), should_cancel.clone(), &file_count).await
+        ops.download_recursive(
+            &remote_path,
+            &local_target,
+            Some((app_handle, request_id)),
+            should_cancel.clone(),
+            &file_count,
+        )
+        .await
     } else {
-        let offset = match (tokio::fs::metadata(&local_target).await, ops.file_size(&remote_path).await) {
-            (Ok(local), Ok(remote)) if local.is_file() && local.len() <= remote => local.len(), _ => 0,
+        let offset = match (
+            tokio::fs::metadata(&local_target).await,
+            ops.file_size(&remote_path).await,
+        ) {
+            (Ok(local), Ok(remote)) if local.is_file() && local.len() <= remote => local.len(),
+            _ => 0,
         };
         let app = app_handle.clone();
         let id = request_id;
@@ -258,20 +332,36 @@ pub async fn sftp_upload_entry(
     request_id: Uuid,
 ) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
-    let name = local_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&local_path);
+    let name = local_path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&local_path);
     let remote_target = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let cancelled_transfers = state.cancelled_transfers.clone();
-    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> = std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
+    let should_cancel: std::sync::Arc<dyn Fn() -> bool + Send + Sync> =
+        std::sync::Arc::new(move || cancelled_transfers.lock().unwrap().contains(&request_id));
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
     let result = if is_dir {
-        ops.upload_recursive(&local_path, &remote_target, Some((app_handle, request_id)), should_cancel.clone(), &file_count).await
+        ops.upload_recursive(
+            &local_path,
+            &remote_target,
+            Some((app_handle, request_id)),
+            should_cancel.clone(),
+            &file_count,
+        )
+        .await
     } else {
-        let total = tokio::fs::metadata(&local_path).await.map(|m| m.len()).unwrap_or(0);
+        let total = tokio::fs::metadata(&local_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let offset = match ops.file_size(&remote_target).await {
-            Ok(remote) if remote <= total => remote, _ => 0,
+            Ok(remote) if remote <= total => remote,
+            _ => 0,
         };
         let app = app_handle.clone();
         let id = request_id;
@@ -299,19 +389,33 @@ pub async fn sftp_upload_entry(
 /// 删除需要前端二次确认（UI 层，不是这里）——DESIGN.md §3.3 明确要求
 /// "需前端二次确认"，但那是交互设计，不是后端应该拦的权限检查。
 #[tauri::command]
-pub async fn sftp_delete(state: State<'_, AppState>, profile_id: Uuid, path: String, is_dir: bool) -> Result<(), AppError> {
+pub async fn sftp_delete(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+    is_dir: bool,
+) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     ops.delete(&path, is_dir).await
 }
 
 #[tauri::command]
-pub async fn sftp_rename(state: State<'_, AppState>, profile_id: Uuid, from: String, to: String) -> Result<(), AppError> {
+pub async fn sftp_rename(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    from: String,
+    to: String,
+) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     ops.rename(&from, &to).await
 }
 
 #[tauri::command]
-pub async fn sftp_create_dir(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+pub async fn sftp_create_dir(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<(), AppError> {
     let ops = state.ssh_pool.get_file_ops(profile_id).await?;
     ops.create_dir(&path).await
 }

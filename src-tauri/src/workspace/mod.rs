@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
-use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::agent::AgentConnectionPool;
 use crate::connection::{ConnectionManager, Protocol};
@@ -38,7 +38,12 @@ pub struct WorkspaceMetadata {
 }
 
 fn metadata_for(profile: &WorkspaceProfile) -> WorkspaceMetadata {
-    WorkspaceMetadata { workspace_id: profile.id, kind: profile.kind, root_path: profile.root_path.clone(), connection_id: profile.connection_id }
+    WorkspaceMetadata {
+        workspace_id: profile.id,
+        kind: profile.kind,
+        root_path: profile.root_path.clone(),
+        connection_id: profile.connection_id,
+    }
 }
 
 pub struct WorkspaceManager {
@@ -57,12 +62,21 @@ impl WorkspaceManager {
         agent_pool: Arc<AgentConnectionPool>,
         cache_root: PathBuf,
     ) -> Self {
-        Self { repo, connection_manager, ssh_pool, agent_pool, cache_root }
+        Self {
+            repo,
+            connection_manager,
+            ssh_pool,
+            agent_pool,
+            cache_root,
+        }
     }
 
     /// SSH/Agent 都是"Remote"工作区，靠连接档案的 `protocol` 字段决定用哪条连接池
     /// 建连、构造哪个 `FileOps` 实现（AGENT_DESIGN.md §四.2）。
-    async fn remote_file_ops(&self, connection: &crate::connection::ConnectionProfile) -> Result<Arc<dyn FileOps>, AppError> {
+    async fn remote_file_ops(
+        &self,
+        connection: &crate::connection::ConnectionProfile,
+    ) -> Result<Arc<dyn FileOps>, AppError> {
         match connection.protocol {
             Protocol::Agent => {
                 let session = self.agent_pool.get_or_connect(connection.id).await?;
@@ -79,7 +93,10 @@ impl WorkspaceManager {
     fn write_fallback_metadata(&self, metadata: &WorkspaceMetadata) -> Result<(), AppError> {
         let dir = self.cache_root.join(metadata.workspace_id.to_string());
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("workspace.json"), serde_json::to_vec_pretty(metadata).map_err(|e| AppError::Internal(e.to_string()))?)?;
+        std::fs::write(
+            dir.join("workspace.json"),
+            serde_json::to_vec_pretty(metadata).map_err(|e| AppError::Internal(e.to_string()))?,
+        )?;
         Ok(())
     }
 
@@ -97,15 +114,20 @@ impl WorkspaceManager {
             .unwrap_or_else(|| path.to_string());
 
         let embedded = std::fs::read(root.join(".rock_desk").join("workspace.json"))
-            .ok().and_then(|bytes| serde_json::from_slice::<WorkspaceMetadata>(&bytes).ok())
-            .filter(|meta| meta.kind == WorkspaceKind::Local && meta.root_path.eq_ignore_ascii_case(path));
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<WorkspaceMetadata>(&bytes).ok())
+            .filter(|meta| {
+                meta.kind == WorkspaceKind::Local && meta.root_path.eq_ignore_ascii_case(path)
+            });
         let profile = match self.repo.find_by_local_path(path)? {
             Some(mut existing) => {
                 existing.last_opened_at = Some(Utc::now().to_rfc3339());
                 existing
             }
             None => WorkspaceProfile {
-                id: embedded.map(|meta| meta.workspace_id).unwrap_or_else(Uuid::new_v4),
+                id: embedded
+                    .map(|meta| meta.workspace_id)
+                    .unwrap_or_else(Uuid::new_v4),
                 kind: WorkspaceKind::Local,
                 root_path: path.to_string(),
                 connection_id: None,
@@ -121,9 +143,17 @@ impl WorkspaceManager {
         self.write_fallback_metadata(&metadata)?;
         let metadata_dir = root.join(".rock_desk");
         std::fs::create_dir_all(&metadata_dir)?;
-        std::fs::write(metadata_dir.join("workspace.json"), serde_json::to_vec_pretty(&metadata).map_err(|e| AppError::Internal(e.to_string()))?)?;
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::to_vec_pretty(&metadata).map_err(|e| AppError::Internal(e.to_string()))?,
+        )?;
         let fallback_cache_dir = self.cache_root.join(metadata.workspace_id.to_string());
-        Ok(WorkspaceHandle { profile, file_ops: Arc::new(LocalFileOps), metadata, fallback_cache_dir })
+        Ok(WorkspaceHandle {
+            profile,
+            file_ops: Arc::new(LocalFileOps),
+            metadata,
+            fallback_cache_dir,
+        })
     }
 
     /// 连接远程主机并打开工作区（DESIGN.md §3.1.1）。内部经 `SshConnectionPool`
@@ -134,17 +164,31 @@ impl WorkspaceManager {
     /// "最近工作区"里产生一条新记录（真实 bug：2026-08-18 用户报告同一个远程目录
     /// 出现了 4 条一模一样的记录——此前这里漏了这一步判断，是本文件唯一没有走
     /// "查是否已存在"路径的分支）。
-    pub async fn open_remote(&self, connection_id: Uuid, remote_path: &str) -> Result<WorkspaceHandle, AppError> {
+    pub async fn open_remote(
+        &self,
+        connection_id: Uuid,
+        remote_path: &str,
+    ) -> Result<WorkspaceHandle, AppError> {
         let connection = self
             .connection_manager
             .get(connection_id)?
             .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
 
         let file_ops = self.remote_file_ops(&connection).await?;
-        let metadata_path = format!("{}/.rock_desk/workspace.json", remote_path.trim_end_matches('/'));
-        let embedded = file_ops.read_file(&metadata_path).await.ok()
+        let metadata_path = format!(
+            "{}/.rock_desk/workspace.json",
+            remote_path.trim_end_matches('/')
+        );
+        let embedded = file_ops
+            .read_file(&metadata_path)
+            .await
+            .ok()
             .and_then(|file| serde_json::from_str::<WorkspaceMetadata>(&file.text).ok())
-            .filter(|meta| meta.kind == WorkspaceKind::Remote && meta.root_path == remote_path && meta.connection_id == Some(connection_id));
+            .filter(|meta| {
+                meta.kind == WorkspaceKind::Remote
+                    && meta.root_path == remote_path
+                    && meta.connection_id == Some(connection_id)
+            });
 
         let profile = match self.repo.find_by_remote(connection_id, remote_path)? {
             Some(mut existing) => {
@@ -154,12 +198,18 @@ impl WorkspaceManager {
             None => {
                 let display_name = format!(
                     "{} ({}@{})",
-                    remote_path.trim_end_matches('/').rsplit('/').next().unwrap_or(remote_path),
+                    remote_path
+                        .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(remote_path),
                     connection.username,
                     connection.host
                 );
                 WorkspaceProfile {
-                    id: embedded.map(|meta| meta.workspace_id).unwrap_or_else(Uuid::new_v4),
+                    id: embedded
+                        .map(|meta| meta.workspace_id)
+                        .unwrap_or_else(Uuid::new_v4),
                     kind: WorkspaceKind::Remote,
                     root_path: remote_path.to_string(),
                     connection_id: Some(connection_id),
@@ -179,10 +229,21 @@ impl WorkspaceManager {
         let metadata_dir = format!("{}/.rock_desk", remote_path.trim_end_matches('/'));
         if file_ops.create_dir(&metadata_dir).await.is_ok() {
             let metadata_path = format!("{metadata_dir}/workspace.json");
-            let _ = file_ops.write_file(&metadata_path, &serde_json::to_string_pretty(&metadata).unwrap_or_default(), None).await;
+            let _ = file_ops
+                .write_file(
+                    &metadata_path,
+                    &serde_json::to_string_pretty(&metadata).unwrap_or_default(),
+                    None,
+                )
+                .await;
         }
         let fallback_cache_dir = self.cache_root.join(metadata.workspace_id.to_string());
-        Ok(WorkspaceHandle { profile, file_ops, metadata, fallback_cache_dir })
+        Ok(WorkspaceHandle {
+            profile,
+            file_ops,
+            metadata,
+            fallback_cache_dir,
+        })
     }
 
     /// 修改一条已保存工作区的目录（用户反馈："工作区目录配错了后无法修改，只能删除"）。
@@ -197,7 +258,11 @@ impl WorkspaceManager {
     /// 元数据文件写入统一降级成 best-effort——纯改路径这个操作不应该因为新目录恰好
     /// 只读就整个失败（这一点和 `open_local` 对本地目录严格要求可写不同，是有意的
     /// 取舍：打开工作区要用元数据文件保身份，改路径只是改一条数据库记录）。
-    pub async fn update_path(&self, id: Uuid, new_path: &str) -> Result<WorkspaceProfile, AppError> {
+    pub async fn update_path(
+        &self,
+        id: Uuid,
+        new_path: &str,
+    ) -> Result<WorkspaceProfile, AppError> {
         let mut profile = self
             .repo
             .find_by_id(id)?
@@ -211,7 +276,10 @@ impl WorkspaceManager {
                 }
                 if let Some(existing) = self.repo.find_by_local_path(new_path)? {
                     if existing.id != id {
-                        return Err(AppError::Conflict(format!("该目录已经是另一个工作区：{}", existing.display_name)));
+                        return Err(AppError::Conflict(format!(
+                            "该目录已经是另一个工作区：{}",
+                            existing.display_name
+                        )));
                     }
                 }
                 profile.display_name = root
@@ -224,20 +292,21 @@ impl WorkspaceManager {
                 let connection_id = profile.connection_id.ok_or_else(|| {
                     AppError::Internal("remote workspace missing connection_id".to_string())
                 })?;
-                let connection = self
-                    .connection_manager
-                    .get(connection_id)?
-                    .ok_or_else(|| AppError::NotFound(format!("connection not found: {connection_id}")))?;
+                let connection = self.connection_manager.get(connection_id)?.ok_or_else(|| {
+                    AppError::NotFound(format!("connection not found: {connection_id}"))
+                })?;
                 let file_ops = self.remote_file_ops(&connection).await?;
                 let trimmed = new_path.trim_end_matches('/');
                 let trimmed = if trimmed.is_empty() { "/" } else { trimmed };
-                file_ops
-                    .list_dir(trimmed)
-                    .await
-                    .map_err(|_| AppError::NotFound(format!("远程目录不存在或不可访问: {trimmed}")))?;
+                file_ops.list_dir(trimmed).await.map_err(|_| {
+                    AppError::NotFound(format!("远程目录不存在或不可访问: {trimmed}"))
+                })?;
                 if let Some(existing) = self.repo.find_by_remote(connection_id, trimmed)? {
                     if existing.id != id {
-                        return Err(AppError::Conflict(format!("该目录已经是另一个工作区：{}", existing.display_name)));
+                        return Err(AppError::Conflict(format!(
+                            "该目录已经是另一个工作区：{}",
+                            existing.display_name
+                        )));
                     }
                 }
                 profile.display_name = format!(
@@ -268,7 +337,13 @@ impl WorkspaceManager {
         self.repo.touch_last_opened(id)
     }
 
-    pub fn update_last_sftp_paths(&self, id: Uuid, local_path: &str, remote_path: &str) -> Result<(), AppError> {
-        self.repo.update_last_sftp_paths(id, local_path, remote_path)
+    pub fn update_last_sftp_paths(
+        &self,
+        id: Uuid,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<(), AppError> {
+        self.repo
+            .update_last_sftp_paths(id, local_path, remote_path)
     }
 }

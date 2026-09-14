@@ -154,6 +154,12 @@ function App() {
   // 不会和真实工作区撞车。
   useEffect(() => {
     if (mode === "editor") void useTerminalStore.getState().switchWorkspace("__standalone_editor__");
+    // Resource manager window has no persisted workspace profile, but its
+    // terminal sessions still need a stable workspace bucket so that
+    // `openTerminal({ kind: "local", cwd })` can be used from any directory.
+    // Keep this pseudo id separate from real workspace UUIDs and the editor
+    // module bucket.
+    if (mode === "explorer") void useTerminalStore.getState().switchWorkspace("__explorer__");
   }, [mode]);
 
   // 编辑器模块"记住最后一次打开的文件列表"（用户 2026-09-04 需求），和 App.tsx
@@ -385,13 +391,17 @@ function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
+        // The resource-manager module reserves Ctrl+O for opening a terminal
+        // in the currently focused directory; let LocalExplorerScreen handle
+        // that shortcut instead of opening the file picker.
+        if (mode === "explorer") return;
         e.preventDefault();
         void openFileDialog();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openFileDialog]);
+  }, [openFileDialog, mode]);
 
   // 全局外部文件拖入：和 `useDualPaneDnd`（SFTP/Agent 双栏内部的拖拽，hooks/
   // useDualPaneDnd.ts）各管一摊——两边各自独立调用 Tauri 的 `onDragDropEvent`，

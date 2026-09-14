@@ -20,16 +20,25 @@ pub struct SkillMeta {
 /// 标量字段，不值得为此引入一个完整的 yaml crate。返回 `(字段表, 正文)`；
 /// 找不到规范的 `---` 包裹头部时，整份内容当正文、字段表为空。
 pub fn parse_frontmatter(text: &str) -> (HashMap<String, String>, &str) {
-    let Some(rest) = text.strip_prefix("---") else { return (HashMap::new(), text) };
+    let Some(rest) = text.strip_prefix("---") else {
+        return (HashMap::new(), text);
+    };
     let rest = rest.strip_prefix('\n').unwrap_or(rest);
-    let Some(end) = rest.find("\n---") else { return (HashMap::new(), text) };
+    let Some(end) = rest.find("\n---") else {
+        return (HashMap::new(), text);
+    };
     let header = &rest[..end];
-    let body = rest[end + 4..].strip_prefix('\n').unwrap_or(&rest[end + 4..]);
+    let body = rest[end + 4..]
+        .strip_prefix('\n')
+        .unwrap_or(&rest[end + 4..]);
 
     let mut fields = HashMap::new();
     for line in header.lines() {
         if let Some((key, value)) = line.split_once(':') {
-            fields.insert(key.trim().to_string(), value.trim().trim_matches('"').to_string());
+            fields.insert(
+                key.trim().to_string(),
+                value.trim().trim_matches('"').to_string(),
+            );
         }
     }
     (fields, body)
@@ -41,28 +50,45 @@ pub fn parse_frontmatter(text: &str) -> (HashMap<String, String>, &str) {
 /// "锦上添花"的能力，不应该因为一个格式错误的技能目录阻断整个会话启动。
 pub async fn discover_skills(file_ops: &dyn FileOps, root: &str) -> Vec<SkillMeta> {
     let skills_root = format!("{}/{SKILLS_DIR}", root.trim_end_matches(['/', '\\']));
-    let Ok(entries) = file_ops.list_dir(&skills_root).await else { return Vec::new() };
+    let Ok(entries) = file_ops.list_dir(&skills_root).await else {
+        return Vec::new();
+    };
 
     let mut skills = Vec::new();
     for entry in entries.into_iter().filter(|e| e.is_dir) {
         let skill_md_path = format!("{}/SKILL.md", entry.path);
-        let Ok(content) = file_ops.read_file(&skill_md_path).await else { continue };
+        let Ok(content) = file_ops.read_file(&skill_md_path).await else {
+            continue;
+        };
         let (fields, _body) = parse_frontmatter(&content.text);
-        let name = fields.get("name").cloned().unwrap_or_else(|| entry.name.clone());
+        let name = fields
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| entry.name.clone());
         let description = fields.get("description").cloned().unwrap_or_default();
-        skills.push(SkillMeta { name, description, dir: entry.path.clone() });
+        skills.push(SkillMeta {
+            name,
+            description,
+            dir: entry.path.clone(),
+        });
     }
     skills
 }
 
 /// `skill` 工具的执行体：按名称找到对应技能目录，读 `SKILL.md` 正文（frontmatter
 /// 之后的部分）返回给模型。
-pub async fn load_skill_body(file_ops: &dyn FileOps, skills: &[SkillMeta], name: &str) -> Result<String, AppError> {
+pub async fn load_skill_body(
+    file_ops: &dyn FileOps,
+    skills: &[SkillMeta],
+    name: &str,
+) -> Result<String, AppError> {
     let meta = skills
         .iter()
         .find(|s| s.name == name)
         .ok_or_else(|| AppError::NotFound(format!("未找到技能：{name}")))?;
-    let content = file_ops.read_file(&format!("{}/SKILL.md", meta.dir)).await?;
+    let content = file_ops
+        .read_file(&format!("{}/SKILL.md", meta.dir))
+        .await?;
     let (_fields, body) = parse_frontmatter(&content.text);
     Ok(body.to_string())
 }
@@ -76,7 +102,10 @@ mod tests {
         let text = "---\nname: demo\ndescription: 一个示例技能\n---\n\n这里是正文\n第二行\n";
         let (fields, body) = parse_frontmatter(text);
         assert_eq!(fields.get("name").map(String::as_str), Some("demo"));
-        assert_eq!(fields.get("description").map(String::as_str), Some("一个示例技能"));
+        assert_eq!(
+            fields.get("description").map(String::as_str),
+            Some("一个示例技能")
+        );
         assert!(body.contains("这里是正文"));
     }
 

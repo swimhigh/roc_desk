@@ -15,7 +15,10 @@ pub struct LaunchContext {
 
 #[tauri::command]
 pub fn get_launch_context(state: State<'_, AppState>) -> LaunchContext {
-    LaunchContext { mode: state.launch_mode.clone(), open: state.launch_open.clone() }
+    LaunchContext {
+        mode: state.launch_mode.clone(),
+        open: state.launch_open.clone(),
+    }
 }
 
 /// 首页"点开一个模块"和模块窗口"返回首页"共用的入口——不带 `mode` 就是拉起（或

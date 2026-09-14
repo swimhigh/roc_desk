@@ -60,7 +60,9 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
         }
     }
     regex_src.push('$');
-    regex::Regex::new(&regex_src).map(|re| re.is_match(text)).unwrap_or(false)
+    regex::Regex::new(&regex_src)
+        .map(|re| re.is_match(text))
+        .unwrap_or(false)
 }
 
 /// 一次 `send_message` 生命周期内有效的规则快照——每条消息处理前从数据库现取一份
@@ -72,7 +74,9 @@ pub struct PermissionEngine {
 
 impl PermissionEngine {
     pub fn load(repo: &PermissionRulesRepo) -> Result<Self, AppError> {
-        Ok(Self { rules: repo.list()? })
+        Ok(Self {
+            rules: repo.list()?,
+        })
     }
 
     /// 后创建的规则优先命中（`rules` 已经按 `created_at` 升序，这里反向查找），
@@ -106,7 +110,14 @@ mod tests {
     }
 
     fn rule(tool: &str, pattern: &str, decision: Decision, created_at: &str) -> PermissionRule {
-        PermissionRule { id: Uuid::new_v4(), tool: tool.into(), pattern: pattern.into(), decision, enabled: true, created_at: created_at.into() }
+        PermissionRule {
+            id: Uuid::new_v4(),
+            tool: tool.into(),
+            pattern: pattern.into(),
+            decision,
+            enabled: true,
+            created_at: created_at.into(),
+        }
     }
 
     #[test]
@@ -117,13 +128,21 @@ mod tests {
                 rule("run_command", "git push *", Decision::Ask, "2026-01-02"),
             ],
         };
-        assert_eq!(engine.decide("run_command", "git push origin main"), Some(Decision::Ask));
-        assert_eq!(engine.decide("run_command", "git status"), Some(Decision::Allow));
+        assert_eq!(
+            engine.decide("run_command", "git push origin main"),
+            Some(Decision::Ask)
+        );
+        assert_eq!(
+            engine.decide("run_command", "git status"),
+            Some(Decision::Allow)
+        );
     }
 
     #[test]
     fn no_match_returns_none() {
-        let engine = PermissionEngine { rules: vec![rule("run_command", "git *", Decision::Allow, "2026-01-01")] };
+        let engine = PermissionEngine {
+            rules: vec![rule("run_command", "git *", Decision::Allow, "2026-01-01")],
+        };
         assert_eq!(engine.decide("run_command", "npm install"), None);
     }
 
@@ -131,7 +150,9 @@ mod tests {
     fn disabled_rule_is_ignored() {
         let mut disabled = rule("run_command", "git *", Decision::Allow, "2026-01-01");
         disabled.enabled = false;
-        let engine = PermissionEngine { rules: vec![disabled] };
+        let engine = PermissionEngine {
+            rules: vec![disabled],
+        };
         assert_eq!(engine.decide("run_command", "git status"), None);
     }
 }

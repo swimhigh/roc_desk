@@ -1,5 +1,7 @@
 use serde::Deserialize;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl};
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl,
+};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -51,7 +53,8 @@ fn tab_label(tab_id: &str) -> Result<String, AppError> {
     // tab_id 是前端生成、拼进 Tauri 窗口/WebView label 的字符串——校验成合法 UUID
     // 而不是原样拼接，避免任何异常输入（哪怕只是前端 bug 传了个奇怪的字符串）产生
     // 意料之外的 label。
-    let parsed = Uuid::parse_str(tab_id).map_err(|_| AppError::Internal("非法的标签页 ID".into()))?;
+    let parsed =
+        Uuid::parse_str(tab_id).map_err(|_| AppError::Internal("非法的标签页 ID".into()))?;
     Ok(format!("{TAB_LABEL_PREFIX}{parsed}"))
 }
 
@@ -99,7 +102,9 @@ fn urlencoding_lite(s: &str) -> String {
     let mut out = String::new();
     for byte in s.as_bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -120,9 +125,16 @@ fn apply_bounds(webview: &Webview, bounds: PanelBounds) -> Result<(), AppError> 
 /// 描述的矩形区域，并确保可见。`bounds` 用的是逻辑像素（CSS px），和前端
 /// `getBoundingClientRect()` 拿到的值直接对应——Tauri 的 `Logical*` 类型内部按窗口
 /// 缩放因子换算成物理像素，不需要在前端手动处理 DPI 缩放。
-pub fn open_or_navigate(app_handle: &AppHandle, tab_id: &str, url: &str, bounds: PanelBounds) -> Result<(), AppError> {
+pub fn open_or_navigate(
+    app_handle: &AppHandle,
+    tab_id: &str,
+    url: &str,
+    bounds: PanelBounds,
+) -> Result<(), AppError> {
     let label = tab_label(tab_id)?;
-    let parsed: tauri::Url = url.parse().map_err(|e| AppError::Internal(format!("无效的 URL：{e}")))?;
+    let parsed: tauri::Url = url
+        .parse()
+        .map_err(|e| AppError::Internal(format!("无效的 URL：{e}")))?;
 
     if let Some(webview) = app_handle.get_webview(&label) {
         webview
@@ -138,7 +150,8 @@ pub fn open_or_navigate(app_handle: &AppHandle, tab_id: &str, url: &str, bounds:
     let window = app_handle
         .get_window("main")
         .ok_or_else(|| AppError::Internal("找不到主窗口".into()))?;
-    let builder = WebviewBuilder::new(label, WebviewUrl::External(parsed)).zoom_hotkeys_enabled(true);
+    let builder =
+        WebviewBuilder::new(label, WebviewUrl::External(parsed)).zoom_hotkeys_enabled(true);
     window
         .add_child(
             builder,
@@ -151,7 +164,11 @@ pub fn open_or_navigate(app_handle: &AppHandle, tab_id: &str, url: &str, bounds:
 
 /// 只调整位置/大小（窗口缩放、侧边栏拖拽调宽等场景），不存在时静默跳过——调用方
 /// 不需要先判断"这个 Tab 当前是否已经打开过网页"。
-pub fn set_bounds(app_handle: &AppHandle, tab_id: &str, bounds: PanelBounds) -> Result<(), AppError> {
+pub fn set_bounds(
+    app_handle: &AppHandle,
+    tab_id: &str,
+    bounds: PanelBounds,
+) -> Result<(), AppError> {
     let label = tab_label(tab_id)?;
     if let Some(webview) = app_handle.get_webview(&label) {
         apply_bounds(&webview, bounds)?;
@@ -164,7 +181,9 @@ pub fn set_bounds(app_handle: &AppHandle, tab_id: &str, bounds: PanelBounds) -> 
 pub fn hide(app_handle: &AppHandle, tab_id: &str) -> Result<(), AppError> {
     let label = tab_label(tab_id)?;
     if let Some(webview) = app_handle.get_webview(&label) {
-        webview.hide().map_err(|e| AppError::Internal(format!("隐藏浏览器失败：{e}")))?;
+        webview
+            .hide()
+            .map_err(|e| AppError::Internal(format!("隐藏浏览器失败：{e}")))?;
     }
     Ok(())
 }
@@ -175,7 +194,9 @@ pub fn show(app_handle: &AppHandle, tab_id: &str, bounds: PanelBounds) -> Result
     let label = tab_label(tab_id)?;
     if let Some(webview) = app_handle.get_webview(&label) {
         apply_bounds(&webview, bounds)?;
-        webview.show().map_err(|e| AppError::Internal(format!("显示浏览器失败：{e}")))?;
+        webview
+            .show()
+            .map_err(|e| AppError::Internal(format!("显示浏览器失败：{e}")))?;
     }
     Ok(())
 }
@@ -184,7 +205,9 @@ pub fn show(app_handle: &AppHandle, tab_id: &str, bounds: PanelBounds) -> Result
 pub fn close(app_handle: &AppHandle, tab_id: &str) -> Result<(), AppError> {
     let label = tab_label(tab_id)?;
     if let Some(webview) = app_handle.get_webview(&label) {
-        webview.close().map_err(|e| AppError::Internal(format!("关闭浏览器失败：{e}")))?;
+        webview
+            .close()
+            .map_err(|e| AppError::Internal(format!("关闭浏览器失败：{e}")))?;
     }
     Ok(())
 }
@@ -196,7 +219,9 @@ pub fn close(app_handle: &AppHandle, tab_id: &str) -> Result<(), AppError> {
 pub fn close_all(app_handle: &AppHandle) -> Result<(), AppError> {
     for (label, webview) in app_handle.webviews() {
         if label.starts_with(TAB_LABEL_PREFIX) {
-            webview.close().map_err(|e| AppError::Internal(format!("关闭浏览器失败：{e}")))?;
+            webview
+                .close()
+                .map_err(|e| AppError::Internal(format!("关闭浏览器失败：{e}")))?;
         }
     }
     Ok(())
@@ -208,7 +233,10 @@ mod tests {
 
     #[test]
     fn passes_through_https_url() {
-        assert_eq!(normalize_url("https://github.com").unwrap(), "https://github.com");
+        assert_eq!(
+            normalize_url("https://github.com").unwrap(),
+            "https://github.com"
+        );
     }
 
     #[test]

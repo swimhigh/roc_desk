@@ -1,9 +1,36 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "protocol", "agent"]
+members = ["src-tauri", "protocol", "agent", "codex-engine"]
+# `vendor/codex/codex-rs`是它自己的、独立的 cargo workspace（140+ crate，自己的
+# `[workspace.package]`）。不排除的话 cargo 会把这棵嵌套目录树误当成本 workspace
+# 的隐式成员，导致 `codex-engine` path 依赖的 codex crate（比如
+# `codex-exec-server-protocol`）在解析 `edition.workspace = true` 之类的继承字段
+# 时，错误地对着本仓库根 `Cargo.toml`（没有 `[workspace.package]`）找，而不是对着
+# codex-rs 自己的 workspace 根找，报 "workspace.package.edition was not defined"。
+exclude = ["vendor/codex"]
 
 # `src-tauri` 是现有客户端 crate（roc_desk.exe），`protocol`/`agent` 是新增的
 # Windows 远程 Agent 方案（AGENT_DESIGN.md）：`protocol` 是客户端与 Agent 共享的
 # 纯数据协议 crate，`agent` 产出独立部署在远程 Windows 服务器上的 roc_desk_agent.exe。
 # 三者放进同一个 workspace 只是为了共用一份 Cargo.lock/依赖解析缓存，不代表
 # roc_desk.exe 运行时依赖 agent crate——`src-tauri` 只依赖 `protocol`。
+#
+# `codex-engine` 是引入 OpenAI Codex（vendor 进 `vendor/codex` 的 git submodule）
+# 的新增 crate，见 docs/CODEX_INTEGRATION_PLAN.md：只有它 path 依赖 codex-rs 的
+# 具体 crate（core-api/protocol/exec-server*），`src-tauri` 只依赖 `codex-engine`
+# 这一层，不直接碰 codex 内部 crate，爆炸半径收在这一个 crate 里。
+
+# codex-rs 自己的 workspace 对三个 crate 打了 patch（见 vendor/codex/codex-rs/
+# Cargo.toml），改用官方 fork 而不是 crates.io 版本（tokio-tungstenite 的
+# crates.io 版本缺 codex-core 要用的 "proxy" feature）。`codex-engine` 脱离
+# codex-rs 自己的 workspace 后不会自动继承这份 patch，必须在这里（消费方的
+# 根 workspace）重新声明一遍，否则 `cargo check` 直接报错——已经用一个独立
+# spike 工程验证过这个结论（见 docs/CODEX_INTEGRATION_PLAN.md Phase 0）。
+# 后续跟着 codex 升级时要留意这份 patch 有没有变化。
+[patch.crates-io]
+crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
+
+[patch."ssh://git@github.com/openai-oss-forks/tungstenite-rs.git"]
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }

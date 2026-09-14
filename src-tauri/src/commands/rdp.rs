@@ -15,7 +15,10 @@ pub async fn rdp_connect(
     profile_id: Uuid,
     bounds: PanelBounds,
 ) -> Result<Uuid, AppError> {
-    state.rdp_sessions.connect(&app_handle, profile_id, bounds).await
+    state
+        .rdp_sessions
+        .connect(&app_handle, profile_id, bounds)
+        .await
 }
 
 /// 面板尺寸变化时调用（窗口缩放、侧边栏拖拽调宽、标签切换）。
@@ -26,7 +29,9 @@ pub async fn rdp_set_bounds(
     session_id: Uuid,
     bounds: PanelBounds,
 ) -> Result<(), AppError> {
-    state.rdp_sessions.set_bounds(&app_handle, session_id, bounds)
+    state
+        .rdp_sessions
+        .set_bounds(&app_handle, session_id, bounds)
 }
 
 /// 切走这个标签页时调用——内嵌窗口不受 CSS 影响，必须显式隐藏。
@@ -53,6 +58,9 @@ pub async fn rdp_disconnect(state: State<'_, AppState>, session_id: Uuid) -> Res
 }
 
 #[tauri::command]
-pub async fn rdp_status(state: State<'_, AppState>, session_id: Uuid) -> Result<crate::rdp::RdpStatus, AppError> {
+pub async fn rdp_status(
+    state: State<'_, AppState>,
+    session_id: Uuid,
+) -> Result<crate::rdp::RdpStatus, AppError> {
     state.rdp_sessions.status(session_id)
 }

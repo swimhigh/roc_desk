@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Folder, FolderOpen, File as FileIcon } from "lucide-react";
 import { useExplorerStore } from "../../stores/explorerStore";
 import { useEditorStore } from "../../stores/editorStore";
@@ -83,6 +84,29 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   useEffect(() => {
     loadRoot(workspaceId, rootPath);
   }, [workspaceId, rootPath, loadRoot]);
+
+  useEffect(() => {
+    let disposed = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let unlisten: (() => void) | undefined;
+
+    void listen<{ workspaceId: string }>("fs:changed", (event) => {
+      if (event.payload.workspaceId !== workspaceId) return;
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        void refreshAll(workspaceId, rootPath);
+      }, 100);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+
+    return () => {
+      disposed = true;
+      clearTimeout(refreshTimer);
+      unlisten?.();
+    };
+  }, [workspaceId, rootPath, refreshAll]);
 
   useEffect(() => {
     const handler = async (ev: Event) => {

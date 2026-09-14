@@ -1,8 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// 建连本身没有超时保护过——2026-09 用户实测复现：远程主机网络层面不可达时
+/// （不是"服务器拒绝"这种能立刻报错的场景，是连 TCP 握手都没人应答/被防火墙
+/// 静默丢弃那种），`SshSession::connect` 会无限期挂起，`get_or_connect` 跟着
+/// 永远不返回，调用方（`run_command`/SFTP/终端……）表现成"卡住不动"，界面上
+/// 完全看不出是在等连接还是在等别的什么。给建连单独包一层超时，跟
+/// `session.rs::EXEC_TIMEOUT`（命令执行超时）是同一个道理，只是这里更短——
+/// 正常网络下握手应该在几秒内完成，30 秒已经足够宽松。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::known_hosts::KnownHostsVerifier;
 use super::session::SshSession;
@@ -22,7 +32,10 @@ pub struct SshConnectionPool {
 }
 
 impl SshConnectionPool {
-    pub fn new(connection_manager: Arc<ConnectionManager>, verifier: Arc<KnownHostsVerifier>) -> Self {
+    pub fn new(
+        connection_manager: Arc<ConnectionManager>,
+        verifier: Arc<KnownHostsVerifier>,
+    ) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             file_ops: RwLock::new(HashMap::new()),
@@ -50,14 +63,45 @@ impl SshConnectionPool {
             .ok_or_else(|| AppError::NotFound(format!("connection not found: {profile_id}")))?;
         let secret = self.connection_manager.resolve_secret(&profile).await?;
 
-        let session = Arc::new(SshSession::connect(&profile, secret, self.verifier.clone()).await?);
+        let session = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            SshSession::connect(&profile, secret, self.verifier.clone()),
+        )
+        .await
+        {
+            Ok(result) => Arc::new(result?),
+            Err(_) => {
+                return Err(AppError::Connection(format!(
+                    "连接超时（{}s）：{}，请检查网络是否可达",
+                    CONNECT_TIMEOUT.as_secs(),
+                    profile.host
+                )));
+            }
+        };
         self.connection_manager.touch_last_connected(profile_id)?;
-        self.sessions.write().await.insert(profile_id, session.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(profile_id, session.clone());
         Ok(session)
     }
 
     pub async fn get(&self, profile_id: Uuid) -> Option<Arc<SshSession>> {
         self.sessions.read().await.get(&profile_id).cloned()
+    }
+
+    /// 主动清掉一条缓存连接——`is_alive()` 只检查本地的 handle 是否已经被显式
+    /// 关闭（`!sender.is_closed()`），网络层面静默失联（服务器无响应/连接被
+    /// NAT/防火墙悄悄丢弃，既没收到 FIN 也没收到 RST）时它仍然会报"活着"。
+    /// 2026-09 用户实测复现：远程 SSH 目标下 `run_command`（`top`/`ps` 这类简单
+    /// 只读命令）卡住 60~120 秒最终以 `EXEC_TIMEOUT` 超时收场——这之后如果不主动
+    /// 清掉这条死连接，下一次 `get_or_connect` 还是会把同一条失联的连接原样交出去，
+    /// 陷入"每次都要等满 120 秒超时"的死循环。调用方应该在拿到
+    /// `SshSession::exec`/`open_sftp` 等操作的错误（尤其是超时）之后调用这个方法，
+    /// 逼下一次 `get_or_connect` 走真正的重连路径。
+    pub async fn evict(&self, profile_id: Uuid) {
+        self.sessions.write().await.remove(&profile_id);
+        self.file_ops.write().await.remove(&profile_id);
     }
 
     /// 供 SFTP 自由浏览快捷工具（§3.3，无工作区边界限制）和工作区 Explorer 共用。

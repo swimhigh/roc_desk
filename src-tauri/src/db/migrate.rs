@@ -47,6 +47,10 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0016_transfer_log_bytes",
         include_str!("../../migrations/0016_transfer_log_bytes.sql"),
     ),
+    (
+        "0017_coding_history_messages",
+        include_str!("../../migrations/0017_coding_history_messages.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
@@ -93,10 +97,7 @@ fn apply(conn: &Connection, migrations: &[(&str, &str)]) -> Result<(), AppError>
             continue;
         }
         conn.execute_batch(sql)?;
-        conn.execute(
-            "INSERT INTO schema_migrations (name) VALUES (?1)",
-            [name],
-        )?;
+        conn.execute("INSERT INTO schema_migrations (name) VALUES (?1)", [name])?;
         tracing::info!("applied migration {}", name);
     }
 
@@ -122,7 +123,11 @@ pub fn run_workspaces_migrations(conn: &Connection) -> Result<(), AppError> {
 /// 负责判断"新库是不是刚创建"（`!new_db_path.exists()`，必须在 `create_pool` 之前
 /// 判断，因为拿连接就会把文件建出来）。搬完不删老库里的旧表，比删除更安全——
 /// 多占的磁盘空间可以忽略不计，留着也不会被新代码路径读到。
-pub fn migrate_legacy_data(old_db_path: &std::path::Path, new_conn: &Connection, tables: &[&str]) -> Result<(), AppError> {
+pub fn migrate_legacy_data(
+    old_db_path: &std::path::Path,
+    new_conn: &Connection,
+    tables: &[&str],
+) -> Result<(), AppError> {
     if !old_db_path.exists() {
         return Ok(());
     }
@@ -141,7 +146,13 @@ pub fn migrate_legacy_data(old_db_path: &std::path::Path, new_conn: &Connection,
             continue;
         }
         // 表名不能参数化绑定，但 `tables` 是调用方写死的内部常量列表，不是外部输入。
-        new_conn.execute(&format!("INSERT OR IGNORE INTO {t} SELECT * FROM legacy.{t}", t = table), [])?;
+        new_conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {t} SELECT * FROM legacy.{t}",
+                t = table
+            ),
+            [],
+        )?;
         tracing::info!("migrated legacy table {} into new database", table);
     }
 

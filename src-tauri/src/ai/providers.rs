@@ -43,7 +43,10 @@ pub struct AiProviderManager {
 
 impl AiProviderManager {
     pub fn new(repo: Arc<AiProvidersRepo>, credential_store: Arc<dyn CredentialStore>) -> Self {
-        Self { repo, credential_store }
+        Self {
+            repo,
+            credential_store,
+        }
     }
 
     pub async fn create(&self, input: AiProviderInput) -> Result<AiProvider, AppError> {
@@ -83,7 +86,10 @@ impl AiProviderManager {
             if key.is_empty() {
                 existing.api_key_ref
             } else {
-                let cred_key = existing.api_key_ref.clone().unwrap_or_else(|| credential_key(id));
+                let cred_key = existing
+                    .api_key_ref
+                    .clone()
+                    .unwrap_or_else(|| credential_key(id));
                 self.credential_store.set(&cred_key, key).await?;
                 Some(cred_key)
             }

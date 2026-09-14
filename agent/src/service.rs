@@ -14,8 +14,8 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use windows_service::service::{
-    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo, ServiceStartType,
-    ServiceState, ServiceStatus, ServiceType,
+    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
+    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -26,7 +26,9 @@ const SERVICE_DISPLAY_NAME: &str = "roc_desk Agent";
 
 pub fn install() -> Result<(), String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CREATE_SERVICE).map_err(|e| e.to_string())?;
+    let manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CREATE_SERVICE)
+            .map_err(|e| e.to_string())?;
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
         display_name: OsString::from(SERVICE_DISPLAY_NAME),
@@ -44,16 +46,25 @@ pub fn install() -> Result<(), String> {
         account_password: None,
     };
     let service = manager
-        .create_service(&service_info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
+        .create_service(
+            &service_info,
+            ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+        )
         .map_err(|e| e.to_string())?;
-    service.set_description("roc_desk 远程 Windows Agent：常驻后台，供 roc_desk 客户端连接").map_err(|e| e.to_string())?;
+    service
+        .set_description("roc_desk 远程 Windows Agent：常驻后台，供 roc_desk 客户端连接")
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub fn uninstall() -> Result<(), String> {
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).map_err(|e| e.to_string())?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| e.to_string())?;
     let service = manager
-        .open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS)
+        .open_service(
+            SERVICE_NAME,
+            ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
+        )
         .map_err(|e| e.to_string())?;
 
     if let Ok(status) = service.query_status() {
@@ -84,7 +95,9 @@ fn service_main(_arguments: Vec<OsString>) {
         }
     };
 
-    let Ok(status_handle) = service_control_handler::register(SERVICE_NAME, event_handler) else { return };
+    let Ok(status_handle) = service_control_handler::register(SERVICE_NAME, event_handler) else {
+        return;
+    };
     let set_status = |state: ServiceState, accept: ServiceControlAccept| {
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -100,7 +113,10 @@ fn service_main(_arguments: Vec<OsString>) {
     set_status(ServiceState::Running, ServiceControlAccept::STOP);
 
     let _runtime_thread = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
         runtime.block_on(async {
             if let Err(e) = crate::run_agent().await {
                 tracing::error!(error = %e, "Agent 服务运行出错");

@@ -2,13 +2,16 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::log::{IndexStats, LogQuery, LogSearchResult};
 use crate::log::remote::{search_live, LiveSearchResult};
+use crate::log::{IndexStats, LogQuery, LogSearchResult};
 use crate::state::AppState;
 
 /// 模式 B：本地索引搜索（DESIGN.md §3.4.2），查 FTS5。
 #[tauri::command]
-pub async fn log_search_index(state: State<'_, AppState>, query: LogQuery) -> Result<Vec<LogSearchResult>, AppError> {
+pub async fn log_search_index(
+    state: State<'_, AppState>,
+    query: LogQuery,
+) -> Result<Vec<LogSearchResult>, AppError> {
     state.log_engine.search(&query)
 }
 
@@ -21,10 +24,7 @@ pub async fn log_search_live(
     path: String,
     is_regex: bool,
 ) -> Result<Vec<LiveSearchResult>, AppError> {
-    let session = state
-        .ssh_pool
-        .get_or_connect(profile_id)
-        .await?;
+    let session = state.ssh_pool.get_or_connect(profile_id).await?;
     search_live(&session, &pattern, &path, is_regex).await
 }
 
@@ -59,6 +59,9 @@ pub async fn log_index_stats(state: State<'_, AppState>) -> Result<IndexStats, A
 }
 
 #[tauri::command]
-pub async fn log_index_clear(state: State<'_, AppState>, older_than_days: i64) -> Result<usize, AppError> {
+pub async fn log_index_clear(
+    state: State<'_, AppState>,
+    older_than_days: i64,
+) -> Result<usize, AppError> {
     state.log_engine.clear_older_than(older_than_days)
 }

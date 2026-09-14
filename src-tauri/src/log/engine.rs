@@ -92,8 +92,12 @@ impl LogSearchEngine {
     pub fn index_stats(&self) -> Result<IndexStats, AppError> {
         let conn = self.pool.get()?;
         let row_count: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0))?;
-        let job_count: i64 = conn.query_row("SELECT COUNT(*) FROM log_import_jobs", [], |r| r.get(0))?;
-        Ok(IndexStats { row_count, job_count })
+        let job_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM log_import_jobs", [], |r| r.get(0))?;
+        Ok(IndexStats {
+            row_count,
+            job_count,
+        })
     }
 
     /// LRU 清理：删除超过 `older_than_days` 天未刷新的导入任务及其索引行
@@ -129,7 +133,12 @@ pub struct IndexStats {
     pub job_count: i64,
 }
 
-fn tx_record_job(pool: &DbPool, file_path: &str, host_name: &str, count: usize) -> Result<(), AppError> {
+fn tx_record_job(
+    pool: &DbPool,
+    file_path: &str,
+    host_name: &str,
+    count: usize,
+) -> Result<(), AppError> {
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO log_import_jobs (id, host_name, file_path, status, bytes_total, bytes_done, created_at)

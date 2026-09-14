@@ -28,12 +28,18 @@ pub async fn list_dir(path: &Path) -> Result<Vec<FileEntry>, (ErrorCode, String)
     let mut read_dir = tokio::fs::read_dir(path).await.map_err(err_pair)?;
     let mut entries = Vec::new();
     while let Some(entry) = read_dir.next_entry().await.map_err(err_pair)? {
-        let Ok(metadata) = entry.metadata().await else { continue };
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().to_string();
         let full_path = entry.path().to_string_lossy().to_string();
         entries.push(FileEntry {
             is_dir: metadata.is_dir(),
-            size: if metadata.is_dir() { None } else { Some(metadata.len()) },
+            size: if metadata.is_dir() {
+                None
+            } else {
+                Some(metadata.len())
+            },
             modified: Some(mtime_of(metadata.modified())),
             name,
             path: full_path,
@@ -63,10 +69,17 @@ pub async fn list_roots() -> Vec<String> {
 
 pub async fn stat(path: &Path) -> Result<(u64, i64, bool), (ErrorCode, String)> {
     let metadata = tokio::fs::metadata(path).await.map_err(err_pair)?;
-    Ok((metadata.len(), mtime_of(metadata.modified()), metadata.is_dir()))
+    Ok((
+        metadata.len(),
+        mtime_of(metadata.modified()),
+        metadata.is_dir(),
+    ))
 }
 
-pub async fn read_file(path: &Path, max_bytes: Option<u64>) -> Result<(Vec<u8>, i64), (ErrorCode, String)> {
+pub async fn read_file(
+    path: &Path,
+    max_bytes: Option<u64>,
+) -> Result<(Vec<u8>, i64), (ErrorCode, String)> {
     let metadata = tokio::fs::metadata(path).await.map_err(err_pair)?;
     let mtime = mtime_of(metadata.modified());
     let bytes = match max_bytes {
@@ -74,7 +87,10 @@ pub async fn read_file(path: &Path, max_bytes: Option<u64>) -> Result<(Vec<u8>, 
             use tokio::io::AsyncReadExt;
             let file = tokio::fs::File::open(path).await.map_err(err_pair)?;
             let mut buf = Vec::new();
-            file.take(limit).read_to_end(&mut buf).await.map_err(|e| (ErrorCode::Internal, e.to_string()))?;
+            file.take(limit)
+                .read_to_end(&mut buf)
+                .await
+                .map_err(|e| (ErrorCode::Internal, e.to_string()))?;
             buf
         }
         None => tokio::fs::read(path).await.map_err(err_pair)?,
@@ -84,7 +100,11 @@ pub async fn read_file(path: &Path, max_bytes: Option<u64>) -> Result<(Vec<u8>, 
 
 /// 返回 `Ok(Some(mtime))` 表示写入成功；`Ok(None)` 表示 mtime 冲突（调用方负责
 /// 组装 `Response::Conflict`，这里只做纯粹的读写逻辑）。
-pub async fn write_file(path: &Path, bytes: &[u8], expected_mtime: Option<i64>) -> Result<Option<(i64, i64, Vec<u8>)>, (ErrorCode, String)> {
+pub async fn write_file(
+    path: &Path,
+    bytes: &[u8],
+    expected_mtime: Option<i64>,
+) -> Result<Option<(i64, i64, Vec<u8>)>, (ErrorCode, String)> {
     if let Some(expected) = expected_mtime {
         if let Ok(metadata) = tokio::fs::metadata(path).await {
             let current = mtime_of(metadata.modified());
@@ -117,4 +137,3 @@ pub async fn rename(from: &Path, to: &Path) -> Result<(), (ErrorCode, String)> {
 pub async fn create_dir(path: &Path) -> Result<(), (ErrorCode, String)> {
     tokio::fs::create_dir_all(path).await.map_err(err_pair)
 }
-

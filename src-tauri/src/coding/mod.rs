@@ -1,3 +1,5 @@
+pub mod changes;
+pub mod codex_exec_target;
 pub mod diff;
 pub mod git_ops;
 pub mod guard;
@@ -13,7 +15,23 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
-pub use session::{ChangeStatus, ChatAttachment, CodingMode, CodingSession, CodingTarget, FileChange};
+pub use changes::ChangeStore;
+pub use session::{
+    ChangeStatus, ChatAttachment, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
+};
+
+/// 双引擎路由（docs/CODEX_INTEGRATION_PLAN.md Phase 6，2026-09 改为"codex 为核心"）：
+/// `CodexCoreEngine` 现在是默认引擎，任何 provider 都先尝试挂载，`attach_codex_engine`
+/// 初始化失败（或者后续第一次请求发现协议对不上）才落回自研引擎——不再按 `api_base`
+/// 字符串特征搞白名单。之所以还留着这个函数（而不是直接删掉调用点），是因为
+/// `codex-core` 的模型协议层写死了 OpenAI Responses API（`WireApi` 枚举现在只剩
+/// `Responses` 一个值，Chat Completions 支持已被官方砍掉，见
+/// `vendor/codex/codex-rs/model-provider-info/src/lib.rs` 的 `CHAT_WIRE_API_REMOVED_ERROR`）：
+/// 纯 Chat Completions 协议的第三方中转天生跟 codex-core 说不通话，这不是 roc_desk
+/// 这边能补的能力缺口，只能指望初始化/首次请求失败后的静默回退兜底。
+pub(crate) fn routes_to_codex_engine(_provider: &crate::ai::AiProvider) -> bool {
+    true
+}
 
 /// 等待前端响应的 `run_command` 确认请求（DESIGN.md §3.8.2.1），和
 /// `ssh::known_hosts::TrustPromptRegistry` 是同一套 oneshot 模式，分开建一个类型
@@ -23,20 +41,40 @@ pub use session::{ChangeStatus, ChatAttachment, CodingMode, CodingSession, Codin
 /// 不需要再单独建一个注册表。
 #[derive(Default, Clone)]
 pub struct CommandConfirmRegistry {
-    pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<bool>>>>,
+    pending: Arc<Mutex<HashMap<Uuid, (Uuid, oneshot::Sender<bool>)>>>,
 }
 
 impl CommandConfirmRegistry {
-    pub async fn register(&self) -> (Uuid, oneshot::Receiver<bool>) {
+    pub async fn register(&self, session_id: Uuid) -> (Uuid, oneshot::Receiver<bool>) {
         let (tx, rx) = oneshot::channel();
         let id = Uuid::new_v4();
-        self.pending.lock().await.insert(id, tx);
+        self.pending.lock().await.insert(id, (session_id, tx));
         (id, rx)
     }
 
     pub async fn resolve(&self, request_id: Uuid, allow: bool) {
-        if let Some(tx) = self.pending.lock().await.remove(&request_id) {
+        if let Some((_, tx)) = self.pending.lock().await.remove(&request_id) {
             let _ = tx.send(allow);
+        }
+    }
+
+    /// 完全授权模式在命令确认已弹出后才打开时，立即放行同一会话仍在等待的请求。
+    pub async fn allow_session(&self, session_id: Uuid) {
+        let pending = {
+            let mut pending = self.pending.lock().await;
+            let request_ids = pending
+                .iter()
+                .filter_map(|(request_id, (pending_session_id, _))| {
+                    (*pending_session_id == session_id).then_some(*request_id)
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| pending.remove(&request_id).map(|(_, tx)| tx))
+                .collect::<Vec<_>>()
+        };
+        for tx in pending {
+            let _ = tx.send(true);
         }
     }
 }

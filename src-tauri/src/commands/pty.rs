@@ -18,12 +18,21 @@ pub async fn pty_open(
 }
 
 #[tauri::command]
-pub async fn pty_write(state: State<'_, AppState>, channel_id: Uuid, data: Vec<u8>) -> Result<(), AppError> {
+pub async fn pty_write(
+    state: State<'_, AppState>,
+    channel_id: Uuid,
+    data: Vec<u8>,
+) -> Result<(), AppError> {
     state.local_pty.write(channel_id, data).await
 }
 
 #[tauri::command]
-pub async fn pty_resize(state: State<'_, AppState>, channel_id: Uuid, rows: u16, cols: u16) -> Result<(), AppError> {
+pub async fn pty_resize(
+    state: State<'_, AppState>,
+    channel_id: Uuid,
+    rows: u16,
+    cols: u16,
+) -> Result<(), AppError> {
     state.local_pty.resize(channel_id, rows, cols).await
 }
 

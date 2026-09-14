@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roc_desk — 代码树与架构说明</title>
+<style>
+:root{--bg:#0f172a;--panel:#111c34;--card:#172442;--text:#e5edf9;--muted:#a9b9d4;--line:#304365;--accent:#70c7ff;--green:#79d8a2;--code:#0b1224}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 "Microsoft YaHei",Segoe UI,Arial,sans-serif}header{padding:48px max(24px,calc((100% - 1160px)/2));background:linear-gradient(120deg,#172554,#0f172a 65%);border-bottom:1px solid var(--line)}h1{margin:0 0 8px;font-size:2.25rem}h2{margin:38px 0 14px;font-size:1.5rem;color:#fff}h3{margin:26px 0 10px;color:#dceaff}p,li{color:var(--muted)}a{color:var(--accent)}main{max-width:1160px;margin:auto;padding:28px 24px 64px}.notice,.flow,.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card h3{margin-top:0}.tag{display:inline-block;border-radius:999px;padding:2px 9px;margin:2px 4px 2px 0;background:#20345d;color:#cde8ff;font-size:.8rem}.ok{color:var(--green)}code{background:var(--code);padding:2px 5px;border-radius:4px;color:#cde8ff}pre{overflow:auto;background:var(--code);padding:18px;border:1px solid var(--line);border-radius:8px;color:#c8d8f4;line-height:1.55}details{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin:9px 0;padding:0 14px}summary{cursor:pointer;padding:12px 0;color:#eef5ff;font-weight:650}details>div{padding:0 0 14px}table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line)}th,td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#1b2b4e;color:#fff}tr:last-child td{border-bottom:0}.toc{columns:2;gap:32px}@media(max-width:650px){.toc{columns:1}h1{font-size:1.8rem}table{font-size:.9rem}}
+</style>
+</head>
+<body>
+<header>
+  <h1>roc_desk：代码树与架构说明</h1>
+  <p>面向人工阅读的 Tauri 开发者桌面客户端源码地图。内容根据仓库结构及实现入口整理；刻意排除了构建产物和依赖树。</p>
+  <span class="tag">Tauri 2</span><span class="tag">Rust</span><span class="tag">React 19</span><span class="tag">TypeScript</span><span class="tag">SQLite</span><span class="tag">Windows 优先</span>
+</header>
+<main>
+<section class="notice"><strong>范围说明。</strong>本文档覆盖维护中的源码、配置、迁移文件和设计文档；不包含 <code>node_modules/</code>、Rust <code>target/</code>、<code>dist/</code>、<code>build/</code>、可执行包以及 <code>bin/.rock_desk/</code> 中的运行时数据。这些目录属于生成物、安装产物或用户状态，而非源码架构。</section>
+<section>
+<h2>阅读导航</h2>
+<ol class="toc">
+<li><a href="#overview">系统概览</a></li><li><a href="#tree">仓库代码树</a></li>
+<li><a href="#desktop">桌面端后端</a></li><li><a href="#web">Web 前端</a></li>
+<li><a href="#agent">远程 Agent 与协议</a></li><li><a href="#codex">Codex 适配层</a></li>
+<li><a href="#data">持久化与安全</a></li><li><a href="#flows">关键执行流程</a></li>
+<li><a href="#build">构建与运维文件</a></li>
+</ol>
+</section>
+<section id="overview">
+<h2>1. 系统概览</h2>
+<div class="grid">
+<div class="card"><h3>桌面应用外壳</h3><p><code>src-tauri</code> 负责进程启动、应用状态、Tauri Command 注册、领域服务、持久化，以及本地与远程主机集成。</p></div>
+<div class="card"><h3>前端</h3><p><code>src-web</code> 负责 React 界面渲染。组件通过 Zustand Store 和 Service 包装层访问能力；Service 是 Tauri IPC 的边界。</p></div>
+<div class="card"><h3>远程访问</h3><p><code>ssh/</code> 提供 SSH 与 SFTP。可选的 <code>agent/</code> 独立程序提供经 TLS 保护的 Windows 远程服务协议。</p></div>
+<div class="card"><h3>以工作区为中心</h3><p>本地根目录和远程根目录统一表示为工作区。<code>FileOps</code> 抽象让 Explorer、编辑器、搜索和编程工具可以跨传输方式工作。</p></div>
+</div>
+<div class="flow"><strong>主要调用边界：</strong>React 组件 → Zustand Store → <code>services/*.ts</code> → Tauri <code>commands/*.rs</code> → 领域模块 / <code>AppState</code> → 本地文件系统、SSH/SFTP、Agent、数据库或 AI Provider。组件不应直接调用 Tauri。</div>
+</section>
+<section id="tree">
+<h2>2. 仓库代码树</h2>
+<pre>roc_desk/
+├── Cargo.toml                  Cargo 工作区：src-tauri、protocol、agent、codex-engine
+├── package.json                根目录 npm 命令转发入口
+├── README.md                   产品概览、开发与构建说明
+├── DESIGN.md                   产品与系统架构设计
+├── REQUIREMENTS.md             需求及实现状态
+├── CLAUDE.md                   仓库工程约定
+├── build-portable.ps1/.cmd     便携版构建入口
+├── .cargo/config.toml          工作区 Cargo 配置
+├── .github/workflows/release.yml  发布自动化
+│
+├── src-tauri/                  主桌面应用 crate（roc_desk.exe）
+│   ├── Cargo.toml              Rust 依赖与包配置
+│   ├── tauri.conf.json         Tauri 窗口、打包、开发/构建集成
+│   ├── capabilities/           Tauri 能力与权限声明
+│   ├── migrations/             按顺序执行的 SQLite 迁移
+│   └── src/                    后端模块与 Tauri Command 层
+│
+├── src-web/                    React + TypeScript 前端
+│   ├── package.json            Vite、React、Tauri API、Monaco、xterm、Zustand 依赖
+│   ├── vite.config.ts          Vite 开发/构建配置
+│   ├── src/                    UI、Store、IPC Service、样式和工具函数
+│   └── public/                 静态资源
+│
+├── protocol/                   客户端 ↔ 远程 Agent 共享数据协议 crate
+├── agent/                      独立部署的远程 Windows Agent crate
+├── codex-engine/               roc_desk 执行目标与 vendored Codex 运行时之间的适配层
+├── vendor/                     外部源码，含独立工作区的 Codex 子模块
+├── docs/                       设计文档、UI 原型、截图
+├── scripts/                    打包说明与辅助脚本
+└── bin/                        打包可执行文件和运行时数据；不属于源码</pre>
+</section>
+<section id="desktop">
+<h2>3. <code>src-tauri</code>：桌面端后端</h2>
+<p><code>src-tauri/src/lib.rs</code> 是后端组合根。它初始化便携数据目录、日志与 panic 捕获、数据库连接池/迁移、各类 Manager 和 Connection Pool，随后将它们放进 <code>AppState</code> 并注册 Tauri Command。它还区分单实例启动器进程和独立拉起的模块窗口进程。</p>
+<details open><summary>入口与横切文件</summary><div><table><tr><th>路径</th><th>职责</th></tr>
+<tr><td><code>main.rs</code></td><td>精简的二进制入口，委托给库入口。</td></tr><tr><td><code>lib.rs</code></td><td>应用启动、Tauri Builder/Plugin、状态初始化、Command 注册、便携数据与日志设置。</td></tr>
+<tr><td><code>state.rs</code></td><td><code>AppState</code>：供 Command 注入的共享 Manager、Pool、Repository、编程会话与运行时服务。</td></tr><tr><td><code>error.rs</code></td><td>面向前端操作的类型化错误转换。</td></tr>
+<tr><td><code>windows_context_menu.rs</code></td><td>Windows 原生右键菜单集成。</td></tr></table></div></details>
+<details><summary><code>commands/</code>：前端 IPC 门面</summary><div><p>Command Handler 获取状态、校验/转换请求参数、调用领域行为并序列化结果。业务逻辑应放在领域模块中，而非该 IPC 边界中。</p><table><tr><th>文件</th><th>Command 领域</th></tr><tr><td><code>workspace.rs</code>、<code>fs.rs</code>、<code>local_fs.rs</code></td><td>工作区生命周期与统一/本地文件操作。</td></tr><tr><td><code>ssh.rs</code>、<code>sftp.rs</code>、<code>transfer.rs</code>、<code>pty.rs</code>、<code>rdp.rs</code>、<code>agent.rs</code></td><td>远程终端、传输、本地终端、远程桌面和 Agent 交互。</td></tr><tr><td><code>connection.rs</code>、<code>connection_group.rs</code></td><td>已保存连接和连接分组管理。</td></tr><tr><td><code>ai.rs</code>、<code>coding.rs</code></td><td>AI 对话、编程会话、工具调用、Diff、权限和确认流程。</td></tr><tr><td><code>browser.rs</code>、<code>log_search.rs</code>、<code>launcher.rs</code>、<code>diagnostics.rs</code></td><td>内嵌浏览器、日志搜索、模块窗口启动和诊断。</td></tr></table></div></details>
+<details><summary><code>workspace/</code>、<code>fsops/</code> 和 <code>connection/</code>：核心领域层</summary><div><table><tr><th>模块</th><th>关键文件</th><th>职责</th></tr>
+<tr><td><code>workspace/</code></td><td><code>mod.rs</code>、<code>profile.rs</code></td><td>本地/远程工作区 Profile、活动 Handle、最近根目录以及对文件操作实现的关联。</td></tr>
+<tr><td><code>fsops/</code></td><td><code>mod.rs</code>、<code>local.rs</code>、<code>remote.rs</code>、<code>agent.rs</code></td><td>统一 <code>FileOps</code> 接口及其本地、SSH/SFTP、Agent 实现；还包括编码识别和二进制/JAR/Office 文件检查辅助能力。</td></tr>
+<tr><td><code>connection/</code></td><td><code>mod.rs</code>、<code>profile.rs</code>、<code>group.rs</code></td><td>连接 Profile、协议选项、分组和非敏感元数据管理。</td></tr>
+<tr><td><code>credential/</code></td><td><code>mod.rs</code>、<code>keyring_store.rs</code></td><td>基于操作系统密钥环的凭据存储抽象。</td></tr></table></div></details>
+<details><summary>基础设施与集成模块</summary><div><table><tr><th>模块</th><th>用途和关键文件</th></tr>
+<tr><td><code>ssh/</code></td><td>SSH 连接池与会话、主机密钥 TOFU 校验、监控、重连策略和 Channel 处理：<code>pool.rs</code>、<code>session.rs</code>、<code>known_hosts.rs</code>、<code>monitor.rs</code>、<code>reconnect.rs</code>。</td></tr>
+<tr><td><code>agent/</code></td><td>桌面端 Agent 握手、TLS 证书校验/信任提示、会话和连接池。</td></tr>
+<tr><td><code>pty/</code></td><td>原生本地终端会话的伪终端 Manager。</td></tr><tr><td><code>rdp/</code></td><td>远程桌面 Session 管理，使用打包的 FreeRDP 可执行文件/窗口集成。</td></tr>
+<tr><td><code>log/</code></td><td>日志导入、解析、本地 FTS 搜索，以及远程采集/搜索。</td></tr><tr><td><code>browser/</code></td><td>内嵌 WebView 生命周期与浏览历史行为。</td></tr>
+<tr><td><code>mcp/</code></td><td>MCP Server Manager 与 stdio/HTTP Client Transport 支持。</td></tr><tr><td><code>db/</code></td><td>SQLite Pool、迁移和 Repository；详见持久化章节。</td></tr></table></div></details>
+<details><summary><code>ai/</code> 和 <code>coding/</code>：AI 行为</summary><div><table><tr><th>区域</th><th>关键文件与职责</th></tr>
+<tr><td>AI 对话</td><td><code>chat.rs</code> 编排对话请求；<code>providers.rs</code> 管理 Provider 定义；<code>runtime.rs</code> 管理运行时行为；<code>sse.rs</code> 解析流式响应；<code>security.rs</code> 在外发请求前脱敏敏感内容。</td></tr>
+<tr><td>编程 Agent</td><td><code>session.rs</code> 是编程对话/会话的中心实现。<code>tools.rs</code> 适配文件/命令工具，<code>changes.rs</code> 跟踪修改，<code>diff.rs</code> 表示 Diff，<code>guard.rs</code>/<code>permission.rs</code> 实施命令安全和用户权限。</td></tr>
+<tr><td>支撑工具</td><td><code>git_ops.rs</code>、<code>skills.rs</code>、<code>webfetch.rs</code>、<code>codex_exec_target.rs</code> 分别提供 Git、Skill 发现、网页获取和 Codex 执行目标桥接。</td></tr></table></div></details>
+</section>
+<section id="web">
+<h2>4. <code>src-web</code>：React 前端</h2>
+<p><code>main.tsx</code> 挂载应用和全局样式。<code>App.tsx</code> 是大型顶层协调器，负责启动器/模块模式、布局、标签、对话框与全局事件。<code>monacoSetup.ts</code> 配置 Monaco Editor 行为。前端按功能组织，而非按路由目录组织。</p>
+<details open><summary>功能组件树</summary><div><table><tr><th>目录</th><th>代表组件</th><th>职责</th></tr>
+<tr><td><code>components/Home/</code></td><td><code>HomeDashboard.tsx</code></td><td>启动器/首页展示。</td></tr><tr><td><code>components/RemoteTool/</code></td><td><code>HomeShell</code>、<code>SessionTree</code>、<code>ConnectionDialog</code>、<code>RdpView</code></td><td>已保存会话、分组层级、远程桌面和远程工具外壳。</td></tr>
+<tr><td><code>components/Workspace/</code></td><td><code>WorkspacePicker</code>、<code>RemoteWorkspaceDialog</code></td><td>本地/远程根目录选择与工作区打开。</td></tr><tr><td><code>components/Explorer/</code></td><td><code>ExplorerTree.tsx</code></td><td>按需加载的 VS Code 风格工作区树。</td></tr>
+<tr><td><code>components/Editor/</code></td><td><code>CodeEditor</code>、<code>ConflictDialog</code>、PDF/图片/Excel/Office 预览、二进制/JAR 面板</td><td>Monaco 编辑、编码、对比和丰富的文件预览界面。</td></tr>
+<tr><td><code>components/Terminal/</code></td><td><code>TerminalPanel</code>、<code>TerminalView</code></td><td>基于 xterm 的本地/SSH 终端渲染。</td></tr><tr><td><code>components/SftpBrowser/</code></td><td><code>SftpBrowser</code>、<code>AgentBrowser</code>、<code>TransferLogDialog</code></td><td>双栏传输和 Agent 文件浏览。</td></tr>
+<tr><td><code>components/CodingAgent/</code></td><td><code>CodingAgentPanel</code>、<code>FileChangeCard</code>、确认/历史/MCP/权限对话框</td><td>Plan/Build 交互、工具进度、修改审查与安全确认。</td></tr>
+<tr><td><code>components/AiChat/</code></td><td><code>ChatPanel</code>、<code>ProviderManagerDialog</code></td><td>通用 AI 对话和 Provider 管理。</td></tr>
+<tr><td><code>components/LogSearch/</code>、<code>Search/</code>、<code>WebBrowser/</code></td><td><code>LogSearchPanel</code>、<code>SearchPanel</code>、<code>WebBrowserPanel</code></td><td>搜索和内嵌浏览器工作流。</td></tr><tr><td><code>components/shared/</code></td><td>Toast、ErrorBoundary、ConfirmDialog、ContextMenu、空状态/加载/主题控件</td><td>可复用的展示和故障恢复原语。</td></tr></table></div></details>
+<details><summary>Store、Service、Hook 与工具函数</summary><div><table><tr><th>层</th><th>文件 / 模式</th><th>重要性</th></tr>
+<tr><td>Zustand Store</td><td><code>workspaceStore</code>、<code>editorStore</code>、<code>terminalStore</code>、<code>codingStore</code>、<code>connectionStore</code>、<code>remoteSessionStore</code>、<code>sftpStore</code>、<code>searchStore</code>、<code>themeStore</code> 以及各功能 Store</td><td>跨组件 UI 与工作流状态。编辑器和编程 Store 是较大的协调点。</td></tr>
+<tr><td>Service</td><td><code>*Service.ts</code> 镜像后端 Command 领域：workspace、fs、SSH、SFTP、Agent、coding、AI、RDP、browser、transfer、MCP、permission rule。</td><td><code>invoke</code>/<code>listen</code> 的唯一 IPC 网关；集中管理命令名和 Payload 类型。</td></tr>
+<tr><td>Hook</td><td><code>useDualPaneDnd.ts</code></td><td>封装 SFTP 式双栏拖放行为。</td></tr><tr><td>工具与类型</td><td><code>types/bindings.ts</code>、预览/Markdown/高亮/路径/错误辅助函数、<code>inlineHtmlResources.ts</code></td><td>共享类型、渲染、平台和预览支持。</td></tr></table></div></details>
+</section>
+<section id="agent">
+<h2>5. 远程 Agent 与共享协议</h2>
+<div class="grid"><div class="card"><h3><code>protocol/</code></h3><p>传输无关的共享请求/响应类型。<code>lib.rs</code> 定义操作和错误码；<code>frame.rs</code> 定义带 Stream ID 与帧类型的长度前缀二进制帧。</p></div><div class="card"><h3><code>agent/</code></h3><p>产出部署到远程 Windows 主机的 <code>roc_desk_agent.exe</code>。它独立运行，不会成为主桌面程序的运行时依赖。</p></div></div>
+<table><tr><th>Agent 文件</th><th>职责</th></tr><tr><td><code>main.rs</code></td><td>运行、配对、服务安装/卸载、状态和初始化等 CLI 命令。</td></tr><tr><td><code>server.rs</code></td><td>TLS Listener、连接生命周期、协议帧分派和响应流。</td></tr><tr><td><code>handlers/fs.rs</code>、<code>exec.rs</code>、<code>search.rs</code>、<code>shell.rs</code></td><td>服务端文件、进程、内容搜索和交互式 Shell 操作。</td></tr><tr><td><code>auth.rs</code>、<code>cert.rs</code>、<code>config.rs</code></td><td>配对认证、自签名证书管理和配置。</td></tr><tr><td><code>pathguard.rs</code>、<code>audit.rs</code>、<code>selftest.rs</code>、<code>service.rs</code></td><td>路径授权、审计记录、诊断和 Windows 服务管理。</td></tr></table>
+<p>信任过程是显式的：Agent 流量使用 TLS 与证书指纹信任流程，概念上与 SSH 主机密钥 TOFU 平行；配对 Token 用于首次关联授权。</p>
+</section>
+<section id="codex">
+<h2>6. <code>codex-engine</code>：Codex 集成边界</h2>
+<p>此小型 crate 将 vendored OpenAI Codex 运行时依赖限制在单一边界内。根 Cargo 工作区排除了 <code>vendor/codex</code>，因为该源码本身是另一个 Cargo 工作区。主 Tauri crate 依赖此适配层，而不是直接依赖 Codex 内部 crate。</p>
+<table><tr><th>文件</th><th>职责</th></tr><tr><td><code>lib.rs</code></td><td>Engine、Execution Target 和 Exec Server 的公开导出。</td></tr><tr><td><code>engine.rs</code></td><td>核心 Chat/Codex Engine 集成与事件桥接。</td></tr><tr><td><code>exec_target.rs</code></td><td>执行目标抽象。</td></tr><tr><td><code>exec_server.rs</code></td><td>Exec Server JSON-RPC 集成，将 Codex 执行映射到 roc_desk 的本地/SSH/Agent 目标。</td></tr></table>
+</section>
+<section id="data">
+<h2>7. 持久化、迁移与安全</h2>
+<p><code>db/pool.rs</code> 创建 SQLite Pool；<code>db/migrate.rs</code> 执行迁移；<code>db/repo/</code> 包含各持久化领域的 Repository（连接、主机信任、工作区、Provider、编程历史、权限、传输、MCP 和浏览历史）。</p>
+<table><tr><th>迁移范围</th><th>存储内容</th></tr><tr><td><code>0001</code>–<code>0003</code></td><td>基础设置、连接数据和 FTS5 日志搜索 Schema。</td></tr><tr><td><code>0005</code>–<code>0009</code></td><td>审计记录、工作区、AI Provider、浏览历史和编程历史。</td></tr><tr><td><code>0010</code>–<code>0013</code></td><td>连接协议/选项、编程权限规则、MCP Server 与 Agent 证书信任。</td></tr><tr><td><code>0014</code>–<code>0017</code></td><td>传输日志/字节数、按工作区保存的 SFTP 路径状态和详细编程消息。</td></tr></table>
+<div class="notice"><strong>安全边界。</strong>连接密码/密钥和 AI Provider Secret 存放在操作系统密钥环，而不是 SQLite。SSH 主机密钥和 Agent 证书使用含用户确认的首次使用信任模型。编程命令 Guard 会阻止或确认高风险执行，外发 AI 请求前还会脱敏。</div>
+</section>
+<section id="flows">
+<h2>8. 关键执行流程</h2>
+<details open><summary>启动与窗口模型</summary><div><ol><li><code>lib.rs::run()</code> 解析便携 <code>.rock_desk</code> 数据目录、设置滚动日志并安装 panic 捕获。</li><li>它解释 <code>--mode</code>/<code>--open</code> 参数，区分单实例启动器与模块窗口进程。</li><li>它打开/迁移数据库，初始化 Repository/Manager/Pool，创建 <code>AppState</code> 并注册 Command。</li><li>前端挂载 <code>App.tsx</code>，读取模式和状态，再展示首页外壳或相应模块。</li></ol></div></details>
+<details><summary>打开和编辑工作区</summary><div><ol><li>UI 打开本地根目录，或选择已保存的远程连接与目录。</li><li><code>workspace</code> 解析本地、SSH/SFTP 或 Agent 支持的文件操作实现。</li><li>Explorer 通过文件层按需列出目录；编辑器通过同一抽象读取内容。</li><li>保存远程内容会使用远端状态/冲突处理，因此 UI 可展示冲突对话框。</li></ol></div></details>
+<details><summary>AI 编程工作流</summary><div><ol><li><code>CodingAgentPanel</code> 通过 <code>codingService</code> 将消息发给 coding Command/Session。</li><li>后端调用已配置的 Engine/Provider，并通过工作区文件/执行目标暴露工具操作。</li><li>Build 模式的修改会成为可跟踪 Change 与 Diff，并以可审查的 Change Card 呈现。</li><li>执行前会评估权限规则和命令确认；接受/拒绝/撤销结果将更新历史和审计数据。</li></ol></div></details>
+<details><summary>SSH 终端与传输工作流</summary><div><ol><li>Connection Manager 解析 Profile 元数据，并从密钥环获取凭据。</li><li>SSH Pool 在适用时复用已认证物理连接，并为终端/SFTP 打开 Channel。</li><li>终端 UI 通过事件/Service/Command 层中转 xterm 输入输出；SFTP 视图使用文件和传输 Command。</li></ol></div></details>
+</section>
+<section id="build">
+<h2>9. 构建、打包与文档</h2>
+<table><tr><th>路径</th><th>用途</th></tr><tr><td><code>package.json</code>（根目录）</td><td>Tauri 开发、Web 构建和 Rust 测试的仓库级 npm 入口。</td></tr><tr><td><code>src-web/package.json</code></td><td><code>vite</code> 开发/构建脚本；生产 Web 构建前进行 TypeScript 编译。</td></tr><tr><td><code>src-tauri/tauri.conf.json</code></td><td>连接 Tauri 与 Web 构建输出，并描述原生 Bundle 配置。</td></tr><tr><td><code>build-portable.ps1</code></td><td>构建便携产物，包括远程 Agent 分发路径。</td></tr><tr><td><code>docs/CODE_DESIGN.md</code></td><td>详细代码级设计、契约、Schema 和 IPC/Event 参考。</td></tr><tr><td><code>docs/AGENT_DESIGN.md</code></td><td>远程 Agent 协议、TLS/配对和部署设计。</td></tr><tr><td><code>docs/HOME_MODES_DESIGN.md</code></td><td>启动器与多进程模块窗口设计。</td></tr><tr><td><code>docs/CODEX_INTEGRATION_PLAN.md</code></td><td>Codex 适配层/vendor 边界的理由和集成计划。</td></tr></table>
+<h3>常用命令</h3><pre># 在仓库根目录执行
+npm run tauri:dev       # Vite + Tauri 开发窗口
+npm run tauri:build     # 构建前端、Rust 应用和原生 Bundle
+npm run build:web       # 仅构建前端静态资源
+npm run test:rust       # 执行已配置的 Rust 测试命令
+
+# 快速 Rust 反馈（按项目文档）
+cargo check --manifest-path src-tauri/Cargo.toml</pre>
+<p class="ok">文档结束。阅读具体功能时，可从组件 → Service → Command → 领域模块的路径继续追踪。</p>
+</section>
+</main>
+</body>
+</html>

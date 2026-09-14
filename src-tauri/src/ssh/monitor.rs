@@ -155,8 +155,18 @@ pub fn parse_probe_output(output: &str, sampled_at_ms: u64) -> HostStats {
                     let mount = fields[5..].join(" ");
                     // 虚拟文件系统（tmpfs/devtmpfs/overlay 的 docker 层等）不是用户关心的
                     // "磁盘"，噪音大于信息量，和 FinalShell 的默认呈现习惯一致地过滤掉。
-                    if total_kb > 0 && !mount.starts_with("/dev") && !mount.starts_with("/sys") && !mount.starts_with("/proc") && !mount.starts_with("/run") {
-                        disks.push(DiskUsage { mount, total_kb, used_kb, used_percent });
+                    if total_kb > 0
+                        && !mount.starts_with("/dev")
+                        && !mount.starts_with("/sys")
+                        && !mount.starts_with("/proc")
+                        && !mount.starts_with("/run")
+                    {
+                        disks.push(DiskUsage {
+                            mount,
+                            total_kb,
+                            used_kb,
+                            used_percent,
+                        });
                     }
                 }
             }

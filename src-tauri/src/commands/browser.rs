@@ -27,7 +27,11 @@ pub async fn browser_open(
 
 /// 面板尺寸变化时调用（窗口缩放、侧边栏拖拽调宽），只重新定位，不产生历史记录。
 #[tauri::command]
-pub async fn browser_set_bounds(app_handle: AppHandle, tab_id: String, bounds: PanelBounds) -> Result<(), AppError> {
+pub async fn browser_set_bounds(
+    app_handle: AppHandle,
+    tab_id: String,
+    bounds: PanelBounds,
+) -> Result<(), AppError> {
     browser::set_bounds(&app_handle, &tab_id, bounds)
 }
 
@@ -39,7 +43,11 @@ pub async fn browser_hide(app_handle: AppHandle, tab_id: String) -> Result<(), A
 
 /// 切回某个 Tab 且此前已打开过网页时调用。
 #[tauri::command]
-pub async fn browser_show(app_handle: AppHandle, tab_id: String, bounds: PanelBounds) -> Result<(), AppError> {
+pub async fn browser_show(
+    app_handle: AppHandle,
+    tab_id: String,
+    bounds: PanelBounds,
+) -> Result<(), AppError> {
     browser::show(&app_handle, &tab_id, bounds)
 }
 
@@ -56,7 +64,10 @@ pub async fn browser_close_all(app_handle: AppHandle) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub async fn browser_history_list(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<BrowserHistoryEntry>, AppError> {
+pub async fn browser_history_list(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<BrowserHistoryEntry>, AppError> {
     state.browser_history.list_recent(limit.unwrap_or(200))
 }
 

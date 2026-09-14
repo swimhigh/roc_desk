@@ -48,11 +48,15 @@ pub struct SectionInfo {
 const EXPORTS_HARD_CAP: usize = 50_000;
 
 pub fn inspect(bytes: &[u8]) -> Result<BinaryInfo, AppError> {
-    match Object::parse(bytes).map_err(|e| AppError::Internal(format!("解析可执行文件失败：{e}")))? {
+    match Object::parse(bytes)
+        .map_err(|e| AppError::Internal(format!("解析可执行文件失败：{e}")))?
+    {
         Object::PE(pe) => Ok(from_pe(&pe)),
         Object::Elf(elf) => Ok(from_elf(&elf)),
         Object::Mach(mach) => from_mach(mach),
-        Object::Archive(_) => Err(AppError::Internal("这是静态库归档文件（ar 格式），不是可执行文件/动态库".into())),
+        Object::Archive(_) => Err(AppError::Internal(
+            "这是静态库归档文件（ar 格式），不是可执行文件/动态库".into(),
+        )),
         _ => Err(AppError::Internal("无法识别的可执行文件格式".into())),
     }
 }
@@ -84,7 +88,11 @@ pub fn looks_like_binary(head: &[u8]) -> bool {
 fn truncated_exports(names: Vec<String>) -> (Vec<String>, bool, usize) {
     let total = names.len();
     if total > EXPORTS_HARD_CAP {
-        (names.into_iter().take(EXPORTS_HARD_CAP).collect(), true, total)
+        (
+            names.into_iter().take(EXPORTS_HARD_CAP).collect(),
+            true,
+            total,
+        )
     } else {
         (names, false, total)
     }
@@ -123,12 +131,20 @@ fn from_pe(pe: &goblin::pe::PE) -> BinaryInfo {
     let machine = pe.header.coff_header.machine;
     let timestamp = {
         let secs = pe.header.coff_header.time_date_stamp as i64;
-        chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        chrono::DateTime::from_timestamp(secs, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
     };
-    let subsystem = pe.header.optional_header.map(|oh| pe_subsystem_name(oh.windows_fields.subsystem));
+    let subsystem = pe
+        .header
+        .optional_header
+        .map(|oh| pe_subsystem_name(oh.windows_fields.subsystem));
 
     let dependencies: Vec<String> = pe.libraries.iter().map(|s| s.to_string()).collect();
-    let export_names: Vec<String> = pe.exports.iter().filter_map(|e| e.name.map(|n| n.to_string())).collect();
+    let export_names: Vec<String> = pe
+        .exports
+        .iter()
+        .filter_map(|e| e.name.map(|n| n.to_string()))
+        .collect();
     let (exports, exports_truncated, total_exports) = truncated_exports(export_names);
 
     let sections = pe
@@ -144,8 +160,16 @@ fn from_pe(pe: &goblin::pe::PE) -> BinaryInfo {
     BinaryInfo {
         format: "PE".to_string(),
         architecture: pe_machine_name(machine),
-        bitness: if pe.is_64 { "64 位".to_string() } else { "32 位".to_string() },
-        file_kind: if pe.is_lib { "动态链接库 (DLL)".to_string() } else { "可执行文件 (EXE)".to_string() },
+        bitness: if pe.is_64 {
+            "64 位".to_string()
+        } else {
+            "32 位".to_string()
+        },
+        file_kind: if pe.is_lib {
+            "动态链接库 (DLL)".to_string()
+        } else {
+            "可执行文件 (EXE)".to_string()
+        },
         entry_point: Some(format!("0x{:x}", pe.entry)),
         timestamp,
         subsystem,
@@ -192,7 +216,11 @@ fn from_elf(elf: &goblin::elf::Elf) -> BinaryInfo {
     let export_names: Vec<String> = elf
         .dynsyms
         .iter()
-        .filter(|sym| !sym.is_import() && sym.st_value != 0 && (sym.is_function() || sym.st_bind() == goblin::elf::sym::STB_GLOBAL))
+        .filter(|sym| {
+            !sym.is_import()
+                && sym.st_value != 0
+                && (sym.is_function() || sym.st_bind() == goblin::elf::sym::STB_GLOBAL)
+        })
         .filter_map(|sym| elf.dynstrtab.get_at(sym.st_name).map(|s| s.to_string()))
         .collect();
     let (exports, exports_truncated, total_exports) = truncated_exports(export_names);
@@ -213,7 +241,11 @@ fn from_elf(elf: &goblin::elf::Elf) -> BinaryInfo {
     BinaryInfo {
         format: "ELF".to_string(),
         architecture: elf_machine_name(elf.header.e_machine),
-        bitness: if elf.is_64 { "64 位".to_string() } else { "32 位".to_string() },
+        bitness: if elf.is_64 {
+            "64 位".to_string()
+        } else {
+            "32 位".to_string()
+        },
         file_kind,
         entry_point: Some(format!("0x{:x}", elf.entry)),
         timestamp: None,
@@ -251,14 +283,25 @@ fn from_mach(mach: goblin::mach::Mach) -> Result<BinaryInfo, AppError> {
             match arch {
                 goblin::mach::SingleArch::MachO(m) => m,
                 goblin::mach::SingleArch::Archive(_) => {
-                    return Err(AppError::Internal("Fat 文件里是静态库归档，不是可执行文件/动态库".into()))
+                    return Err(AppError::Internal(
+                        "Fat 文件里是静态库归档，不是可执行文件/动态库".into(),
+                    ))
                 }
             }
         }
     };
 
-    let dependencies: Vec<String> = single.libs.iter().filter(|l| **l != "self").map(|s| s.to_string()).collect();
-    let export_names: Vec<String> = single.exports().ok().map(|es| es.into_iter().map(|e| e.name).collect()).unwrap_or_default();
+    let dependencies: Vec<String> = single
+        .libs
+        .iter()
+        .filter(|l| **l != "self")
+        .map(|s| s.to_string())
+        .collect();
+    let export_names: Vec<String> = single
+        .exports()
+        .ok()
+        .map(|es| es.into_iter().map(|e| e.name).collect())
+        .unwrap_or_default();
     let (exports, exports_truncated, total_exports) = truncated_exports(export_names);
 
     let sections: Vec<SectionInfo> = single
@@ -276,7 +319,11 @@ fn from_mach(mach: goblin::mach::Mach) -> Result<BinaryInfo, AppError> {
     Ok(BinaryInfo {
         format: "Mach-O".to_string(),
         architecture: mach_machine_name(single.header.cputype),
-        bitness: if single.is_64 { "64 位".to_string() } else { "32 位".to_string() },
+        bitness: if single.is_64 {
+            "64 位".to_string()
+        } else {
+            "32 位".to_string()
+        },
         file_kind: if single.header.filetype == goblin::mach::header::MH_DYLIB {
             "动态库 (dylib)".to_string()
         } else {

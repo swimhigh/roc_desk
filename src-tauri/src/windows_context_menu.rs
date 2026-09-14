@@ -29,8 +29,8 @@ unsafe fn show_context_menu_impl(window: &tauri::Window, path: &str) -> Result<(
     use windows::Win32::Foundation::{HANDLE, LPARAM, POINT, WPARAM};
     use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{
-        IContextMenu, IShellFolder, CMINVOKECOMMANDINFO, CMF_NORMAL, SHBindToParent,
-        SHParseDisplayName,
+        IContextMenu, IShellFolder, SHBindToParent, SHParseDisplayName, CMF_NORMAL,
+        CMINVOKECOMMANDINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreatePopupMenu, DestroyMenu, GetCursorPos, PostMessageW, SetForegroundWindow,
@@ -44,8 +44,7 @@ unsafe fn show_context_menu_impl(window: &tauri::Window, path: &str) -> Result<(
         .map_err(|e| e.to_string())?;
 
     let mut child = null_mut();
-    let parent: IShellFolder =
-        SHBindToParent(pidl, Some(&mut child)).map_err(|e| e.to_string())?;
+    let parent: IShellFolder = SHBindToParent(pidl, Some(&mut child)).map_err(|e| e.to_string())?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let context: IContextMenu = parent
         .GetUIObjectOf(hwnd, &[child], None)

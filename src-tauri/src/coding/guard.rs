@@ -42,13 +42,29 @@ static WINDOWS_BLACKLIST: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// 只读白名单（DESIGN.md §3.8.2.1）：用户可选择让这些命令自动放行，减少高频确认打断。
 /// 只匹配命令的第一个词，不代表"这条命令一定安全"（比如 `git status && rm -rf /`
 /// 会被 `&&`/`;` 拆开逐条检查——见 `is_whitelisted` 的实现）。
-static READONLY_PREFIXES: &[&str] = &["ls", "cat", "grep", "git status", "git log", "git diff", "pwd", "whoami", "echo", "head", "tail", "find", "which", "ps"];
+static READONLY_PREFIXES: &[&str] = &[
+    "ls",
+    "cat",
+    "grep",
+    "git status",
+    "git log",
+    "git diff",
+    "pwd",
+    "whoami",
+    "echo",
+    "head",
+    "tail",
+    "find",
+    "which",
+    "ps",
+];
 
 /// `is_windows_target` 为 true（`CodingTarget::Agent`）时额外叠加
 /// `WINDOWS_BLACKLIST`——两份模式表并集生效，不是二选一：Windows 目标上用户仍然
 /// 可能敲出 `rm -rf /` 风格的命令（比如装了 Git Bash），照样应该拦截。
 pub fn is_blacklisted(command: &str, is_windows_target: bool) -> bool {
-    BLACKLIST.iter().any(|re| re.is_match(command)) || (is_windows_target && WINDOWS_BLACKLIST.iter().any(|re| re.is_match(command)))
+    BLACKLIST.iter().any(|re| re.is_match(command))
+        || (is_windows_target && WINDOWS_BLACKLIST.iter().any(|re| re.is_match(command)))
 }
 
 /// 白名单判断按 `&&`/`;`/`|` 拆分每个子命令，要求全部命中只读前缀才放行——
@@ -58,7 +74,11 @@ pub fn is_whitelisted(command: &str) -> bool {
         .split(&['&', ';', '|'][..])
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .all(|part| READONLY_PREFIXES.iter().any(|prefix| part == *prefix || part.starts_with(&format!("{prefix} "))))
+        .all(|part| {
+            READONLY_PREFIXES
+                .iter()
+                .any(|prefix| part == *prefix || part.starts_with(&format!("{prefix} ")))
+        })
 }
 
 #[cfg(test)]

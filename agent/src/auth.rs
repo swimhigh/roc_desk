@@ -13,7 +13,11 @@ pub fn generate_token() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     rand::thread_rng().fill_bytes(&mut bytes);
     let encoded = data_encoding::BASE32_NOPAD.encode(&bytes);
-    let groups: Vec<String> = encoded.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).to_string()).collect();
+    let groups: Vec<String> = encoded
+        .as_bytes()
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).to_string())
+        .collect();
     format!("roc-agent-{}", groups.join("-"))
 }
 
@@ -31,5 +35,9 @@ pub fn verify_token(token: &str, expected_hash: &str) -> bool {
     if actual.len() != expected_hash.len() {
         return false;
     }
-    actual.bytes().zip(expected_hash.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    actual
+        .bytes()
+        .zip(expected_hash.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }

@@ -63,7 +63,10 @@ impl McpServersRepo {
 
     pub fn delete(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM mcp_servers WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM mcp_servers WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -85,7 +88,9 @@ impl McpServersRepo {
             "SELECT id, name, transport, command, args_json, env_json, url, headers_json, auth_token_ref, enabled, created_at
              FROM mcp_servers ORDER BY created_at",
         )?;
-        let rows = stmt.query_map([], Self::map_row)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = stmt
+            .query_map([], Self::map_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
@@ -98,12 +103,22 @@ impl McpServersRepo {
         Ok(McpServer {
             id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
             name: row.get(1)?,
-            transport: if transport == "http" { McpTransportKind::Http } else { McpTransportKind::Stdio },
+            transport: if transport == "http" {
+                McpTransportKind::Http
+            } else {
+                McpTransportKind::Stdio
+            },
             command: row.get(3)?,
-            args: args_json.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
-            env: env_json.and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok()).unwrap_or_default(),
+            args: args_json
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            env: env_json
+                .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+                .unwrap_or_default(),
             url: row.get(6)?,
-            headers: headers_json.and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok()).unwrap_or_default(),
+            headers: headers_json
+                .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+                .unwrap_or_default(),
             auth_token_ref: row.get(8)?,
             enabled: row.get::<_, i64>(9)? != 0,
             created_at: row.get(10)?,

@@ -16,8 +16,11 @@ impl ConnectionGroupsRepo {
 
     pub fn list(&self) -> Result<Vec<ConnectionGroup>, AppError> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare("SELECT id, name, parent_id FROM connection_groups ORDER BY name")?;
-        let rows = stmt.query_map([], Self::map_row)?.collect::<Result<Vec<_>, _>>()?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, parent_id FROM connection_groups ORDER BY name")?;
+        let rows = stmt
+            .query_map([], Self::map_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
@@ -36,7 +39,11 @@ impl ConnectionGroupsRepo {
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO connection_groups (id, name, parent_id) VALUES (?1, ?2, ?3)",
-            params![group.id.to_string(), group.name, group.parent_id.map(|p| p.to_string())],
+            params![
+                group.id.to_string(),
+                group.name,
+                group.parent_id.map(|p| p.to_string())
+            ],
         )?;
         Ok(())
     }
@@ -45,7 +52,11 @@ impl ConnectionGroupsRepo {
         let conn = self.pool.get()?;
         conn.execute(
             "UPDATE connection_groups SET name = ?2, parent_id = ?3 WHERE id = ?1",
-            params![group.id.to_string(), group.name, group.parent_id.map(|p| p.to_string())],
+            params![
+                group.id.to_string(),
+                group.name,
+                group.parent_id.map(|p| p.to_string())
+            ],
         )?;
         Ok(())
     }
@@ -71,7 +82,10 @@ impl ConnectionGroupsRepo {
             "UPDATE connections SET group_id = NULL WHERE group_id = ?1",
             params![id.to_string()],
         )?;
-        conn.execute("DELETE FROM connection_groups WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM connection_groups WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 

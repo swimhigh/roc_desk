@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client::Handle;
 use tauri::{AppHandle, Emitter};
@@ -16,6 +17,14 @@ enum ChannelCommand {
     Resize { rows: u16, cols: u16 },
 }
 
+/// 一次性命令执行（`exec`）的超时上限——和 Windows Agent 侧 `exec.rs` 的默认
+/// 120s 超时对齐，让本地/SSH/Agent 三种执行目标的"命令不会无限期挂起"这个
+/// 保证一致。没有这个上限之前，`channel.wait()` 只在收到 `Eof`/`Close` 时才
+/// 退出循环——真实故障：AI 编程助手第一次为远程工作区启动会话时，`git_ops::
+/// is_git_repo` 探测调用这个 `exec` 卡住不返回（网络抖动/远端 Channel 没有
+/// 正常关闭都可能触发），`coding_start` 这个 Tauri command 因此永远不 resolve，
+/// 前端表现为"点了开始 AI 会话后永远停在选择 Provider 的界面"，没有任何报错。
+
 /// 单条 SSH 物理连接，内部按 DESIGN.md §3.2.2 的多路复用要求管理多个 Channel
 /// （终端 Shell / SFTP / exec 都在同一条连接上开各自的 Channel，不重复握手）。
 ///
@@ -25,7 +34,21 @@ enum ChannelCommand {
 pub struct SshSession {
     handle: Handle<SshHandler>,
     channels: Mutex<HashMap<Uuid, mpsc::UnboundedSender<ChannelCommand>>>,
+    /// 串行化 `exec()`——2026-09 用户实测复现并定位：codex 引擎会并行派发多个
+    /// 工具调用（codex-core 内部确实有个叫 `tools::parallel` 的模块），对同一条
+    /// SSH 连接几乎同时发起多个 `channel_open_session()`；自研引擎的工具调用
+    /// 天生顺序执行，从没这样用过，也就从没触发过这个问题。日志时间戳证实过
+    /// 并发（两次 `run_command` 调用相差不到 200 微秒），并发触发之后每一个都
+    /// 卡死在拿到 channel 之前，连黑名单检查这种纯同步代码都没能继续往下走——
+    /// 说明问题出在更底层，不是我们自己这几行代码的逻辑问题，像是 `russh` 的
+    /// `Handle` 或者远端 sshd 对突发并发开 Channel 处理有问题。没有再往
+    /// vendor 库或者对端 sshd 实现里细究，直接从"用法"上避开：把这条连接上的
+    /// 所有 `exec()` 调用串行化，逼它退回到和自研引擎一样的"同一时刻只有一个
+    /// 命令在跑"，不同连接之间不受影响，仍然互相并行。
+    exec_lock: Mutex<()>,
 }
+
+const EXEC_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl SshSession {
     pub async fn connect(
@@ -54,7 +77,8 @@ impl SshSession {
                     .map_err(|e| AppError::Auth(e.to_string()))?
             }
             AuthMethod::Key => {
-                let key_data = secret.ok_or_else(|| AppError::Auth("missing private key".into()))?;
+                let key_data =
+                    secret.ok_or_else(|| AppError::Auth("missing private key".into()))?;
                 let key_pair = russh::keys::decode_secret_key(&key_data, None)
                     .map_err(|e| AppError::Auth(format!("invalid private key: {e}")))?;
                 handle
@@ -71,7 +95,11 @@ impl SshSession {
             return Err(AppError::Auth("authentication rejected by server".into()));
         }
 
-        Ok(Self { handle, channels: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            handle,
+            channels: Mutex::new(HashMap::new()),
+            exec_lock: Mutex::new(()),
+        })
     }
 
     /// 打开一个 Shell Channel（终端）。返回本地稳定 id，前端后续通过它调用
@@ -82,7 +110,13 @@ impl SshSession {
     /// 默认目录（通常是 $HOME）。SSH 的 `request_shell` 协议本身不支持指定初始工作
     /// 目录，只能开完 shell 之后当作一次普通输入发过去——所以这行 `cd` 命令和用户后续
     /// 手敲的命令没有本质区别，会正常出现在 shell 历史里，这是该方案本身的局限。
-    pub async fn open_shell(&self, rows: u16, cols: u16, cwd: Option<&str>, app_handle: AppHandle) -> Result<Uuid, AppError> {
+    pub async fn open_shell(
+        &self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<&str>,
+        app_handle: AppHandle,
+    ) -> Result<Uuid, AppError> {
         let mut channel = self
             .handle
             .channel_open_session()
@@ -199,7 +233,30 @@ impl SshSession {
 
     /// 执行一次性命令并收集完整输出（AI 编程助手 `run_command` / 高危命令确认后走这个接口，
     /// 不复用终端 Shell Channel，见 DESIGN.md §3.8.4）。
+    ///
+    /// 内部用 `exec_lock` 把同一条连接上的多次 `exec()` 串行化——codex 引擎会
+    /// 并行派发多个工具调用，对同一条 SSH 连接几乎同时发起多个
+    /// `channel_open_session()`，2026-09 用户实测复现这会导致每一路都卡死在
+    /// 拿到 channel 之前；串行化之后退回到和自研引擎一样"同一时刻只有一个
+    /// 命令在跑"，不同连接之间仍然互不影响、正常并行。锁的获取也算在同一个
+    /// `EXEC_TIMEOUT` 预算里——理论上前一个命令本身已经有超时兜底，正常不会
+    /// 让后面的排队排上 120 秒，这里只是不给"万一"留生存空间。
     pub async fn exec(&self, cmd: &str) -> Result<String, AppError> {
+        match tokio::time::timeout(EXEC_TIMEOUT, async {
+            let _guard = self.exec_lock.lock().await;
+            self.exec_inner(cmd).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(AppError::Connection(format!(
+                "remote command timed out after {}s: {cmd}",
+                EXEC_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    async fn exec_inner(&self, cmd: &str) -> Result<String, AppError> {
         let mut channel = self
             .handle
             .channel_open_session()
@@ -224,7 +281,28 @@ impl SshSession {
 
     /// 打开 SFTP 子系统 Channel，供 `fsops::remote::RemoteFileOps` 使用
     /// （DESIGN.md §3.3，同一物理连接上开独立 Channel，不重复握手）。
+    ///
+    /// 握手本身（开 Channel + 协商 SFTP 子系统 + `SftpSession::new` 的协议初始化）
+    /// 只有几个来回，正常情况下应该在几秒内完成——加超时保护的道理和 `exec()`
+    /// 一样（见上面 `EXEC_TIMEOUT` 的注释）：真实故障是 `RemoteFileOps` 懒建立
+    /// 这条 SFTP 会话时（`with_sftp` 第一次调用，比如 AI 编程助手启动时读
+    /// `AGENTS.md`/技能目录）握手卡住不返回，导致 `coding_start` 这个 Tauri
+    /// command 永远不 resolve，界面表现和 `exec()` 没超时时一模一样（"点了开始
+    /// AI 会话后永远停在选择 Provider 的界面"）。**只包住握手本身**，不包住
+    /// 握手成功之后的实际数据传输（`download_range_to_local`/
+    /// `upload_range_from_local` 这类大文件搬运合理情况下可以跑很久，不能用
+    /// 同一个短超时卡它们）。
     pub async fn open_sftp(&self) -> Result<russh_sftp::client::SftpSession, AppError> {
+        match tokio::time::timeout(EXEC_TIMEOUT, self.open_sftp_inner()).await {
+            Ok(result) => result,
+            Err(_) => Err(AppError::Connection(format!(
+                "sftp handshake timed out after {}s",
+                EXEC_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    async fn open_sftp_inner(&self) -> Result<russh_sftp::client::SftpSession, AppError> {
         let channel = self
             .handle
             .channel_open_session()

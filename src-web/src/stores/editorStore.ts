@@ -131,6 +131,10 @@ interface EditorState {
   /** 打开一个对比标签（Explorer 右键"选择进行比较"→"与所选文件比较"）。同一对路径
    * 已经开过就直接激活那个标签，不重复读盘。 */
   openDiff: (workspaceId: string, leftPath: string, rightPath: string) => Promise<void>;
+  /** 对比两段内存内容（不读盘），给 AI 编程助手的"查看 Diff"用——`FileChange`
+   * 的 `new_content` 在 Pending 状态下还没落盘，没法用 `openDiff` 那样读两个
+   * 磁盘路径来对比。同一对内容已经开过就直接激活那个标签，不重复开。 */
+  openDiffContent: (leftLabel: string, leftContent: string, rightLabel: string, rightContent: string, language: string) => void;
   /** 双击文件：转为固定标签 */
   pin: (path: string) => void;
   setActive: (path: string) => void;
@@ -157,6 +161,11 @@ interface EditorState {
   reopenWithEncoding: (workspaceId: string | null, path: string, encodingLabel: string) => Promise<void>;
   /** "Save with Encoding"（参考 VS Code）：按指定编码写盘，而不是固定 UTF-8。*/
   saveWithEncoding: (workspaceId: string | null, path: string, encodingLabel: string) => Promise<void>;
+  /** AI 编程助手 Accept/Undo/Redo/整轮撤销落地写盘之后调用——如果这个路径当前
+   * 正在编辑器里开着且没有未保存的修改，用写盘后的最新内容 + mtime 刷新对应
+   * buffer，避免 Tab 显示的内容和磁盘（AI 刚写完的版本）不一致。buffer 有未保存
+   * 修改时不覆盖（用户的编辑优先），只弹提示——静默覆盖等于替用户丢弃工作。 */
+  syncExternalWrite: (path: string, content: string, mtime: number) => void;
   reset: () => void;
 }
 
@@ -368,6 +377,31 @@ export const useEditorStore = create<EditorState>((set, get) => {
       order: [...s.order, id],
       activePath: id,
     }));
+  },
+
+  openDiffContent: (leftLabel, leftContent, rightLabel, rightContent, language) => {
+    const already = Object.values(get().diffs).find(
+      (d) => d.leftPath === leftLabel && d.rightPath === rightLabel && d.leftContent === leftContent && d.rightContent === rightContent,
+    );
+    if (already) {
+      set({ activePath: already.id });
+      return;
+    }
+    const id = `${DIFF_ID_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const diff: DiffBuffer = { id, leftPath: leftLabel, rightPath: rightLabel, leftContent, rightContent, language };
+    set((s) => ({
+      diffs: { ...s.diffs, [id]: diff },
+      order: [...s.order, id],
+      activePath: id,
+    }));
+  },
+
+  syncExternalWrite: (path, content, mtime) => {
+    set((s) => {
+      const buf = s.buffers[path];
+      if (!buf || buf.dirty || buf.kind !== "text") return s;
+      return { buffers: { ...s.buffers, [path]: { ...buf, content, mtime, dirty: false } } };
+    });
   },
 
   pin: (path) => {

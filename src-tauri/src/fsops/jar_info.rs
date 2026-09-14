@@ -48,8 +48,8 @@ pub struct JarEntryInfo {
 const ENTRIES_HARD_CAP: usize = 50_000;
 
 pub fn inspect(bytes: &[u8]) -> Result<JarInfo, AppError> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| AppError::Internal(format!("解析 JAR 包失败：{e}")))?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| AppError::Internal(format!("解析 JAR 包失败：{e}")))?;
 
     let total_entries = archive.len();
     let mut class_count = 0usize;
@@ -73,11 +73,19 @@ pub fn inspect(bytes: &[u8]) -> Result<JarInfo, AppError> {
             }
         }
         if entries.len() < ENTRIES_HARD_CAP {
-            entries.push(JarEntryInfo { path, is_dir, size: file.size(), compressed_size: file.compressed_size() });
+            entries.push(JarEntryInfo {
+                path,
+                is_dir,
+                size: file.size(),
+                compressed_size: file.compressed_size(),
+            });
         }
     }
 
-    let manifest = manifest_text.as_deref().map(parse_manifest).unwrap_or_default();
+    let manifest = manifest_text
+        .as_deref()
+        .map(parse_manifest)
+        .unwrap_or_default();
     let main_class = find_attribute(&manifest, "Main-Class");
     let class_path = find_attribute(&manifest, "Class-Path")
         .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
@@ -88,14 +96,20 @@ pub fn inspect(bytes: &[u8]) -> Result<JarInfo, AppError> {
         class_count,
         main_class,
         class_path,
-        manifest: manifest.into_iter().map(|(key, value)| ManifestAttribute { key, value }).collect(),
+        manifest: manifest
+            .into_iter()
+            .map(|(key, value)| ManifestAttribute { key, value })
+            .collect(),
         entries_truncated: total_entries > ENTRIES_HARD_CAP,
         entries,
     })
 }
 
 fn find_attribute(manifest: &[(String, String)], key: &str) -> Option<String> {
-    manifest.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
+    manifest
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.clone())
 }
 
 /// JAR manifest 格式（JAR 规范，不是 INI）：`Key: Value` 一行一条属性，值超过 72

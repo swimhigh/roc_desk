@@ -1,0 +1,57 @@
+[package]
+name = "codex-engine"
+version = "0.1.0"
+edition = "2021"
+description = "roc_desk 对 OpenAI Codex（codex-rs）的深度嵌入封装层，见 docs/CODEX_INTEGRATION_PLAN.md"
+
+[lib]
+name = "codex_engine"
+
+[dependencies]
+# codex-rs 侧依赖：只 path 依赖协议/工具层的具体 crate，不依赖 codex-core 本体——
+# 这一批 crate 只用于实现 RocDeskExecServer（exec-server 协议 server 端），
+# 驱动 codex-core 对话循环的 CodexCoreEngine 是下一步的独立工作，届时再补
+# codex-core-api 依赖（见 docs/CODEX_INTEGRATION_PLAN.md §五 Phase 3）。
+codex-exec-server-protocol = { path = "../vendor/codex/codex-rs/exec-server-protocol" }
+# `RemoteEnvironmentOptions` 没有被 `codex-core-api` 重新导出，直接依赖它的
+# 原始 crate。
+codex-exec-server = { path = "../vendor/codex/codex-rs/exec-server" }
+codex-utils-path-uri = { path = "../vendor/codex/codex-rs/utils/path-uri" }
+# 驱动 codex-core 对话循环用这个门面 crate（`ThreadManager`/`CodexThread`/
+# `Config`/`Op`/`EventMsg` 等都从这里 `pub use` 出来），而不是直接依赖
+# `codex-core`——它是官方给"把 codex-core 当库嵌入"这个场景专门维护的稳定入口
+# （见 docs/CODEX_INTEGRATION_PLAN.md Phase 3）。
+codex-core-api = { path = "../vendor/codex/codex-rs/core-api" }
+# 这三个 core-api 没有整个重新导出，`TurnInputRequest::with_thread_settings`
+# 等 API 需要它们的原始类型（`codex_protocol::protocol::ThreadSettingsOverrides`
+# 不是 core-api 重新导出的 `CodexThreadSettingsOverrides`）。
+codex-protocol = { path = "../vendor/codex/codex-rs/protocol" }
+codex-model-provider-info = { path = "../vendor/codex/codex-rs/model-provider-info" }
+codex-utils-absolute-path = { path = "../vendor/codex/codex-rs/utils/absolute-path" }
+
+anyhow = "1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "process", "fs", "io-util", "time", "macros"] }
+tokio-tungstenite = { version = "0.28.0", features = ["proxy", "rustls-tls-native-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+async-trait = "0.1"
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+# `codex-utils-pty`（codex-core 的 ConPTY 支持，我们自己不用，但 codex-core 的
+# 依赖图里绕不开）里直接抄自 wezterm 的 `win/procthreadattr.rs`/`win/conpty.rs`
+# 假设 `winapi::ctypes::c_void` 就是 `std::ffi::c_void`——这件事只在 winapi 开了
+# `"std"` feature 时成立（`ctypes.rs`：`#[cfg(feature = "std")] pub use std::os::
+# raw::c_void;` vs 没开时是个独立的空 enum）。在 codex-rs 自己的完整 workspace
+# 里，其他某个 crate 顺带打开了这个 feature，Cargo 的 feature unification 让
+# `codex-utils-pty` 跟着受益；我们只 path 依赖了一小部分 codex crate，没有那个
+# "顺带"的 crate，这个 feature 就没被打开，编译直接报"两个长得像但是不同的
+# c_void 类型"。这里显式声明同一份 `winapi` 依赖 + 打开 "std" feature，靠 Cargo
+# 的 feature unification 把它传给 `codex-utils-pty` 用的那份 winapi，不需要碰
+# vendor 目录里的源码。
+winapi = { version = "0.3.9", features = ["std"] }

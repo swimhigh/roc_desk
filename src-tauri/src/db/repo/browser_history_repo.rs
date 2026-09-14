@@ -33,7 +33,12 @@ impl BrowserHistoryRepo {
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO browser_history (id, url, title, visited_at) VALUES (?1, ?2, ?3, ?4)",
-            params![entry.id.to_string(), entry.url, entry.title, entry.visited_at],
+            params![
+                entry.id.to_string(),
+                entry.url,
+                entry.title,
+                entry.visited_at
+            ],
         )?;
         Ok(entry)
     }
@@ -51,7 +56,10 @@ impl BrowserHistoryRepo {
 
     pub fn remove(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM browser_history WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM browser_history WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 

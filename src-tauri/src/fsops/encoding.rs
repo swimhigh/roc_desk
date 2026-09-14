@@ -15,10 +15,16 @@ pub fn decode_text_detect(bytes: &[u8]) -> (String, &'static str) {
         return (String::from_utf8_lossy(rest).into_owned(), "UTF-8");
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return (encoding_rs::UTF_16LE.decode(rest).0.into_owned(), "UTF-16LE");
+        return (
+            encoding_rs::UTF_16LE.decode(rest).0.into_owned(),
+            "UTF-16LE",
+        );
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return (encoding_rs::UTF_16BE.decode(rest).0.into_owned(), "UTF-16BE");
+        return (
+            encoding_rs::UTF_16BE.decode(rest).0.into_owned(),
+            "UTF-16BE",
+        );
     }
     if let Ok(s) = std::str::from_utf8(bytes) {
         return (s.to_string(), "UTF-8");

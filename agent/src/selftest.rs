@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use roc_desk_protocol::{
-    decode_json, encode_json, read_frame, write_frame, FrameType, Request, Response, ResponseBody, PROTOCOL_VERSION,
+    decode_json, encode_json, read_frame, write_frame, FrameType, Request, Response, ResponseBody,
+    PROTOCOL_VERSION,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -35,10 +36,20 @@ impl ServerCertVerifier for AcceptAllVerifier {
     ) -> Result<ServerCertVerified, TlsError> {
         Ok(ServerCertVerified::assertion())
     }
-    fn verify_tls12_signature(&self, _m: &[u8], _c: &CertificateDer<'_>, _d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls12_signature(
+        &self,
+        _m: &[u8],
+        _c: &CertificateDer<'_>,
+        _d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         Ok(HandshakeSignatureValid::assertion())
     }
-    fn verify_tls13_signature(&self, _m: &[u8], _c: &CertificateDer<'_>, _d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls13_signature(
+        &self,
+        _m: &[u8],
+        _c: &CertificateDer<'_>,
+        _d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         Ok(HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -88,7 +99,9 @@ async fn handshake_then_list_roots_roundtrip() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let outcome = tokio::time::timeout(Duration::from_secs(20), async move {
-        let tcp = TcpStream::connect(("127.0.0.1", 17879)).await.expect("tcp connect");
+        let tcp = TcpStream::connect(("127.0.0.1", 17879))
+            .await
+            .expect("tcp connect");
 
         let tls_config = rustls::ClientConfig::builder()
             .dangerous()
@@ -96,13 +109,29 @@ async fn handshake_then_list_roots_roundtrip() {
             .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(tls_config));
         let server_name = ServerName::try_from("127.0.0.1").unwrap().to_owned();
-        let tls_stream = connector.connect(server_name, tcp).await.expect("tls handshake");
+        let tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .expect("tls handshake");
         let (mut reader, mut writer) = tokio::io::split(tls_stream);
 
         // --- Handshake ---
-        let handshake_req = Request::Handshake { token, protocol_version: PROTOCOL_VERSION, client_version: "selftest".into() };
-        write_frame(&mut writer, 1, FrameType::Control, &encode_json(&handshake_req).unwrap()).await.expect("send handshake");
-        let frame = read_frame(&mut reader).await.expect("read handshake response frame");
+        let handshake_req = Request::Handshake {
+            token,
+            protocol_version: PROTOCOL_VERSION,
+            client_version: "selftest".into(),
+        };
+        write_frame(
+            &mut writer,
+            1,
+            FrameType::Control,
+            &encode_json(&handshake_req).unwrap(),
+        )
+        .await
+        .expect("send handshake");
+        let frame = read_frame(&mut reader)
+            .await
+            .expect("read handshake response frame");
         assert_eq!(frame.stream_id, 1);
         let response: Response = decode_json(&frame.payload).expect("decode handshake response");
         match response {
@@ -111,25 +140,47 @@ async fn handshake_then_list_roots_roundtrip() {
         }
 
         // --- ListRoots ---
-        write_frame(&mut writer, 2, FrameType::Control, &encode_json(&Request::ListRoots).unwrap()).await.expect("send list_roots");
-        let frame = read_frame(&mut reader).await.expect("read list_roots response frame");
+        write_frame(
+            &mut writer,
+            2,
+            FrameType::Control,
+            &encode_json(&Request::ListRoots).unwrap(),
+        )
+        .await
+        .expect("send list_roots");
+        let frame = read_frame(&mut reader)
+            .await
+            .expect("read list_roots response frame");
         assert_eq!(frame.stream_id, 2);
         let response: Response = decode_json(&frame.payload).expect("decode list_roots response");
         match response {
             Response::Ok(ResponseBody::Roots(roots)) => {
                 println!("roots = {roots:?}");
-                assert!(!roots.is_empty(), "expected at least one drive letter on the host running this test");
+                assert!(
+                    !roots.is_empty(),
+                    "expected at least one drive letter on the host running this test"
+                );
 
                 // --- ListDir（Entries 也是数组形状，和 Roots 同一类 bug，一并验证）---
                 let root = roots[0].clone();
-                write_frame(&mut writer, 3, FrameType::Control, &encode_json(&Request::ListDir { path: root }).unwrap())
+                write_frame(
+                    &mut writer,
+                    3,
+                    FrameType::Control,
+                    &encode_json(&Request::ListDir { path: root }).unwrap(),
+                )
+                .await
+                .expect("send list_dir");
+                let frame = read_frame(&mut reader)
                     .await
-                    .expect("send list_dir");
-                let frame = read_frame(&mut reader).await.expect("read list_dir response frame");
+                    .expect("read list_dir response frame");
                 assert_eq!(frame.stream_id, 3);
-                let response: Response = decode_json(&frame.payload).expect("decode list_dir response");
+                let response: Response =
+                    decode_json(&frame.payload).expect("decode list_dir response");
                 match response {
-                    Response::Ok(ResponseBody::Entries(entries)) => println!("entries = {} 项", entries.len()),
+                    Response::Ok(ResponseBody::Entries(entries)) => {
+                        println!("entries = {} 项", entries.len())
+                    }
                     other => panic!("unexpected list_dir response: {other:?}"),
                 }
             }
@@ -137,9 +188,22 @@ async fn handshake_then_list_roots_roundtrip() {
         }
 
         // --- OpenShell（交互式终端，AGENT_DESIGN.md §四.4 Phase 2）---
-        let open_shell_req = Request::OpenShell { cols: 80, rows: 24, cwd: String::new() };
-        write_frame(&mut writer, 4, FrameType::Control, &encode_json(&open_shell_req).unwrap()).await.expect("send open_shell");
-        let frame = read_frame(&mut reader).await.expect("read open_shell ack frame");
+        let open_shell_req = Request::OpenShell {
+            cols: 80,
+            rows: 24,
+            cwd: String::new(),
+        };
+        write_frame(
+            &mut writer,
+            4,
+            FrameType::Control,
+            &encode_json(&open_shell_req).unwrap(),
+        )
+        .await
+        .expect("send open_shell");
+        let frame = read_frame(&mut reader)
+            .await
+            .expect("read open_shell ack frame");
         assert_eq!(frame.stream_id, 4);
         let response: Response = decode_json(&frame.payload).expect("decode open_shell ack");
         match response {
@@ -150,13 +214,20 @@ async fn handshake_then_list_roots_roundtrip() {
         // 敲一条能唯一识别的命令，从 PTY 输出里找回它——ConPTY 的输出里混着提示符/
         // ANSI 转义序列，不追求精确解析，只要这个标记字符串出现过就说明"键盘输入
         // 经 DataChunk 送进去、shell 输出经 DataChunk 传回来"这条双向链路是通的。
-        write_frame(&mut writer, 4, FrameType::DataChunk, b"echo ROC_DESK_AGENT_SELFTEST_MARKER\r")
-            .await
-            .expect("send shell input");
+        write_frame(
+            &mut writer,
+            4,
+            FrameType::DataChunk,
+            b"echo ROC_DESK_AGENT_SELFTEST_MARKER\r",
+        )
+        .await
+        .expect("send shell input");
 
         let mut collected = String::new();
         let found = loop {
-            let frame = read_frame(&mut reader).await.expect("read shell output frame");
+            let frame = read_frame(&mut reader)
+                .await
+                .expect("read shell output frame");
             assert_eq!(frame.stream_id, 4);
             match frame.frame_type {
                 FrameType::DataChunk => {
@@ -169,12 +240,19 @@ async fn handshake_then_list_roots_roundtrip() {
                 _ => {}
             }
         };
-        assert!(found, "PTY 输出里没有找到回显的标记字符串，实际收到：{collected:?}");
+        assert!(
+            found,
+            "PTY 输出里没有找到回显的标记字符串，实际收到：{collected:?}"
+        );
 
         // --- 关闭终端：客户端发 StreamEnd，Agent 应该杀掉 PTY 子进程 ---
-        write_frame(&mut writer, 4, FrameType::StreamEnd, &[]).await.expect("send shell close");
+        write_frame(&mut writer, 4, FrameType::StreamEnd, &[])
+            .await
+            .expect("send shell close");
     })
     .await;
 
-    outcome.expect("整个握手 + ListRoots 往返在 10 秒内没有完成——说明 Agent 服务器这一侧的帧协议处理卡住了");
+    outcome.expect(
+        "整个握手 + ListRoots 往返在 10 秒内没有完成——说明 Agent 服务器这一侧的帧协议处理卡住了",
+    );
 }

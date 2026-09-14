@@ -24,7 +24,10 @@ pub fn lexical_normalize(path: &str) -> PathBuf {
 }
 
 fn normalize_for_compare(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
 }
 
 /// `allowed_roots` 为空表示不限制。命中范围外返回 `OutsideAllowedRoots`。
@@ -34,9 +37,9 @@ pub fn check_allowed(path: &str, allowed_roots: &[String]) -> Result<PathBuf, Er
         return Ok(normalized);
     }
     let compare = normalize_for_compare(&normalized);
-    let allowed = allowed_roots.iter().any(|root| {
-        compare == *root || compare.starts_with(&format!("{root}\\"))
-    });
+    let allowed = allowed_roots
+        .iter()
+        .any(|root| compare == *root || compare.starts_with(&format!("{root}\\")));
     if allowed {
         Ok(normalized)
     } else {

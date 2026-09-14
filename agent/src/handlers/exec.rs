@@ -7,7 +7,12 @@ use std::time::Duration;
 
 use roc_desk_protocol::ErrorCode;
 
-pub async fn exec(command: &str, args: &[String], cwd: &str, timeout_secs: u32) -> Result<(Option<i32>, String), (ErrorCode, String)> {
+pub async fn exec(
+    command: &str,
+    args: &[String],
+    cwd: &str,
+    timeout_secs: u32,
+) -> Result<(Option<i32>, String), (ErrorCode, String)> {
     let mut cmd = tokio::process::Command::new(command);
     cmd.args(args);
     if !cwd.is_empty() {
@@ -20,8 +25,14 @@ pub async fn exec(command: &str, args: &[String], cwd: &str, timeout_secs: u32) 
     // 让 tokio 在那一刻尽力把子进程杀掉，不留孤儿进程挂在远程主机上。
     cmd.kill_on_drop(true);
 
-    let child = cmd.spawn().map_err(|e| (ErrorCode::Internal, format!("启动进程失败: {e}")))?;
-    let timeout = Duration::from_secs(if timeout_secs == 0 { 120 } else { timeout_secs as u64 });
+    let child = cmd
+        .spawn()
+        .map_err(|e| (ErrorCode::Internal, format!("启动进程失败: {e}")))?;
+    let timeout = Duration::from_secs(if timeout_secs == 0 {
+        120
+    } else {
+        timeout_secs as u64
+    });
 
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
@@ -30,6 +41,9 @@ pub async fn exec(command: &str, args: &[String], cwd: &str, timeout_secs: u32) 
             Ok((output.status.code(), text))
         }
         Ok(Err(e)) => Err((ErrorCode::Internal, format!("执行命令失败: {e}"))),
-        Err(_) => Err((ErrorCode::Internal, format!("命令执行超时（{}s）", timeout.as_secs()))),
+        Err(_) => Err((
+            ErrorCode::Internal,
+            format!("命令执行超时（{}s）", timeout.as_secs()),
+        )),
     }
 }

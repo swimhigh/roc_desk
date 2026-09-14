@@ -54,13 +54,21 @@ pub struct TofuCertCapture {
 
 impl TofuCertCapture {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { captured_der: StdMutex::new(None) })
+        Arc::new(Self {
+            captured_der: StdMutex::new(None),
+        })
     }
 
     pub fn take_fingerprint_sha256(&self) -> Option<String> {
         let der = self.captured_der.lock().unwrap().clone()?;
         let digest = Sha256::digest(&der);
-        Some(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
+        Some(
+            digest
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
     }
 }
 
@@ -77,11 +85,21 @@ impl ServerCertVerifier for TofuCertCapture {
         Ok(ServerCertVerified::assertion())
     }
 
-    fn verify_tls12_signature(&self, _message: &[u8], _cert: &CertificateDer<'_>, _dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         Ok(HandshakeSignatureValid::assertion())
     }
 
-    fn verify_tls13_signature(&self, _message: &[u8], _cert: &CertificateDer<'_>, _dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         Ok(HandshakeSignatureValid::assertion())
     }
 
@@ -109,22 +127,40 @@ pub struct AgentCertVerifier {
 }
 
 impl AgentCertVerifier {
-    pub fn new(repo: Arc<AgentKnownHostsRepo>, prompts: AgentTrustPromptRegistry, app_handle: AppHandle) -> Self {
-        Self { repo, prompts, app_handle }
+    pub fn new(
+        repo: Arc<AgentKnownHostsRepo>,
+        prompts: AgentTrustPromptRegistry,
+        app_handle: AppHandle,
+    ) -> Self {
+        Self {
+            repo,
+            prompts,
+            app_handle,
+        }
     }
 
-    pub async fn verify(&self, connection_id: Uuid, host: &str, port: u16, fingerprint: &str) -> Result<bool, AppError> {
+    pub async fn verify(
+        &self,
+        connection_id: Uuid,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<bool, AppError> {
         match self.repo.lookup(connection_id, fingerprint)? {
             AgentKnownHostStatus::Match => Ok(true),
             AgentKnownHostStatus::Mismatch(old) => {
-                let trusted = self.prompt(connection_id, host, port, fingerprint, Some(old)).await?;
+                let trusted = self
+                    .prompt(connection_id, host, port, fingerprint, Some(old))
+                    .await?;
                 if trusted {
                     self.repo.save(connection_id, fingerprint)?;
                 }
                 Ok(trusted)
             }
             AgentKnownHostStatus::Unknown => {
-                let trusted = self.prompt(connection_id, host, port, fingerprint, None).await?;
+                let trusted = self
+                    .prompt(connection_id, host, port, fingerprint, None)
+                    .await?;
                 if trusted {
                     self.repo.save(connection_id, fingerprint)?;
                 }
@@ -133,7 +169,14 @@ impl AgentCertVerifier {
         }
     }
 
-    async fn prompt(&self, connection_id: Uuid, host: &str, port: u16, fingerprint: &str, old_fingerprint: Option<String>) -> Result<bool, AppError> {
+    async fn prompt(
+        &self,
+        connection_id: Uuid,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+        old_fingerprint: Option<String>,
+    ) -> Result<bool, AppError> {
         let (request_id, rx) = self.prompts.register().await;
         self.app_handle
             .emit(
@@ -149,6 +192,7 @@ impl AgentCertVerifier {
                 }),
             )
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        rx.await.map_err(|_| AppError::Internal("agent cert prompt cancelled".into()))
+        rx.await
+            .map_err(|_| AppError::Internal("agent cert prompt cancelled".into()))
     }
 }

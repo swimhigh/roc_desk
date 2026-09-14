@@ -12,7 +12,10 @@ pub struct Backoff {
 
 impl Backoff {
     pub fn new(max_attempts: u32) -> Self {
-        Self { attempt: 0, max_attempts }
+        Self {
+            attempt: 0,
+            max_attempts,
+        }
     }
 
     /// 返回下一次重试前应等待的时长；`None` 表示已达最大重试次数。

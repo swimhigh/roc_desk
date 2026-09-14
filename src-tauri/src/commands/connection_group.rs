@@ -6,7 +6,9 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 #[tauri::command]
-pub async fn connection_group_list(state: State<'_, AppState>) -> Result<Vec<ConnectionGroup>, AppError> {
+pub async fn connection_group_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConnectionGroup>, AppError> {
     state.connection_group_manager.list()
 }
 

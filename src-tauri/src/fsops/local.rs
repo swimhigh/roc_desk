@@ -36,7 +36,11 @@ impl FileOps for LocalFileOps {
             .map_err(|e| AppError::Internal(e.to_string()))?
     }
 
-    async fn read_file_raw_bounded(&self, path: &str, max_bytes: u64) -> Result<(Vec<u8>, i64), AppError> {
+    async fn read_file_raw_bounded(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, i64), AppError> {
         let path = path.to_string();
         tokio::task::spawn_blocking(move || {
             let meta = std::fs::metadata(&path)?;
@@ -64,7 +68,10 @@ impl FileOps for LocalFileOps {
     /// `read_file_raw()`/`read_file_raw_bounded()` 各自单独起一个 blocking 任务，
     /// 本地场景下纯粹是多余的线程池调度开销，和 `RemoteFileOps` 那边为了修
     /// "SFTP 多一趟往返" 的理由一致，顺手也把本地这边合并了）。
-    async fn read_bytes_for_editor(&self, path: &str) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
+    async fn read_bytes_for_editor(
+        &self,
+        path: &str,
+    ) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
         let path = path.to_string();
         tokio::task::spawn_blocking(move || {
             let meta = std::fs::metadata(&path)?;
@@ -72,8 +79,10 @@ impl FileOps for LocalFileOps {
             let truncated = total_size > super::EDITOR_PREVIEW_THRESHOLD_BYTES;
             if truncated {
                 let file = std::fs::File::open(&path)?;
-                let mut buf = Vec::with_capacity(super::EDITOR_PREVIEW_MAX_BYTES.min(total_size) as usize);
-                file.take(super::EDITOR_PREVIEW_MAX_BYTES).read_to_end(&mut buf)?;
+                let mut buf =
+                    Vec::with_capacity(super::EDITOR_PREVIEW_MAX_BYTES.min(total_size) as usize);
+                file.take(super::EDITOR_PREVIEW_MAX_BYTES)
+                    .read_to_end(&mut buf)?;
                 Ok((buf, mtime_secs(&meta), total_size, true))
             } else {
                 let bytes = std::fs::read(&path)?;
@@ -85,12 +94,19 @@ impl FileOps for LocalFileOps {
     }
 
     /// 和 `read_bytes_for_editor` 同样的理由，合并成一次 `spawn_blocking`。
-    async fn read_binary_for_preview(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+    async fn read_binary_for_preview(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AppError> {
         let path = path.to_string();
         tokio::task::spawn_blocking(move || {
             let meta = std::fs::metadata(&path)?;
             if meta.len() > max_bytes {
-                return Err(AppError::Internal(format!("文件过大（{:.1}MB），无法预览", meta.len() as f64 / 1024.0 / 1024.0)));
+                return Err(AppError::Internal(format!(
+                    "文件过大（{:.1}MB），无法预览",
+                    meta.len() as f64 / 1024.0 / 1024.0
+                )));
             }
             let bytes = std::fs::read(&path)?;
             Ok(bytes)
@@ -151,7 +167,11 @@ impl FileOps for LocalFileOps {
                     name: entry.file_name().to_string_lossy().to_string(),
                     path: full_path.to_string_lossy().replace('\\', "/"),
                     is_dir: meta.is_dir(),
-                    size: if meta.is_dir() { None } else { Some(meta.len()) },
+                    size: if meta.is_dir() {
+                        None
+                    } else {
+                        Some(meta.len())
+                    },
                     modified: Some(mtime_secs(&meta)),
                 });
             }

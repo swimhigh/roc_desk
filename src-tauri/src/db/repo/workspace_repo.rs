@@ -54,7 +54,12 @@ impl WorkspaceRepo {
     /// SFTP/Agent 双栏浏览器每次导航都会调一次（见 `commands::workspace::
     /// workspace_update_last_sftp_paths`）——两个参数都是"当前值"，不是增量，
     /// 一次性整体覆盖，调用方负责传完整的一对。
-    pub fn update_last_sftp_paths(&self, id: Uuid, local_path: &str, remote_path: &str) -> Result<(), AppError> {
+    pub fn update_last_sftp_paths(
+        &self,
+        id: Uuid,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<(), AppError> {
         let conn = self.pool.get()?;
         conn.execute(
             "UPDATE workspaces SET last_sftp_local_path = ?1, last_sftp_remote_path = ?2 WHERE id = ?3",
@@ -63,7 +68,10 @@ impl WorkspaceRepo {
         Ok(())
     }
 
-    pub fn find_by_local_path(&self, root_path: &str) -> Result<Option<WorkspaceProfile>, AppError> {
+    pub fn find_by_local_path(
+        &self,
+        root_path: &str,
+    ) -> Result<Option<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let result = conn
             .query_row(
@@ -81,7 +89,11 @@ impl WorkspaceRepo {
     /// 不同主机上完全是两回事）。之前 `open_remote` 里漏了这一步，导致每次重新打开
     /// 同一个远程工作区都新建一条记录，"最近工作区"列表里同一个目录会不断堆积
     /// 重复项（真实 bug，2026-08-18 用户报告同一目录出现 4 条记录）。
-    pub fn find_by_remote(&self, connection_id: Uuid, root_path: &str) -> Result<Option<WorkspaceProfile>, AppError> {
+    pub fn find_by_remote(
+        &self,
+        connection_id: Uuid,
+        root_path: &str,
+    ) -> Result<Option<WorkspaceProfile>, AppError> {
         let conn = self.pool.get()?;
         let result = conn
             .query_row(
@@ -123,7 +135,10 @@ impl WorkspaceRepo {
 
     pub fn remove(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM workspaces WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 

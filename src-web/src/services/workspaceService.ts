@@ -3,7 +3,9 @@ import type { WorkspaceProfile } from "../types/bindings";
 
 /** IPC 边界：唯一允许调用 invoke() 的地方之一（CODE_DESIGN.md §一分层原则）。 */
 export const workspaceService = {
-  listRecent(limit = 20): Promise<WorkspaceProfile[]> {
+  // 工作区选择页和首页都使用带滚动条的最近列表；100 条足以覆盖日常历史，
+  // 同时避免一次性渲染无限多的旧记录。
+  listRecent(limit = 100): Promise<WorkspaceProfile[]> {
     return invoke("workspace_list_recent", { limit });
   },
 

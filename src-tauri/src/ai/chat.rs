@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 use super::providers::AiProvider;
+use super::runtime::{cancelled, AiRuntime};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,13 +18,18 @@ pub struct ChatMessage {
 
 static AWS_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").unwrap());
 static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----").unwrap()
+    Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
+        .unwrap()
 });
-static PASSWORD_KV: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*['"]?[^\s'"]+"#).unwrap());
-static SEARCH_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<item>(.*?)</item>").unwrap());
-static SEARCH_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<title>(.*?)</title>").unwrap());
-static SEARCH_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<link>(.*?)</link>").unwrap());
+static PASSWORD_KV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*['"]?[^\s'"]+"#).unwrap()
+});
+static SEARCH_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<item>(.*?)</item>").unwrap());
+static SEARCH_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<title>(.*?)</title>").unwrap());
+static SEARCH_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<link>(.*?)</link>").unwrap());
 static SEARCH_DESCRIPTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<description>(.*?)</description>").unwrap());
 static XML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
@@ -53,7 +59,15 @@ pub struct AiChatClient {
 
 impl AiChatClient {
     pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub fn from_runtime(runtime: &AiRuntime) -> Self {
+        Self {
+            client: runtime.client().clone(),
+        }
     }
 
     /// 增量文本通过 `ai:chat-chunk` 事件推给前端，结束发 `ai:chat-done`，出错发
@@ -68,6 +82,7 @@ impl AiChatClient {
         web_search_enabled: bool,
         app_handle: AppHandle,
         request_id: Uuid,
+        runtime: Option<&AiRuntime>,
     ) {
         let result = self
             .run_stream(
@@ -78,11 +93,18 @@ impl AiChatClient {
                 web_search_enabled,
                 &app_handle,
                 request_id,
+                runtime,
             )
             .await;
+        if let Some(runtime) = runtime {
+            runtime.finish_chat(request_id);
+        }
         match result {
             Ok(()) => {
-                let _ = app_handle.emit("ai:chat-done", serde_json::json!({ "requestId": request_id }));
+                let _ = app_handle.emit(
+                    "ai:chat-done",
+                    serde_json::json!({ "requestId": request_id }),
+                );
             }
             Err(e) => {
                 let _ = app_handle.emit(
@@ -102,13 +124,25 @@ impl AiChatClient {
         web_search_enabled: bool,
         app_handle: &AppHandle,
         request_id: Uuid,
+        runtime: Option<&AiRuntime>,
     ) -> Result<(), AppError> {
+        let cancellation = runtime.map(|runtime| runtime.register_chat(request_id));
+        let _permit = if let (Some(runtime), Some(cancellation)) = (runtime, cancellation.as_ref())
+        {
+            Some(runtime.acquire(provider.id, cancellation).await?)
+        } else {
+            None
+        };
+
         // 只对云端 Provider 做脱敏——本地 Ollama 不出网，脱敏反而会污染用户本想让
         // 模型原样看到的日志/代码内容（DESIGN.md §3.6"每个 Provider 需标注本地/云端"）。
         let mut outgoing: Vec<ChatMessage> = if redact_enabled && !provider.is_local {
             messages
                 .iter()
-                .map(|m| ChatMessage { role: m.role.clone(), content: redact(&m.content) })
+                .map(|m| ChatMessage {
+                    role: m.role.clone(),
+                    content: redact(&m.content),
+                })
                 .collect()
         } else {
             messages.to_vec()
@@ -127,14 +161,23 @@ impl AiChatClient {
                 // Include recent user turns so follow-ups such as “它的财报呢” retain
                 // the company/topic from the previous question.
                 let raw_query = recent_user_messages.join("\n");
-                let raw_query =
-                    raw_query.chars().rev().take(800).collect::<String>().chars().rev().collect::<String>();
+                let raw_query = raw_query
+                    .chars()
+                    .rev()
+                    .take(800)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
                 let raw_query = redact(&raw_query);
                 // Bing 按整句分词，直接把“你能搜索下金证股份今天的新闻吗”这类整句
                 // 甩过去，权重会落在“你”这种高频虚词上，搜出来的全是不相关结果。
                 // 先用模型把问题浓缩成搜索关键词，再去检索；改写失败就退回原句，
                 // 不让这一步阻断搜索。
-                let query = match self.complete_once(provider, api_key, QUERY_REWRITE_SYSTEM, &raw_query).await {
+                let query = match self
+                    .complete_once(provider, api_key, QUERY_REWRITE_SYSTEM, &raw_query)
+                    .await
+                {
                     Ok(rewritten) if !rewritten.trim().is_empty() => rewritten,
                     _ => raw_query,
                 };
@@ -148,13 +191,17 @@ impl AiChatClient {
             }
         }
 
-        let url = format!("{}/chat/completions", provider.api_base.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            provider.api_base.trim_end_matches('/')
+        );
         let body = serde_json::json!({
             "model": provider.model,
             "messages": outgoing,
             "stream": true,
         });
-        let mut req = self.client.post(&url).json(&body);
+        let client = runtime.map_or(&self.client, AiRuntime::client);
+        let mut req = client.post(&url).json(&body);
         if let Some(key) = api_key {
             req = req.bearer_auth(key);
         }
@@ -177,7 +224,15 @@ impl AiChatClient {
                 let frame = buf[..pos].to_string();
                 buf.drain(..pos + 2);
                 for line in frame.lines() {
-                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|token| token.is_cancelled())
+                    {
+                        return Err(cancelled());
+                    }
+                    let Some(data) = line.strip_prefix("data:") else {
+                        continue;
+                    };
                     let data = data.trim();
                     if data == "[DONE]" {
                         return Ok(());
@@ -213,7 +268,10 @@ impl AiChatClient {
         system_prompt: &str,
         user_text: &str,
     ) -> Result<String, AppError> {
-        let url = format!("{}/chat/completions", provider.api_base.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            provider.api_base.trim_end_matches('/')
+        );
         let body = serde_json::json!({
             "model": provider.model,
             "messages": [
@@ -233,7 +291,11 @@ impl AiChatClient {
             return Err(AppError::Connection(format!("HTTP {status}: {body}")));
         }
         let body: serde_json::Value = resp.json().await?;
-        let text = body["choices"][0]["message"]["content"].as_str().unwrap_or_default().trim().to_string();
+        let text = body["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if text.is_empty() {
             return Err(AppError::Internal("模型没有返回改写结果".into()));
         }
@@ -244,44 +306,68 @@ impl AiChatClient {
 /// 供统一 AI工具的 function-calling 使用的互联网搜索入口。这里与旧版问答面板
 /// 共用 Bing RSS 抓取逻辑，避免 Coding Agent 退化成“模型自己声称无法联网”。
 pub async fn search_web_results(client: &reqwest::Client, query: &str) -> Result<String, AppError> {
-        let mut queries = vec![query.to_string()];
-        // Bing RSS sometimes tokenizes this Chinese company name as only “建”.
-        // Retry with its English name so the search toggle returns useful data.
-        if query.contains("建滔") {
-            queries.push(format!("{query} Kingboard Holdings"));
-            queries.push("Kingboard Holdings annual report financial results".into());
-        }
-        let mut results = Vec::new();
-        for candidate in queries {
-            let url = reqwest::Url::parse_with_params(
-                "https://www.bing.com/search",
-                &[("q", candidate.as_str()), ("format", "rss"), ("setlang", "zh-CN")],
-            )
-            .map_err(|e| AppError::Connection(e.to_string()))?;
-            let xml = client
-                .get(url)
-                .header(reqwest::header::USER_AGENT, "roc_desk/1.0 (AI web search)")
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
-            for item in SEARCH_ITEM.captures_iter(&xml).take(5) {
-                let Some(item) = item.get(1).map(|m| m.as_str()) else { continue };
-                let Some(title) = SEARCH_TITLE.captures(item).and_then(|c| c.get(1)).map(|m| xml_text(m.as_str())) else { continue };
-                let Some(link) = SEARCH_LINK.captures(item).and_then(|c| c.get(1)).map(|m| xml_text(m.as_str())) else { continue };
-                let description = SEARCH_DESCRIPTION.captures(item).and_then(|c| c.get(1)).map(|v| xml_text(v.as_str())).unwrap_or_default();
-                if !results.iter().any(|line: &String| line.contains(&link)) {
-                    results.push(format!("- {title}\n  {link}\n  {description}"));
-                }
+    let mut queries = vec![query.to_string()];
+    // Bing RSS sometimes tokenizes this Chinese company name as only “建”.
+    // Retry with its English name so the search toggle returns useful data.
+    if query.contains("建滔") {
+        queries.push(format!("{query} Kingboard Holdings"));
+        queries.push("Kingboard Holdings annual report financial results".into());
+    }
+    let mut results = Vec::new();
+    for candidate in queries {
+        let url = reqwest::Url::parse_with_params(
+            "https://www.bing.com/search",
+            &[
+                ("q", candidate.as_str()),
+                ("format", "rss"),
+                ("setlang", "zh-CN"),
+            ],
+        )
+        .map_err(|e| AppError::Connection(e.to_string()))?;
+        let xml = client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, "roc_desk/1.0 (AI web search)")
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        for item in SEARCH_ITEM.captures_iter(&xml).take(5) {
+            let Some(item) = item.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(title) = SEARCH_TITLE
+                .captures(item)
+                .and_then(|c| c.get(1))
+                .map(|m| xml_text(m.as_str()))
+            else {
+                continue;
+            };
+            let Some(link) = SEARCH_LINK
+                .captures(item)
+                .and_then(|c| c.get(1))
+                .map(|m| xml_text(m.as_str()))
+            else {
+                continue;
+            };
+            let description = SEARCH_DESCRIPTION
+                .captures(item)
+                .and_then(|c| c.get(1))
+                .map(|v| xml_text(v.as_str()))
+                .unwrap_or_default();
+            if !results.iter().any(|line: &String| line.contains(&link)) {
+                results.push(format!("- {title}\n  {link}\n  {description}"));
             }
-            if results.len() >= 5 { break; }
         }
-        let results = results.into_iter().take(8).collect::<Vec<_>>();
-        if results.is_empty() {
-            return Err(AppError::Connection("互联网搜索未返回结果".into()));
+        if results.len() >= 5 {
+            break;
         }
-        Ok(results.join("\n"))
+    }
+    let results = results.into_iter().take(8).collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(AppError::Connection("互联网搜索未返回结果".into()));
+    }
+    Ok(results.join("\n"))
 }
 
 fn xml_text(value: &str) -> String {

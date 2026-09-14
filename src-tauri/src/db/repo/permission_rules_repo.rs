@@ -35,7 +35,10 @@ impl PermissionRulesRepo {
 
     pub fn delete(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM permission_rules WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM permission_rules WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -47,7 +50,9 @@ impl PermissionRulesRepo {
             "SELECT id, tool, pattern, decision, enabled, created_at
              FROM permission_rules WHERE enabled = 1 ORDER BY created_at",
         )?;
-        let rows = stmt.query_map([], Self::map_row)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = stmt
+            .query_map([], Self::map_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 

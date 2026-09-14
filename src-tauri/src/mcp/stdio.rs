@@ -35,10 +35,9 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     pub async fn spawn(server: &McpServer) -> Result<Self, AppError> {
-        let command = server
-            .command
-            .clone()
-            .ok_or_else(|| AppError::Internal(format!("MCP 服务器 {} 未配置可执行命令", server.name)))?;
+        let command = server.command.clone().ok_or_else(|| {
+            AppError::Internal(format!("MCP 服务器 {} 未配置可执行命令", server.name))
+        })?;
 
         let mut cmd = Command::new(&command);
         cmd.args(&server.args)
@@ -48,14 +47,21 @@ impl StdioTransport {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| AppError::Internal(format!("启动 MCP 服务器 {} 失败：{e}", server.name)))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            AppError::Internal(format!("启动 MCP 服务器 {} 失败：{e}", server.name))
+        })?;
 
-        let stdin = child.stdin.take().ok_or_else(|| AppError::Internal("MCP 子进程没有 stdin".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| AppError::Internal("MCP 子进程没有 stdout".into()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Internal("MCP 子进程没有 stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::Internal("MCP 子进程没有 stdout".into()))?;
 
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = pending.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -66,10 +72,14 @@ impl StdioTransport {
                         if line.is_empty() {
                             continue;
                         }
-                        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+                        let Ok(value) = serde_json::from_str::<Value>(line) else {
+                            continue;
+                        };
                         // 只处理带 `id` 的响应（请求的回执）；服务端主动发来的通知
                         // （没有 `id`，比如进度提示）目前不消费，直接丢弃。
-                        let Some(id) = value.get("id").and_then(|v| v.as_i64()) else { continue };
+                        let Some(id) = value.get("id").and_then(|v| v.as_i64()) else {
+                            continue;
+                        };
                         if let Some(tx) = reader_pending.lock().await.remove(&id) {
                             let payload = if let Some(err) = value.get("error") {
                                 json!({ "__mcp_error__": true, "detail": err })
@@ -84,14 +94,23 @@ impl StdioTransport {
             }
         });
 
-        Ok(Self { stdin: Mutex::new(stdin), pending, next_id: AtomicI64::new(1), _child: child })
+        Ok(Self {
+            stdin: Mutex::new(stdin),
+            pending,
+            next_id: AtomicI64::new(1),
+            _child: child,
+        })
     }
 
     async fn write_line(&self, value: &Value) -> Result<(), AppError> {
-        let mut line = serde_json::to_string(value).map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut line =
+            serde_json::to_string(value).map_err(|e| AppError::Internal(e.to_string()))?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
-        stdin.write_all(line.as_bytes()).await.map_err(AppError::from)?;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(AppError::from)?;
         stdin.flush().await.map_err(AppError::from)
     }
 }
@@ -115,12 +134,16 @@ impl McpTransport for StdioTransport {
             .map_err(|_| AppError::Internal("MCP 子进程提前退出，未收到响应".into()))?;
 
         if result.get("__mcp_error__").is_some() {
-            return Err(AppError::Internal(format!("MCP 调用 {method} 失败：{}", result["detail"])));
+            return Err(AppError::Internal(format!(
+                "MCP 调用 {method} 失败：{}",
+                result["detail"]
+            )));
         }
         Ok(result)
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), AppError> {
-        self.write_line(&json!({ "jsonrpc": "2.0", "method": method, "params": params })).await
+        self.write_line(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
+            .await
     }
 }

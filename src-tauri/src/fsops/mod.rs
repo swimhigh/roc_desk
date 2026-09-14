@@ -29,7 +29,15 @@ pub const TRANSFER_CANCELLED_MESSAGE: &str = "传输已取消";
 /// 和常见二进制文件扩展名——不进这些目录、不读这些扩展名的文件，避免把
 /// node_modules 里几万个文件也扫一遍，或者把图片/压缩包当文本读出乱码。
 const SEARCH_EXCLUDED_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", ".next", "__pycache__", ".venv", ".cargo",
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+    ".venv",
+    ".cargo",
 ];
 const SEARCH_BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "ico", "webp", "bmp", "mp4", "mp3", "wav", "avi", "mov", "zip",
@@ -118,8 +126,16 @@ fn build_matcher(query: &str, options: &SearchOptions) -> Result<Regex, AppError
     if query.is_empty() {
         return Err(AppError::Internal("搜索内容不能为空".into()));
     }
-    let base = if options.use_regex { query.to_string() } else { regex::escape(query) };
-    let pattern = if options.whole_word { format!(r"\b{base}\b") } else { base };
+    let base = if options.use_regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    let pattern = if options.whole_word {
+        format!(r"\b{base}\b")
+    } else {
+        base
+    };
     RegexBuilder::new(&pattern)
         .case_insensitive(!options.case_sensitive)
         .build()
@@ -161,7 +177,13 @@ pub trait FileOps: Send + Sync {
         let (bytes, mtime) = self.read_file_raw(path).await?;
         let total_size = bytes.len() as u64;
         let (text, encoding) = decode_text_detect(&bytes);
-        Ok(FileContent { text, encoding: encoding.to_string(), mtime, total_size, truncated: false })
+        Ok(FileContent {
+            text,
+            encoding: encoding.to_string(),
+            mtime,
+            total_size,
+            truncated: false,
+        })
     }
 
     /// `expected_mtime` 为空表示不做冲突检测（例如新建文件）；非空时若远程/本地
@@ -173,7 +195,8 @@ pub trait FileOps: Send + Sync {
         content: &str,
         expected_mtime: Option<i64>,
     ) -> Result<WriteOutcome, AppError> {
-        self.write_file_bytes(path, content.as_bytes(), expected_mtime).await
+        self.write_file_bytes(path, content.as_bytes(), expected_mtime)
+            .await
     }
 
     async fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>, AppError>;
@@ -188,15 +211,24 @@ pub trait FileOps: Send + Sync {
     /// 和 `read_file_raw` 一样返回原始字节 + mtime，但最多只读 `max_bytes` 字节——
     /// 本地实现用 `Read::take`，远程实现用 SFTP 文件句柄的 `AsyncReadExt::take`，
     /// 都不会像 `read_file_raw` 那样把整个文件一次性吸进内存。
-    async fn read_file_raw_bounded(&self, path: &str, max_bytes: u64) -> Result<(Vec<u8>, i64), AppError>;
+    async fn read_file_raw_bounded(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, i64), AppError>;
 
     /// 给编辑器用的"体积感知"读取：超过 `EDITOR_PREVIEW_THRESHOLD_BYTES` 就只读前
     /// `EDITOR_PREVIEW_MAX_BYTES` 字节，`truncated` 告诉调用方这份内容是被截断的
     /// 预览，不能整篇编辑保存（保存会把截断内容覆盖回真实的大文件，等于删除数据）。
-    async fn read_bytes_for_editor(&self, path: &str) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
+    async fn read_bytes_for_editor(
+        &self,
+        path: &str,
+    ) -> Result<(Vec<u8>, i64, u64, bool), AppError> {
         let total_size = self.file_size(path).await?;
         if total_size > EDITOR_PREVIEW_THRESHOLD_BYTES {
-            let (bytes, mtime) = self.read_file_raw_bounded(path, EDITOR_PREVIEW_MAX_BYTES).await?;
+            let (bytes, mtime) = self
+                .read_file_raw_bounded(path, EDITOR_PREVIEW_MAX_BYTES)
+                .await?;
             Ok((bytes, mtime, total_size, true))
         } else {
             let (bytes, mtime) = self.read_file_raw(path).await?;
@@ -210,12 +242,22 @@ pub trait FileOps: Send + Sync {
     async fn read_file_for_editor(&self, path: &str) -> Result<FileContent, AppError> {
         let (bytes, mtime, total_size, truncated) = self.read_bytes_for_editor(path).await?;
         let (text, encoding) = decode_text_detect(&bytes);
-        Ok(FileContent { text, encoding: encoding.to_string(), mtime, total_size, truncated })
+        Ok(FileContent {
+            text,
+            encoding: encoding.to_string(),
+            mtime,
+            total_size,
+            truncated,
+        })
     }
 
     /// 图片预览用：先 stat 判断大小，超过 `max_bytes` 直接拒绝（不像文本那样截断读
     /// 一部分——半张图片解不出来，截断预览对图片没有意义），没超就整份读回。
-    async fn read_binary_for_preview(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+    async fn read_binary_for_preview(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AppError> {
         let total_size = self.file_size(path).await?;
         if total_size > max_bytes {
             return Err(AppError::Internal(format!(
@@ -233,7 +275,9 @@ pub trait FileOps: Send + Sync {
     /// 覆盖成流式的 `download_to_local`，不会把大文件整个吸进内存。
     async fn download_to_local_file(&self, path: &str, local_path: &str) -> Result<(), AppError> {
         let (bytes, _mtime) = self.read_file_raw(path).await?;
-        tokio::fs::write(local_path, &bytes).await.map_err(AppError::from)
+        tokio::fs::write(local_path, &bytes)
+            .await
+            .map_err(AppError::from)
     }
 
     /// 和 `write_file` 语义一致（含冲突检测），只是接受任意字节而不是假定 UTF-8 字符串。
@@ -296,7 +340,9 @@ pub trait FileOps: Send + Sync {
         let mut occurrences_replaced = 0usize;
 
         for path in paths {
-            let Ok((bytes, _)) = self.read_file_raw(path).await else { continue };
+            let Ok((bytes, _)) = self.read_file_raw(path).await else {
+                continue;
+            };
             let (text, _) = decode_text_detect(&bytes);
             let count = matcher.find_iter(&text).count();
             if count == 0 {
@@ -307,14 +353,20 @@ pub trait FileOps: Send + Sync {
             let replaced = if options.use_regex {
                 matcher.replace_all(&text, replacement).into_owned()
             } else {
-                matcher.replace_all(&text, regex::NoExpand(replacement)).into_owned()
+                matcher
+                    .replace_all(&text, regex::NoExpand(replacement))
+                    .into_owned()
             };
-            self.write_file_bytes(path, replaced.as_bytes(), None).await?;
+            self.write_file_bytes(path, replaced.as_bytes(), None)
+                .await?;
             files_changed += 1;
             occurrences_replaced += count;
         }
 
-        Ok(ReplaceSummary { files_changed, occurrences_replaced })
+        Ok(ReplaceSummary {
+            files_changed,
+            occurrences_replaced,
+        })
     }
 }
 
@@ -348,14 +400,27 @@ pub async fn copy_between(
         dst.write_file_bytes(dst_path, &bytes, None).await?;
         file_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some((app, request_id)) = progress {
-            let _ = app.emit("agent:transfer-progress", serde_json::json!({ "requestId": request_id, "path": src_path }));
+            let _ = app.emit(
+                "agent:transfer-progress",
+                serde_json::json!({ "requestId": request_id, "path": src_path }),
+            );
         }
         return Ok(());
     }
     dst.create_dir(dst_path).await?;
     for entry in src.list_dir(src_path).await? {
         let child_dst = format!("{}/{}", dst_path.trim_end_matches(['/', '\\']), entry.name);
-        Box::pin(copy_between(src, &entry.path, dst, &child_dst, entry.is_dir, progress, should_cancel, file_count)).await?;
+        Box::pin(copy_between(
+            src,
+            &entry.path,
+            dst,
+            &child_dst,
+            entry.is_dir,
+            progress,
+            should_cancel,
+            file_count,
+        ))
+        .await?;
     }
     Ok(())
 }
@@ -438,10 +503,16 @@ pub async fn search_stream(
                     if is_binary_extension(&entry.name) {
                         continue;
                     }
-                    if entry.size.map(|s| s > SEARCH_MAX_FILE_BYTES).unwrap_or(false) {
+                    if entry
+                        .size
+                        .map(|s| s > SEARCH_MAX_FILE_BYTES)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
-                    let Ok((bytes, _)) = file_ops.read_file_raw(&entry.path).await else { continue };
+                    let Ok((bytes, _)) = file_ops.read_file_raw(&entry.path).await else {
+                        continue;
+                    };
                     if bytes.len() as u64 > SEARCH_MAX_FILE_BYTES || looks_binary(&bytes) {
                         continue;
                     }
@@ -452,16 +523,26 @@ pub async fn search_stream(
                         for m in matcher.find_iter(line) {
                             let match_start = line[..m.start()].chars().count();
                             let match_end = line[..m.end()].chars().count();
-                            file_matches.push(SearchMatch { line_number: idx + 1, line_text: line.to_string(), match_start, match_end });
+                            file_matches.push(SearchMatch {
+                                line_number: idx + 1,
+                                line_text: line.to_string(),
+                                match_start,
+                                match_end,
+                            });
                             total_matches += 1;
-                            if file_matches.len() >= SEARCH_MAX_MATCHES_PER_FILE || total_matches >= SEARCH_MAX_MATCHES {
+                            if file_matches.len() >= SEARCH_MAX_MATCHES_PER_FILE
+                                || total_matches >= SEARCH_MAX_MATCHES
+                            {
                                 break 'lines;
                             }
                         }
                     }
                     if !file_matches.is_empty() {
                         files_found += 1;
-                        on_file(SearchFileResult { path: entry.path.clone(), matches: file_matches });
+                        on_file(SearchFileResult {
+                            path: entry.path.clone(),
+                            matches: file_matches,
+                        });
                     }
                 }
             }
@@ -494,8 +575,13 @@ pub struct FileContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WriteOutcome {
-    Written { mtime: i64 },
-    Conflict { current_mtime: i64, current_preview: String },
+    Written {
+        mtime: i64,
+    },
+    Conflict {
+        current_mtime: i64,
+        current_preview: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,7 +598,11 @@ mod search_tests {
     use super::*;
 
     fn opts(case_sensitive: bool, whole_word: bool, use_regex: bool) -> SearchOptions {
-        SearchOptions { case_sensitive, whole_word, use_regex }
+        SearchOptions {
+            case_sensitive,
+            whole_word,
+            use_regex,
+        }
     }
 
     #[test]

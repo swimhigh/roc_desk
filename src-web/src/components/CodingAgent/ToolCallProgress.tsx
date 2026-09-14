@@ -15,7 +15,7 @@ interface ToolCallProgressProps {
   onOpenFile?: () => void;
 }
 
-function toolLabel(tool: string): string {
+export function toolLabel(tool: string): string {
   const labels: Record<string, string> = {
     read_file: "读取文件", write_file: "创建文件变更", edit_file: "编辑文件",
     list_directory: "查看目录", search_files: "搜索代码", run_command: "执行命令",

@@ -203,52 +203,119 @@ pub struct TodoItem {
 
 #[derive(Debug, Clone)]
 pub enum ToolCall {
-    ReadFile { path: String },
-    ListDirectory { path: String },
-    SearchFiles { pattern: String, path: String },
-    WebSearch { query: String },
-    WriteFile { path: String, content: String },
-    EditFile { path: String, old_text: String, new_text: String },
-    RunCommand { command: String },
-    Glob { pattern: String, path: String },
-    WebFetch { url: String },
-    TodoWrite { todos: Vec<TodoItem> },
-    Question { question: String, options: Vec<String> },
-    Skill { name: String },
+    ReadFile {
+        path: String,
+    },
+    ListDirectory {
+        path: String,
+    },
+    SearchFiles {
+        pattern: String,
+        path: String,
+    },
+    WebSearch {
+        query: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    EditFile {
+        path: String,
+        old_text: String,
+        new_text: String,
+    },
+    RunCommand {
+        command: String,
+    },
+    Glob {
+        pattern: String,
+        path: String,
+    },
+    WebFetch {
+        url: String,
+    },
+    TodoWrite {
+        todos: Vec<TodoItem>,
+    },
+    Question {
+        question: String,
+        options: Vec<String>,
+    },
+    Skill {
+        name: String,
+    },
     /// MCP 工具调用不走这里的静态解析——工具名是运行时按已连接的服务器动态生成
     /// 的（`mcp__<server>__<tool>`），`CodingSession::send_message` 在调
     /// `parse_tool_call` 之前先检查这个前缀，命中就直接构造这个变体，见
     /// `coding/session.rs`。
-    Mcp { server_id: uuid::Uuid, tool_name: String, arguments: serde_json::Value },
+    Mcp {
+        server_id: uuid::Uuid,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
 }
 
 #[derive(Deserialize)]
-struct ReadFileArgs { path: String }
+struct ReadFileArgs {
+    path: String,
+}
 #[derive(Deserialize)]
-struct ListDirectoryArgs { path: String }
+struct ListDirectoryArgs {
+    path: String,
+}
 #[derive(Deserialize)]
-struct SearchFilesArgs { pattern: String, path: String }
+struct SearchFilesArgs {
+    pattern: String,
+    path: String,
+}
 #[derive(Deserialize)]
-struct WebSearchArgs { query: String }
+struct WebSearchArgs {
+    query: String,
+}
 #[derive(Deserialize)]
-struct WriteFileArgs { path: String, content: String }
+struct WriteFileArgs {
+    path: String,
+    content: String,
+}
 #[derive(Deserialize)]
-struct EditFileArgs { path: String, old_text: String, new_text: String }
+struct EditFileArgs {
+    path: String,
+    old_text: String,
+    new_text: String,
+}
 #[derive(Deserialize)]
-struct RunCommandArgs { command: String }
+struct RunCommandArgs {
+    command: String,
+}
 #[derive(Deserialize)]
-struct GlobArgs { pattern: String, path: String }
+struct GlobArgs {
+    pattern: String,
+    path: String,
+}
 #[derive(Deserialize)]
-struct WebFetchArgs { url: String }
+struct WebFetchArgs {
+    url: String,
+}
 #[derive(Deserialize)]
-struct TodoWriteArgs { todos: Vec<TodoItem> }
+struct TodoWriteArgs {
+    todos: Vec<TodoItem>,
+}
 #[derive(Deserialize)]
-struct QuestionArgs { question: String, #[serde(default)] options: Vec<String> }
+struct QuestionArgs {
+    question: String,
+    #[serde(default)]
+    options: Vec<String>,
+}
 #[derive(Deserialize)]
-struct SkillArgs { name: String }
+struct SkillArgs {
+    name: String,
+}
 
 pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, AppError> {
-    let bad_args = |e: serde_json::Error| AppError::Internal(format!("invalid tool arguments for {name}: {e}"));
+    let bad_args = |e: serde_json::Error| {
+        AppError::Internal(format!("invalid tool arguments for {name}: {e}"))
+    };
     match name {
         "read_file" => {
             let a: ReadFileArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -260,7 +327,10 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         }
         "search_files" => {
             let a: SearchFilesArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
-            Ok(ToolCall::SearchFiles { pattern: a.pattern, path: a.path })
+            Ok(ToolCall::SearchFiles {
+                pattern: a.pattern,
+                path: a.path,
+            })
         }
         "web_search" => {
             let a: WebSearchArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -268,11 +338,18 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         }
         "write_file" => {
             let a: WriteFileArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
-            Ok(ToolCall::WriteFile { path: a.path, content: a.content })
+            Ok(ToolCall::WriteFile {
+                path: a.path,
+                content: a.content,
+            })
         }
         "edit_file" => {
             let a: EditFileArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
-            Ok(ToolCall::EditFile { path: a.path, old_text: a.old_text, new_text: a.new_text })
+            Ok(ToolCall::EditFile {
+                path: a.path,
+                old_text: a.old_text,
+                new_text: a.new_text,
+            })
         }
         "run_command" => {
             let a: RunCommandArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -280,7 +357,10 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         }
         "glob" => {
             let a: GlobArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
-            Ok(ToolCall::Glob { pattern: a.pattern, path: a.path })
+            Ok(ToolCall::Glob {
+                pattern: a.pattern,
+                path: a.path,
+            })
         }
         "webfetch" => {
             let a: WebFetchArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -292,7 +372,10 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         }
         "question" => {
             let a: QuestionArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
-            Ok(ToolCall::Question { question: a.question, options: a.options })
+            Ok(ToolCall::Question {
+                question: a.question,
+                options: a.options,
+            })
         }
         "skill" => {
             let a: SkillArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -306,7 +389,11 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
 /// 依赖——工具本身用途有限（供 AI 快速定位文件，不是给用户用的通用搜索），
 /// 一个简单的递归 + 逐行 contains 匹配足够，同时主动跳过 `.git`/`node_modules`
 /// 等大目录，避免一次调用扫描出几十万行结果拖垮工具循环。
-pub fn search_files_local(root: &std::path::Path, pattern: &str, max_results: usize) -> Vec<String> {
+pub fn search_files_local(
+    root: &std::path::Path,
+    pattern: &str,
+    max_results: usize,
+) -> Vec<String> {
     const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", "build", ".venv"];
     let mut results = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -315,7 +402,9 @@ pub fn search_files_local(root: &std::path::Path, pattern: &str, max_results: us
         if results.len() >= max_results {
             break;
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if results.len() >= max_results {
                 break;
@@ -329,7 +418,9 @@ pub fn search_files_local(root: &std::path::Path, pattern: &str, max_results: us
                 }
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             for (i, line) in content.lines().enumerate() {
                 if line.contains(pattern) {
                     results.push(format!("{}:{}:{}", path.display(), i + 1, line.trim()));

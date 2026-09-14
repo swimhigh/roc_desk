@@ -34,7 +34,9 @@ pub struct LocalPtyManager {
 
 impl Default for LocalPtyManager {
     fn default() -> Self {
-        Self { channels: RwLock::new(HashMap::new()) }
+        Self {
+            channels: RwLock::new(HashMap::new()),
+        }
     }
 }
 
@@ -53,40 +55,52 @@ fn default_shell() -> CommandBuilder {
 impl LocalPtyManager {
     /// 打开一个本地终端，默认工作目录就是当前工作区根目录（参考 VS Code 打开项目后
     /// 集成终端自动进到项目目录，而不是用户主目录）。
-    pub async fn open(&self, cwd: String, rows: u16, cols: u16, app_handle: AppHandle) -> Result<Uuid, AppError> {
+    pub async fn open(
+        &self,
+        cwd: String,
+        rows: u16,
+        cols: u16,
+        app_handle: AppHandle,
+    ) -> Result<Uuid, AppError> {
         let id = Uuid::new_v4();
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<PtyCommand>();
 
-        let (master, writer, child) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-            let pty_system = native_pty_system();
-            let pair = pty_system
-                .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-                .map_err(|e| AppError::Internal(format!("open pty failed: {e}")))?;
+        let (master, writer, child) =
+            tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+                let pty_system = native_pty_system();
+                let pair = pty_system
+                    .openpty(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })
+                    .map_err(|e| AppError::Internal(format!("open pty failed: {e}")))?;
 
-            let mut cmd = default_shell();
-            cmd.cwd(&cwd);
-            let child = pair
-                .slave
-                .spawn_command(cmd)
-                .map_err(|e| AppError::Internal(format!("spawn shell failed: {e}")))?;
-            // slave 端父进程这边不再需要了，子进程内部持有自己的一份；不 drop 的话
-            // master 侧的读端永远等不到 EOF（slave 还有一个引用活着）。
-            drop(pair.slave);
+                let mut cmd = default_shell();
+                cmd.cwd(&cwd);
+                let child = pair
+                    .slave
+                    .spawn_command(cmd)
+                    .map_err(|e| AppError::Internal(format!("spawn shell failed: {e}")))?;
+                // slave 端父进程这边不再需要了，子进程内部持有自己的一份；不 drop 的话
+                // master 侧的读端永远等不到 EOF（slave 还有一个引用活着）。
+                drop(pair.slave);
 
-            let reader = pair
-                .master
-                .try_clone_reader()
-                .map_err(|e| AppError::Internal(format!("clone pty reader failed: {e}")))?;
-            let writer = pair
-                .master
-                .take_writer()
-                .map_err(|e| AppError::Internal(format!("take pty writer failed: {e}")))?;
+                let reader = pair
+                    .master
+                    .try_clone_reader()
+                    .map_err(|e| AppError::Internal(format!("clone pty reader failed: {e}")))?;
+                let writer = pair
+                    .master
+                    .take_writer()
+                    .map_err(|e| AppError::Internal(format!("take pty writer failed: {e}")))?;
 
-            spawn_reader_thread(id, reader, app_handle.clone());
-            Ok((pair.master, writer, child))
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))??;
+                spawn_reader_thread(id, reader, app_handle.clone());
+                Ok((pair.master, writer, child))
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))??;
 
         let mut writer = writer;
         tokio::spawn(async move {
@@ -98,25 +112,39 @@ impl LocalPtyManager {
                         }
                     }
                     PtyCommand::Resize { rows, cols } => {
-                        let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                        let _ = master.resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
                     }
                 }
             }
         });
 
-        self.channels.write().await.insert(id, PtyChannel { cmd_tx, child });
+        self.channels
+            .write()
+            .await
+            .insert(id, PtyChannel { cmd_tx, child });
         Ok(id)
     }
 
     pub async fn write(&self, id: Uuid, data: Vec<u8>) -> Result<(), AppError> {
         let channels = self.channels.read().await;
-        let ch = channels.get(&id).ok_or_else(|| AppError::NotFound(format!("pty channel not found: {id}")))?;
-        ch.cmd_tx.send(PtyCommand::Data(data)).map_err(|_| AppError::Internal("pty task has stopped".into()))
+        let ch = channels
+            .get(&id)
+            .ok_or_else(|| AppError::NotFound(format!("pty channel not found: {id}")))?;
+        ch.cmd_tx
+            .send(PtyCommand::Data(data))
+            .map_err(|_| AppError::Internal("pty task has stopped".into()))
     }
 
     pub async fn resize(&self, id: Uuid, rows: u16, cols: u16) -> Result<(), AppError> {
         let channels = self.channels.read().await;
-        let ch = channels.get(&id).ok_or_else(|| AppError::NotFound(format!("pty channel not found: {id}")))?;
+        let ch = channels
+            .get(&id)
+            .ok_or_else(|| AppError::NotFound(format!("pty channel not found: {id}")))?;
         ch.cmd_tx
             .send(PtyCommand::Resize { rows, cols })
             .map_err(|_| AppError::Internal("pty task has stopped".into()))
@@ -154,7 +182,10 @@ fn spawn_reader_thread(id: Uuid, mut reader: Box<dyn Read + Send>, app_handle: A
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit("pty:status", serde_json::json!({ "channelId": id, "status": "disconnected" }));
+        let _ = app_handle.emit(
+            "pty:status",
+            serde_json::json!({ "channelId": id, "status": "disconnected" }),
+        );
     });
 }
 

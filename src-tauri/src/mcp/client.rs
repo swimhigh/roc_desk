@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::stdio::StdioTransport;
 use super::http::HttpTransport;
+use super::stdio::StdioTransport;
 use super::{McpServer, McpTransportKind};
 use crate::error::AppError;
 
@@ -45,7 +45,9 @@ impl McpClient {
         // MCP 握手要求客户端在收到 initialize 响应后发一条 `notifications/initialized`
         // 通知；个别实现对这条通知处理得比较随意（不回任何东西也不算错），失败了
         // 不阻断后续 tools/list——真正要紧的是双方已经握过手。
-        let _ = transport.notify("notifications/initialized", json!({})).await;
+        let _ = transport
+            .notify("notifications/initialized", json!({}))
+            .await;
 
         let tools = Self::fetch_tools(transport.as_ref()).await?;
         Ok(Self { transport, tools })
@@ -72,10 +74,20 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<String, AppError> {
-        let result = self.transport.call("tools/call", json!({ "name": name, "arguments": arguments })).await?;
+        let result = self
+            .transport
+            .call(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            )
+            .await?;
         let text = mcp_content_to_text(&result);
         if result["isError"].as_bool().unwrap_or(false) {
-            return Err(AppError::Internal(if text.is_empty() { "MCP 工具执行失败".to_string() } else { text }));
+            return Err(AppError::Internal(if text.is_empty() {
+                "MCP 工具执行失败".to_string()
+            } else {
+                text
+            }));
         }
         Ok(text)
     }
@@ -85,7 +97,9 @@ impl McpClient {
 /// 这种结构化形式（也可能有 image/resource 类型的 content，暂不处理，模型工具
 /// 结果本来就只能是文本）——这里只抽取文本部分拼起来喂给模型。
 fn mcp_content_to_text(result: &Value) -> String {
-    let Some(items) = result["content"].as_array() else { return result.to_string() };
+    let Some(items) = result["content"].as_array() else {
+        return result.to_string();
+    };
     items
         .iter()
         .filter_map(|item| item["text"].as_str())

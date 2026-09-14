@@ -17,7 +17,10 @@ pub struct SshHandler {
 impl russh::client::Handler for SshHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &key::PublicKey,
+    ) -> Result<bool, Self::Error> {
         let fingerprint = server_public_key.fingerprint();
         self.verifier
             .verify(&self.host, self.port, &fingerprint)

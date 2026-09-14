@@ -48,12 +48,20 @@ impl HttpTransport {
         }
     }
 
-    async fn post(&self, body: Value, expect_response: bool, expected_id: Option<i64>) -> Result<Option<Value>, AppError> {
+    async fn post(
+        &self,
+        body: Value,
+        expect_response: bool,
+        expected_id: Option<i64>,
+    ) -> Result<Option<Value>, AppError> {
         let mut req = self
             .client
             .post(&self.url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
             .json(&body);
         for (key, value) in &self.headers {
             req = req.header(key.as_str(), value.as_str());
@@ -69,7 +77,11 @@ impl HttpTransport {
             .await
             .map_err(|_| AppError::Connection("MCP HTTP 请求超时".into()))??;
 
-        if let Some(session) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+        if let Some(session) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
             *self.session_id.lock().await = Some(session.to_string());
         }
 
@@ -102,7 +114,10 @@ impl HttpTransport {
     /// `id` 匹配的帧当作最终结果；没有 `id` 的帧（服务端主动推送的日志/进度通知）
     /// 忽略，继续等下一帧。读到匹配帧就提前返回、丢弃 `resp`（连接自然被
     /// reqwest/hyper 关闭），不强求等服务器主动结束这条流。
-    async fn read_sse_response(resp: reqwest::Response, expected_id: Option<i64>) -> Result<Option<Value>, AppError> {
+    async fn read_sse_response(
+        resp: reqwest::Response,
+        expected_id: Option<i64>,
+    ) -> Result<Option<Value>, AppError> {
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         while let Some(chunk) = stream.next().await {
@@ -116,8 +131,12 @@ impl HttpTransport {
                 let frame = buf[..pos].to_string();
                 buf.drain(..pos + 2);
                 for line in frame.lines() {
-                    let Some(data) = line.strip_prefix("data:") else { continue };
-                    let Ok(value) = serde_json::from_str::<Value>(data.trim()) else { continue };
+                    let Some(data) = line.strip_prefix("data:") else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<Value>(data.trim()) else {
+                        continue;
+                    };
                     let frame_id = value.get("id").and_then(|v| v.as_i64());
                     if frame_id.is_some() && (expected_id.is_none() || frame_id == expected_id) {
                         return Ok(Some(value));
@@ -125,7 +144,9 @@ impl HttpTransport {
                 }
             }
         }
-        Err(AppError::Connection("MCP SSE 响应流结束但未收到匹配的响应帧".into()))
+        Err(AppError::Connection(
+            "MCP SSE 响应流结束但未收到匹配的响应帧".into(),
+        ))
     }
 }
 

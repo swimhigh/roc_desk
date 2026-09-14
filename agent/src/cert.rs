@@ -17,7 +17,11 @@ pub struct AgentCert {
 
 fn fingerprint_of(cert_der: &[u8]) -> String {
     let digest = Sha256::digest(cert_der);
-    digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+    digest
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// `dir` 下没有 `cert.pem`/`key.pem` 就生成一份新的并落盘；已存在则直接加载复用
@@ -31,17 +35,30 @@ pub fn load_or_generate(dir: &Path) -> std::io::Result<AgentCert> {
         let key_pem = std::fs::read_to_string(&key_path)?;
         let cert_der: CertificateDer<'static> = rustls_pemfile::certs(&mut cert_pem.as_bytes())
             .next()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "cert.pem 中没有证书"))??;
-        let key_der: PrivatePkcs8KeyDer<'static> = rustls_pemfile::pkcs8_private_keys(&mut key_pem.as_bytes())
-            .next()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "key.pem 中没有私钥"))??;
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "cert.pem 中没有证书")
+            })??;
+        let key_der: PrivatePkcs8KeyDer<'static> =
+            rustls_pemfile::pkcs8_private_keys(&mut key_pem.as_bytes())
+                .next()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "key.pem 中没有私钥")
+                })??;
         let fingerprint_sha256 = fingerprint_of(cert_der.as_ref());
-        return Ok(AgentCert { cert_der, key_der, fingerprint_sha256 });
+        return Ok(AgentCert {
+            cert_der,
+            key_der,
+            fingerprint_sha256,
+        });
     }
 
     let subject_alt_names = vec!["roc-desk-agent".to_string()];
-    let generated = rcgen::generate_simple_self_signed(subject_alt_names)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("生成自签名证书失败: {e}")))?;
+    let generated = rcgen::generate_simple_self_signed(subject_alt_names).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("生成自签名证书失败: {e}"),
+        )
+    })?;
     let cert_pem = generated.cert.pem();
     let key_pem = generated.key_pair.serialize_pem();
     std::fs::write(&cert_path, &cert_pem)?;
@@ -50,5 +67,9 @@ pub fn load_or_generate(dir: &Path) -> std::io::Result<AgentCert> {
     let cert_der: CertificateDer<'static> = generated.cert.der().clone();
     let key_der = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
     let fingerprint_sha256 = fingerprint_of(cert_der.as_ref());
-    Ok(AgentCert { cert_der, key_der, fingerprint_sha256 })
+    Ok(AgentCert {
+        cert_der,
+        key_der,
+        fingerprint_sha256,
+    })
 }

@@ -19,4 +19,7 @@ export const aiChatService = {
   send(providerId: string, messages: ChatMessage[], redactEnabled: boolean, webSearchEnabled: boolean): Promise<string> {
     return invoke("ai_chat_send", { providerId, messages, redactEnabled, webSearchEnabled });
   },
+  cancel(requestId: string): Promise<boolean> {
+    return invoke("ai_chat_cancel", { requestId });
+  },
 };

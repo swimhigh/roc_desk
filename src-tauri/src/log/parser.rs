@@ -6,11 +6,13 @@ use regex::Regex;
 /// 覆盖常见格式即可（ISO8601、nginx 风格 `2026/08/17 03:21:05`），解析不出来
 /// 就留空——搜索/展示都不强依赖这两个字段，只是有的话体验更好。
 static TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?").unwrap()
+    Regex::new(r"\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+        .unwrap()
 });
 
-static LEVEL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRITICAL)\b").unwrap());
+static LEVEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(TRACE|DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|CRITICAL)\b").unwrap()
+});
 
 pub struct ParsedLine {
     pub timestamp: Option<String>,

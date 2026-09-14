@@ -34,7 +34,10 @@ pub async fn workspace_open_remote(
     connection_id: Uuid,
     remote_path: String,
 ) -> Result<WorkspaceProfile, AppError> {
-    let handle = state.workspace_manager.open_remote(connection_id, &remote_path).await?;
+    let handle = state
+        .workspace_manager
+        .open_remote(connection_id, &remote_path)
+        .await?;
     let profile = handle.profile.clone();
     state.workspaces.write().await.insert(profile.id, handle);
     Ok(profile)
@@ -73,5 +76,7 @@ pub async fn workspace_update_last_sftp_paths(
     local_path: String,
     remote_path: String,
 ) -> Result<(), AppError> {
-    state.workspace_manager.update_last_sftp_paths(id, &local_path, &remote_path)
+    state
+        .workspace_manager
+        .update_last_sftp_paths(id, &local_path, &remote_path)
 }

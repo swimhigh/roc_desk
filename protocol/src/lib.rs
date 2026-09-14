@@ -4,7 +4,10 @@
 
 pub mod frame;
 
-pub use frame::{read_frame, write_frame, Frame, FrameType, DATA_CHUNK_SIZE, FRAME_HEADER_LEN, MAX_FRAME_PAYLOAD_LEN};
+pub use frame::{
+    read_frame, write_frame, Frame, FrameType, DATA_CHUNK_SIZE, FRAME_HEADER_LEN,
+    MAX_FRAME_PAYLOAD_LEN,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,31 +18,74 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
-    Handshake { token: String, protocol_version: u32, client_version: String },
-    ListDir { path: String },
-    Stat { path: String },
+    Handshake {
+        token: String,
+        protocol_version: u32,
+        client_version: String,
+    },
+    ListDir {
+        path: String,
+    },
+    Stat {
+        path: String,
+    },
     /// 响应通过 `DataChunk`/`StreamEnd` 帧流式返回文件内容，Control 帧只带
     /// `FileMeta` 元信息（mtime/size），避免大文件走 JSON 造成 33% 体积膨胀。
-    ReadFile { path: String },
-    ReadFileBounded { path: String, max_bytes: u64 },
+    ReadFile {
+        path: String,
+    },
+    ReadFileBounded {
+        path: String,
+        max_bytes: u64,
+    },
     /// 请求方发完这个 Control 帧后，紧接着在同一 stream_id 上发 `DataChunk` 帧
     /// （可以多个）传输文件内容，最后发 `StreamEnd`。
-    WriteFile { path: String, expected_mtime: Option<i64> },
-    Delete { path: String, is_dir: bool },
-    Rename { from: String, to: String },
-    CreateDir { path: String },
+    WriteFile {
+        path: String,
+        expected_mtime: Option<i64>,
+    },
+    Delete {
+        path: String,
+        is_dir: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    CreateDir {
+        path: String,
+    },
     /// 盘符列表：`C:\`、`D:\` ...（Windows 路径的"根"概念，对应 Explorer 顶层）。
     ListRoots,
-    Exec { command: String, args: Vec<String>, cwd: String, timeout_secs: u32 },
-    SearchContent { root: String, query: String, options: SearchOptions },
-    SearchFileName { root: String, query: String },
+    Exec {
+        command: String,
+        args: Vec<String>,
+        cwd: String,
+        timeout_secs: u32,
+    },
+    SearchContent {
+        root: String,
+        query: String,
+        options: SearchOptions,
+    },
+    SearchFileName {
+        root: String,
+        query: String,
+    },
     /// 交互式终端（AGENT_DESIGN.md §四.4 Phase 2）：这个请求打开的流是长期双向的——
     /// 响应 `Ok(Empty)` 之后，同一个 stream_id 上会持续收发 `DataChunk`（分别是
     /// 键盘输入/PTY 输出）和 `ShellResize`（Control 帧），直到某一端发 `StreamEnd`
     /// （客户端发＝用户关闭终端；Agent 发＝远端 shell 进程退出）。
-    OpenShell { cols: u16, rows: u16, cwd: String },
+    OpenShell {
+        cols: u16,
+        rows: u16,
+        cwd: String,
+    },
     /// 只能发在一个已经 `OpenShell` 成功的 stream_id 上，不是独立请求。
-    ShellResize { cols: u16, rows: u16 },
+    ShellResize {
+        cols: u16,
+        rows: u16,
+    },
 }
 
 // `content = "data"`（邻接标签）而不是只给 `tag`（内部标签）：内部标签要求每个
@@ -57,20 +103,37 @@ pub enum Response {
     Ok(ResponseBody),
     /// 与 `fsops::WriteOutcome::Conflict` 对齐：写入前发现远端 mtime 与调用方预期
     /// 的不一致，返回当前 mtime + 前几行预览，交给调用方决定是否强制覆盖。
-    Conflict { current_mtime: i64, current_preview: String },
-    Error { code: ErrorCode, message: String },
+    Conflict {
+        current_mtime: i64,
+        current_preview: String,
+    },
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
     Entries(Vec<FileEntry>),
-    FileMeta { size: u64, mtime: i64 },
-    Written { mtime: i64 },
-    ExecResult { exit_code: Option<i32>, output: String },
+    FileMeta {
+        size: u64,
+        mtime: i64,
+    },
+    Written {
+        mtime: i64,
+    },
+    ExecResult {
+        exit_code: Option<i32>,
+        output: String,
+    },
     SearchResults(Vec<SearchFileResult>),
     Roots(Vec<String>),
-    Handshake { server_version: String, hostname: String },
+    Handshake {
+        server_version: String,
+        hostname: String,
+    },
     Empty,
 }
 

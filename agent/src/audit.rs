@@ -23,16 +23,30 @@ pub struct AuditLog {
 
 impl AuditLog {
     pub fn new(dir: &std::path::Path) -> Self {
-        Self { path: dir.join("audit.log"), lock: Mutex::new(()) }
+        Self {
+            path: dir.join("audit.log"),
+            lock: Mutex::new(()),
+        }
     }
 
     pub async fn record(&self, event: &str, peer: &str, detail: &str) {
-        let entry = AuditEntry { at: chrono::Utc::now().to_rfc3339(), event, peer, detail };
-        let Ok(mut line) = serde_json::to_vec(&entry) else { return };
+        let entry = AuditEntry {
+            at: chrono::Utc::now().to_rfc3339(),
+            event,
+            peer,
+            detail,
+        };
+        let Ok(mut line) = serde_json::to_vec(&entry) else {
+            return;
+        };
         line.push(b'\n');
 
         let _guard = self.lock.lock().await;
-        let file = tokio::fs::OpenOptions::new().create(true).append(true).open(&self.path).await;
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .await;
         if let Ok(mut file) = file {
             let _ = file.write_all(&line).await;
         }

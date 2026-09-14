@@ -19,7 +19,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 找不到 `soffice` 或转换失败都给清晰的错误信息，不让整个预览面板炸掉——前端
 /// （`kind === "legacy-office"` 分支）拿到错误后退化成"转换失败 + 用系统程序打开"。
 pub async fn convert_to_pdf(source_path: &Path, out_dir: &Path) -> Result<PathBuf, AppError> {
-    tokio::fs::create_dir_all(out_dir).await.map_err(AppError::from)?;
+    tokio::fs::create_dir_all(out_dir)
+        .await
+        .map_err(AppError::from)?;
 
     let mut output: Option<Output> = None;
     for candidate in soffice_candidates() {
@@ -29,7 +31,12 @@ pub async fn convert_to_pdf(source_path: &Path, out_dir: &Path) -> Result<PathBu
                 break;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(AppError::Internal(format!("启动 {} 失败：{e}", candidate.display()))),
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "启动 {} 失败：{e}",
+                    candidate.display()
+                )))
+            }
         }
     }
 
@@ -43,7 +50,11 @@ pub async fn convert_to_pdf(source_path: &Path, out_dir: &Path) -> Result<PathBu
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AppError::Internal(format!(
             "转换失败：{}",
-            if stderr.trim().is_empty() { "soffice 退出码非零，未输出错误信息" } else { stderr.trim() }
+            if stderr.trim().is_empty() {
+                "soffice 退出码非零，未输出错误信息"
+            } else {
+                stderr.trim()
+            }
         )));
     }
 
@@ -54,7 +65,9 @@ pub async fn convert_to_pdf(source_path: &Path, out_dir: &Path) -> Result<PathBu
         .ok_or_else(|| AppError::Internal(format!("无效的文件名：{}", source_path.display())))?;
     let pdf_path = out_dir.join(file_stem).with_extension("pdf");
     if !pdf_path.is_file() {
-        return Err(AppError::Internal("转换命令执行成功，但没有找到生成的 PDF 文件".into()));
+        return Err(AppError::Internal(
+            "转换命令执行成功，但没有找到生成的 PDF 文件".into(),
+        ));
     }
     Ok(pdf_path)
 }
@@ -63,15 +76,28 @@ fn soffice_candidates() -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from("soffice")];
     #[cfg(windows)]
     {
-        candidates.push(PathBuf::from(r"C:\Program Files\LibreOffice\program\soffice.exe"));
-        candidates.push(PathBuf::from(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"));
+        candidates.push(PathBuf::from(
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+        ));
+        candidates.push(PathBuf::from(
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ));
     }
     candidates
 }
 
-async fn run_soffice(soffice: &Path, source_path: &Path, out_dir: &Path) -> std::io::Result<Output> {
+async fn run_soffice(
+    soffice: &Path,
+    source_path: &Path,
+    out_dir: &Path,
+) -> std::io::Result<Output> {
     let mut cmd = Command::new(soffice);
-    cmd.arg("--headless").arg("--convert-to").arg("pdf").arg("--outdir").arg(out_dir).arg(source_path);
+    cmd.arg("--headless")
+        .arg("--convert-to")
+        .arg("pdf")
+        .arg("--outdir")
+        .arg(out_dir)
+        .arg(source_path);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.output().await

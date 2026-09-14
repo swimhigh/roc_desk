@@ -28,7 +28,9 @@ pub async fn ssh_open_shell(
         .get(profile_id)
         .await
         .ok_or_else(|| AppError::NotFound(format!("no active ssh session for {profile_id}")))?;
-    session.open_shell(rows, cols, cwd.as_deref(), app_handle).await
+    session
+        .open_shell(rows, cols, cwd.as_deref(), app_handle)
+        .await
 }
 
 #[tauri::command]
@@ -85,7 +87,10 @@ pub async fn ssh_close_channel(
 /// 远程主机资源使用率探针，供远程工具模式的 SSH 会话状态栏定时轮询（前端每隔几秒
 /// 调一次，自己算相邻两次采样的差得到 CPU%/网速，见 `ssh/monitor.rs` 顶部注释）。
 #[tauri::command]
-pub async fn ssh_host_stats(state: State<'_, AppState>, profile_id: Uuid) -> Result<HostStats, AppError> {
+pub async fn ssh_host_stats(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<HostStats, AppError> {
     let session = state
         .ssh_pool
         .get(profile_id)
@@ -101,7 +106,11 @@ pub async fn ssh_host_stats(state: State<'_, AppState>, profile_id: Uuid) -> Res
 
 /// 响应 TOFU / 指纹变化弹窗（DESIGN.md §3.2.1）。
 #[tauri::command]
-pub async fn ssh_confirm_host_key(state: State<'_, AppState>, request_id: Uuid, trust: bool) -> Result<(), AppError> {
+pub async fn ssh_confirm_host_key(
+    state: State<'_, AppState>,
+    request_id: Uuid,
+    trust: bool,
+) -> Result<(), AppError> {
     state.trust_prompts.resolve(request_id, trust).await;
     Ok(())
 }

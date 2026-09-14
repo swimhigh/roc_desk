@@ -5,6 +5,7 @@ import { permissionRuleService } from "../services/permissionRuleService";
 import { mcpServerService } from "../services/mcpServerService";
 import { formatError } from "../utils/error";
 import { useAiChatStore } from "./aiChatStore";
+import { useEditorStore } from "./editorStore";
 import type {
   ChatAttachment,
   CodingAssistantNoteEvent,
@@ -42,6 +43,14 @@ export interface PendingAttachment {
 /** 时间线里"用户消息"回显用的附件摘要——只保留渲染需要的字段，不是完整的
  * `ChatAttachment`（那份已经在发送时连同文本一起交给后端，不需要在前端状态里
  * 重复保留 base64/文件全文）。 */
+export interface CommandConfirmRequest {
+  requestId: string;
+  command: string;
+  host: string | null;
+  kind: "command" | "mcp";
+  matchKey?: string;
+}
+
 export interface TimelineAttachment {
   kind: "image" | "file";
   name: string;
@@ -55,7 +64,7 @@ export type TimelineEntry =
    * 区分开（2026-08-18 需求，见 CodingAssistantNoteEvent 的注释）。 */
   | { kind: "note"; id: string; text: string }
   | { kind: "progress"; id: string; text: string }
-  | { kind: "tool"; id: string; tool: string; running: boolean; detail?: string | null }
+  | { kind: "tool"; id: string; tool: string; running: boolean; detail?: string | null; startedAt?: number }
   | { kind: "change"; id: string; changeId: string }
   | { kind: "blocked"; id: string; command: string }
   | { kind: "git"; id: string; path: string; output: string };
@@ -85,7 +94,19 @@ interface CodingState {
   /** composer 里"待发送"的附件——发出去之后清空（见 `sendMessage`）。 */
   attachments: PendingAttachment[];
   optimizing: boolean;
-  confirmRequest: { requestId: string; command: string; host: string | null; kind: "command" | "mcp"; matchKey?: string } | null;
+  confirmRequest: CommandConfirmRequest | null;
+  /** 排在 `confirmRequest` 后面、还没展示出来的待确认请求——2026-09 用户实测
+   * 复现：codex-core 会并发发起多个工具调用（比如远程 SSH 目标下一连串
+   * `run_command`），每个都各自触发一次 `coding:command-confirm-request`。
+   * `confirmRequest` 之前是单个可空字段，事件监听器直接整体覆盖，第二个
+   * 确认请求一来就把还没被用户处理的第一个悄悄顶掉——被顶掉那个在后端
+   * `CommandConfirmRegistry` 里永远等不到 `resolve()`，对应的
+   * `run_command_gated_shared_with_status_in_context` 里的 `rx.await` 会
+   * 卡死，界面上完全看不出还有请求在等，表现就是"AI 工作卡住不回应"。
+   * 现在改成队列：新请求如果当前已经在展示一个，就排到这里；当前那个被
+   * 处理完（`resolveConfirm`/`resolveConfirmAndRemember`）之后自动把队首
+   * 换上来展示，不会再丢失。 */
+  confirmQueue: CommandConfirmRequest[];
   questionRequest: { requestId: string; question: string; options: string[] } | null;
   permissionRules: PermissionRule[];
   mcpServers: McpServer[];
@@ -116,7 +137,14 @@ interface CodingState {
   setProvider: (providerId: string) => Promise<void>;
   setAutoAllowReadonly: (enabled: boolean) => Promise<void>;
   setAutoGitCommit: (enabled: boolean) => Promise<void>;
+  /** "完全授权模式"：开启后 AI 提出的文件改动直接落盘，不再逐个 Accept
+   * （用户反馈"一次改 20 多个文件还要逐个确认太繁琐"）。会话级开关。 */
+  setFullAuto: (enabled: boolean) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
+  /** "停止"按钮：只在 `sending` 为 true 时有意义——`sendMessage` 本身的
+   * catch 分支已经会处理后端返回的"已取消"错误，这里不需要额外更新
+   * `sending`/`error` 状态。 */
+  cancelTurn: () => Promise<void>;
   addAttachments: (files: File[]) => Promise<void>;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
@@ -127,6 +155,9 @@ interface CodingState {
   rejectChange: (changeId: string) => Promise<void>;
   undoChange: (changeId: string) => Promise<void>;
   redoChange: () => Promise<void>;
+  /** 撤销某一轮对话里 AI 做出的全部已应用改动（参考 Cursor/Windsurf 的按轮次
+   * 整体撤销，不依赖 git）。 */
+  revertTurn: (turnId: string) => Promise<void>;
   resolveConfirm: (allow: boolean) => Promise<void>;
   /** "允许并记住"：先按建议模式落一条 allow 规则，再照常放行这一次。 */
   resolveConfirmAndRemember: (pattern: string) => Promise<void>;
@@ -154,6 +185,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   attachments: [],
   optimizing: false,
   confirmRequest: null,
+  confirmQueue: [],
   questionRequest: null,
   permissionRules: [],
   mcpServers: [],
@@ -213,6 +245,17 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     set({ sessionInfo: { ...sessionInfo, auto_git_commit: enabled } });
   },
 
+  setFullAuto: async (enabled) => {
+    const { workspaceId, sessionInfo, viewingHistoryId } = get();
+    if (viewingHistoryId) return;
+    if (!workspaceId || !sessionInfo) return;
+    await codingService.setFullAuto(workspaceId, enabled);
+    set((s) => ({
+      sessionInfo: { ...sessionInfo, full_auto: enabled },
+      confirmRequest: enabled ? null : s.confirmRequest,
+    }));
+  },
+
   sendMessage: async (text) => {
     const { workspaceId, sending, viewingHistoryId, attachments } = get();
     if (!workspaceId || (!text.trim() && attachments.length === 0) || sending || viewingHistoryId) return;
@@ -231,8 +274,32 @@ export const useCodingStore = create<CodingState>((set, get) => ({
       set((s) => ({ timeline: [...s.timeline, { kind: "assistant", id: nextId(), text: reply }], sending: false }));
       await get().saveCurrentHistory();
     } catch (e) {
-      set({ sending: false, error: formatError(e) });
+      const message = formatError(e);
+      // 用户主动点了"停止"，不算真正的错误——用红色错误条展示会显得像哪里
+      // 出了故障，改成走时间线里一条普通的状态提示（跟 `assistant-note`
+      // 那类顺带说明文字的展示方式一致，不是最终答案）。
+      if (message.includes("已停止：用户取消了当前对话轮次")) {
+        // 被取消的这一轮里，已经派发但还没收到 `coding:tool-call-end` 的
+        // 工具调用（`kind: "tool", running: true`）永远等不到那个事件了——
+        // 轮次本身已经中止，不会再有后续事件补上。不清掉的话这些条目会
+        // 一直转圈，看起来像"点了停止也没用"（2026-09 用户实测反馈）。
+        set((s) => ({
+          sending: false,
+          timeline: [
+            ...s.timeline.map((t) => (t.kind === "tool" && t.running ? { ...t, running: false } : t)),
+            { kind: "note", id: nextId(), text: "已停止" },
+          ],
+        }));
+      } else {
+        set({ sending: false, error: message });
+      }
     }
+  },
+
+  cancelTurn: async () => {
+    const { workspaceId, sending } = get();
+    if (!workspaceId || !sending) return;
+    await codingService.cancelTurn(workspaceId);
   },
 
   addAttachments: async (files) => {
@@ -265,10 +332,11 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   acceptChange: async (changeId) => {
     const { workspaceId, viewingHistoryId } = get();
     if (!workspaceId || viewingHistoryId) return;
-    await codingService.acceptChange(workspaceId, changeId);
+    const sync = await codingService.acceptChange(workspaceId, changeId);
     set((s) => ({
       changesById: { ...s.changesById, [changeId]: { ...s.changesById[changeId], status: "applied" } },
     }));
+    useEditorStore.getState().syncExternalWrite(sync.path, sync.content, sync.mtime);
     await get().saveCurrentHistory();
   },
 
@@ -285,35 +353,71 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   undoChange: async (changeId) => {
     const { workspaceId, viewingHistoryId } = get();
     if (!workspaceId || viewingHistoryId) return;
-    await codingService.undoChange(workspaceId, changeId);
+    const sync = await codingService.undoChange(workspaceId, changeId);
     set((s) => ({
       changesById: { ...s.changesById, [changeId]: { ...s.changesById[changeId], status: "undone" } },
     }));
+    useEditorStore.getState().syncExternalWrite(sync.path, sync.content, sync.mtime);
     await get().saveCurrentHistory();
   },
 
   redoChange: async () => {
     const { workspaceId, viewingHistoryId } = get();
     if (!workspaceId || viewingHistoryId) return;
-    const changeId = await codingService.redoChange(workspaceId);
-    if (!changeId) return;
+    const sync = await codingService.redoChange(workspaceId);
+    if (!sync) return;
     set((s) => ({
-      changesById: { ...s.changesById, [changeId]: { ...s.changesById[changeId], status: "applied" } },
+      changesById: { ...s.changesById, [sync.change_id]: { ...s.changesById[sync.change_id], status: "applied" } },
     }));
+    useEditorStore.getState().syncExternalWrite(sync.path, sync.content, sync.mtime);
     await get().saveCurrentHistory();
+  },
+
+  revertTurn: async (turnId) => {
+    const { workspaceId, viewingHistoryId } = get();
+    if (!workspaceId || viewingHistoryId) return;
+    try {
+      const reverted = await codingService.revertTurn(workspaceId, turnId);
+      if (reverted.length === 0) {
+        set({ error: "当前轮次没有可撤销的已应用改动" });
+        return;
+      }
+      set((s) => {
+        const changesById = { ...s.changesById };
+        for (const sync of reverted) {
+          if (changesById[sync.change_id]) changesById[sync.change_id] = { ...changesById[sync.change_id], status: "undone" };
+        }
+        return { changesById, error: null };
+      });
+      for (const sync of reverted) {
+        useEditorStore.getState().syncExternalWrite(sync.path, sync.content, sync.mtime);
+      }
+      await get().saveCurrentHistory();
+    } catch (e) {
+      set({ error: formatError(e) });
+    }
   },
 
   resolveConfirm: async (allow) => {
     const { confirmRequest } = get();
     if (!confirmRequest) return;
-    set({ confirmRequest: null });
+    // 处理完当前这个之后，把排队里的下一个换上来——不这样做的话，队列里
+    // 积压的请求永远没有机会展示，对应的后端等待会一直卡着（见
+    // `confirmQueue` 的文档注释）。
+    set((s) => {
+      const [next, ...rest] = s.confirmQueue;
+      return { confirmRequest: next ?? null, confirmQueue: rest };
+    });
     await codingService.confirmCommand(confirmRequest.requestId, allow);
   },
 
   resolveConfirmAndRemember: async (pattern) => {
     const { confirmRequest } = get();
     if (!confirmRequest) return;
-    set({ confirmRequest: null });
+    set((s) => {
+      const [next, ...rest] = s.confirmQueue;
+      return { confirmRequest: next ?? null, confirmQueue: rest };
+    });
     try {
       await get().createPermissionRule({
         tool: confirmRequest.kind === "mcp" ? "mcp" : "run_command",
@@ -383,11 +487,32 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     } catch { /* history is best effort */ }
   },
 
+  /** 打开一条历史记录——真正接续对话（不是只读回放），用户 2026-09 反馈"历史
+   * 会话只能只读不能继续修改"。`coding_history_resume` 在后端用持久化的真实
+   * LLM 消息上下文重建这个工作区的活跃会话，`timeline`/`changesById` 仍然从
+   * `historyGet` 拿（纯展示用，后端的 `CodingSessionInfo` 不携带时间线）。
+   * `viewingHistoryId` 保持 `null`——这个会话现在是"活的"，输入框/操作按钮
+   * 不应该再被当成只读禁用。 */
   openHistory: async (id) => {
     await get().saveCurrentHistory();
+    const workspaceId = get().workspaceId;
+    if (!workspaceId) return;
     const detail = await codingService.historyGet(id);
     if (!detail) return;
-    set({ workspaceId: detail.workspace_id, viewingHistoryId: detail.id, sessionInfo: { id: detail.id, provider_id: detail.provider_id, mode: detail.mode as CodingMode, target: get().sessionInfo?.target ?? { kind: "Local" }, auto_allow_readonly: false, git_repo: false, auto_git_commit: false, changes: detail.changes as FileChange[], todos: [], project_memory_loaded: [] }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries((detail.changes as FileChange[]).map((c) => [c.id, c])), error: null });
+    try {
+      const info = await codingService.historyResume(workspaceId, id);
+      const changes = detail.changes as FileChange[];
+      set({
+        workspaceId,
+        viewingHistoryId: null,
+        sessionInfo: info,
+        timeline: detail.timeline as TimelineEntry[],
+        changesById: Object.fromEntries(changes.map((c) => [c.id, c])),
+        error: null,
+      });
+    } catch (e) {
+      set({ error: formatError(e) });
+    }
   },
 
   deleteHistory: async (id) => {
@@ -462,26 +587,27 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     // 12 小时内有历史就把历史内容覆盖回显。
     set({ workspaceId, sessionInfo: null, timeline: [], changesById: {}, viewingHistoryId: null, error: null, histories: [] });
     try {
-      const histories = await codingService.historyList(workspaceId);
-      const latest = histories[0];
-      const latestTime = latest ? Date.parse(latest.updated_at) : NaN;
-      const recent = latest && Number.isFinite(latestTime) && (Date.now() - latestTime) <= 12 * 60 * 60 * 1000;
-      const detail = recent ? await codingService.historyGet(latest.id) : null;
-      const availableProviders = useAiChatStore.getState().providers;
-      const resumeProviderId = detail && availableProviders.some((item) => item.id === detail.provider_id) ? detail.provider_id : providerId;
-      // 始终通过 new_session 重新绑定当前工作区；不能复用其他工作区/旧进程中的 target。
-      const info = await codingService.newSession(workspaceId, detail ? resumeProviderId : providerId);
+      // 首屏先建可用的空会话；历史同步可能需要从远端读取很多快照，绝不能让它
+      // 挡住面板从"开始 AI 会话"切到对话界面。列表和最近会话回显随后异步补上。
+      const historiesPromise = codingService.historyList(workspaceId);
+      const info = await codingService.newSession(workspaceId, providerId);
       if (get().workspaceId !== workspaceId) return;
-      if (!recent) {
-        set({ workspaceId, sessionInfo: info, timeline: [], changesById: {}, viewingHistoryId: null, histories, error: null });
-        return;
-      }
-      if (!detail) {
-        set({ workspaceId, sessionInfo: info, timeline: [], changesById: {}, viewingHistoryId: null, histories, error: null });
-        return;
-      }
-      const changes = detail.changes as FileChange[];
-      set({ workspaceId, sessionInfo: { ...info, mode: detail.mode as CodingMode, changes }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries(changes.map((change) => [change.id, change])), viewingHistoryId: null, histories, error: null });
+      set({ workspaceId, sessionInfo: info, timeline: [], changesById: {}, viewingHistoryId: null, histories: [], error: null });
+
+      void historiesPromise.then(async (histories) => {
+        if (get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
+        set({ histories });
+        const latest = histories[0];
+        const latestTime = latest ? Date.parse(latest.updated_at) : NaN;
+        const recent = latest && Number.isFinite(latestTime) && (Date.now() - latestTime) <= 12 * 60 * 60 * 1000;
+        if (!recent) return;
+        const detail = await codingService.historyGet(latest.id).catch(() => null);
+        if (!detail || get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
+        const changes = detail.changes as FileChange[];
+        if (detail.mode === "build") await codingService.setMode(workspaceId, "build").catch(() => undefined);
+        if (get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
+        set({ sessionInfo: { ...info, mode: detail.mode as CodingMode, changes }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries(changes.map((change) => [change.id, change])), error: null });
+      }).catch(() => undefined);
     } catch (e) {
       if (get().workspaceId === workspaceId) set({ error: formatError(e) });
     }
@@ -510,6 +636,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
       attachments: [],
       optimizing: false,
       confirmRequest: null,
+      confirmQueue: [],
       questionRequest: null,
       residentOrder: [],
       byWorkspace: {},
@@ -524,7 +651,10 @@ const MAX_ATTACHMENTS = 6;
 const MAX_TEXT_ATTACHMENT_CHARS = 200_000;
 /** 图片按原始文件大小限制——base64 编码后体积还会再涨约 1/3，云端 Provider 的
  * 请求体通常也有上限，这里留足余量。 */
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// 图片会以 base64 同时进入前端时间线、后端会话上下文和历史快照；原来的 8MB
+// 上限会在编码后变成约 10.7MB，并且每轮工具调用都重复序列化一次，足以把 AI
+// 子进程/渲染进程推到 OOM。512KB 对截图提问仍足够，超过时请先压缩图片。
+const MAX_IMAGE_BYTES = 512 * 1024;
 
 function readAttachment(file: File): Promise<PendingAttachment | null> {
   return new Promise((resolve) => {
@@ -580,7 +710,32 @@ function toChatAttachment(attachment: PendingAttachment): ChatAttachment {
 
 let listenersRegistered = false;
 
-/** 全局注册一次编程助手事件监听（App.tsx 挂载时调用，和 registerAiChatListeners 同款模式）。*/
+/** 长任务中途做增量存档的最小间隔——`saveCurrentHistory()` 原来只在 `sendMessage()`
+ * 整个 `send_message` 后端调用（可能是几十轮工具调用）成功返回之后才触发一次。
+ * 如果进程在这中途崩了/被系统杀了（2026-09 用户报告"AI 程序运行着运行着进程自动
+ * 退出了"——见 `coding/session.rs` 的 `MAX_TOOL_RESULT_CHARS` 注释，根因是超大
+ * 工具结果反复重发导致内存失控被系统直接终止，不会走任何清理/保存逻辑），这一整
+ * 轮的进度（含中途已经 stage/accept 的文件改动）完全没有落盘，重启后自然找不到。
+ * 这里在"确实产生了新进度"的事件（工具调用完成、文件改动）上顺带触发一次存档，
+ * 用时间节流而不是每个事件都存，避免快速连续的工具调用把 SQLite/磁盘 I/O 打爆。 */
+const HISTORY_CHECKPOINT_THROTTLE_MS = 5000;
+let lastHistoryCheckpointAt = 0;
+function checkpointHistory() {
+  const now = Date.now();
+  if (now - lastHistoryCheckpointAt < HISTORY_CHECKPOINT_THROTTLE_MS) return;
+  lastHistoryCheckpointAt = now;
+  void useCodingStore.getState().saveCurrentHistory();
+}
+
+/** 全局注册一次编程助手事件监听（App.tsx 挂载时调用，和 registerAiChatListeners 同款模式）。
+ *
+ * `listenersRegistered` 只是防止同一次挂载里重复注册，不代表"永远只注册一次"——
+ * 之前清理函数（React effect 卸载时调用的那个 unlisten）没有把它重置回
+ * `false`，如果这个 effect 曾经卸载又重新挂载过一次（比如 React 18 StrictMode
+ * 在开发模式下对每个 effect 故意做的 mount→unmount→mount），第二次注册会被
+ * 这个陈旧的 `true` 拦下来直接变成空操作，之后所有 `coding:*` 事件都收不到了。
+ * 这是独立于"点确认没反应"（真正根因是 `CodingSession`/`ChangeStore` 锁竞争，
+ * 见 `coding/changes.rs`）的另一个潜在缺陷，顺手一起修掉。*/
 export function registerCodingListeners(): Promise<() => void> {
   if (listenersRegistered) return Promise.resolve(() => {});
   listenersRegistered = true;
@@ -591,7 +746,7 @@ export function registerCodingListeners(): Promise<() => void> {
     listen<CodingToolCallEvent>("coding:tool-call-start", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
       useCodingStore.setState((s) => ({
-        timeline: [...s.timeline, { kind: "tool", id: nextId(), tool: event.payload.tool, running: true, detail: event.payload.detail }],
+        timeline: [...s.timeline, { kind: "tool", id: nextId(), tool: event.payload.tool, running: true, detail: event.payload.detail, startedAt: Date.now() }],
       }));
     }),
     listen<CodingToolCallEvent>("coding:tool-call-end", (event) => {
@@ -605,6 +760,7 @@ export function registerCodingListeners(): Promise<() => void> {
         if (entry.kind === "tool") timeline[realIdx] = { ...entry, running: false };
         return { timeline };
       });
+      checkpointHistory();
     }),
     listen<CodingAssistantNoteEvent>("coding:assistant-note", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
@@ -621,6 +777,14 @@ export function registerCodingListeners(): Promise<() => void> {
         changesById: { ...s.changesById, [change.id]: change },
         timeline: [...s.timeline, { kind: "change", id: nextId(), changeId: change.id }],
       }));
+      // "完全授权模式"下这条改动已经直接落盘（change.status 一进来就是
+      // "applied"）——同步刷新这个路径可能已经打开的编辑器 buffer，否则磁盘
+      // 内容变了、编辑器里显示的还是旧内容（和 acceptChange 里的处理一致）。
+      if (event.payload.sync) {
+        const sync = event.payload.sync;
+        useEditorStore.getState().syncExternalWrite(sync.path, sync.content, sync.mtime);
+      }
+      checkpointHistory();
     }),
     listen<CodingCommandBlockedEvent>("coding:command-blocked", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
@@ -630,15 +794,22 @@ export function registerCodingListeners(): Promise<() => void> {
     }),
     listen<CodingCommandConfirmRequestEvent>("coding:command-confirm-request", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
-      useCodingStore.setState({
-        confirmRequest: {
-          requestId: event.payload.requestId,
-          command: event.payload.command,
-          host: event.payload.host,
-          kind: event.payload.kind ?? "command",
-          matchKey: event.payload.matchKey,
-        },
-      });
+      const incoming: CommandConfirmRequest = {
+        requestId: event.payload.requestId,
+        command: event.payload.command,
+        host: event.payload.host,
+        kind: event.payload.kind ?? "command",
+        matchKey: event.payload.matchKey,
+      };
+      // codex-core 可能并发发起多个工具调用，每个都各自触发一次这个事件——
+      // 已经有一个在展示的话排到队列末尾，不能直接覆盖 `confirmRequest`，
+      // 否则被覆盖那个在后端永远等不到回应（见 `confirmQueue` 的文档注释，
+      // 2026-09 用户实测复现的"AI 工作卡住不回应"）。
+      useCodingStore.setState((s) =>
+        s.confirmRequest
+          ? { confirmQueue: [...s.confirmQueue, incoming] }
+          : { confirmRequest: incoming }
+      );
     }),
     listen<CodingTodoUpdateEvent>("coding:todo-update", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
@@ -658,5 +829,8 @@ export function registerCodingListeners(): Promise<() => void> {
     }),
   ];
 
-  return Promise.all(unlistenPromises).then((unlistens) => () => unlistens.forEach((u) => u()));
+  return Promise.all(unlistenPromises).then((unlistens) => () => {
+    listenersRegistered = false;
+    unlistens.forEach((u) => u());
+  });
 }

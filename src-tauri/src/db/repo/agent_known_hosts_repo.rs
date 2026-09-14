@@ -22,7 +22,11 @@ impl AgentKnownHostsRepo {
         Self { pool }
     }
 
-    pub fn lookup(&self, connection_id: Uuid, fingerprint: &str) -> Result<AgentKnownHostStatus, AppError> {
+    pub fn lookup(
+        &self,
+        connection_id: Uuid,
+        fingerprint: &str,
+    ) -> Result<AgentKnownHostStatus, AppError> {
         let conn = self.pool.get()?;
         let existing: Option<String> = conn
             .query_row(

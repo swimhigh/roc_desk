@@ -51,7 +51,10 @@ impl AiProvidersRepo {
 
     pub fn delete(&self, id: Uuid) -> Result<(), AppError> {
         let conn = self.pool.get()?;
-        conn.execute("DELETE FROM ai_providers WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM ai_providers WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -73,7 +76,9 @@ impl AiProvidersRepo {
             "SELECT id, name, api_base, api_key_ref, model, is_local, created_at
              FROM ai_providers ORDER BY created_at",
         )?;
-        let rows = stmt.query_map([], Self::map_row)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = stmt
+            .query_map([], Self::map_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 

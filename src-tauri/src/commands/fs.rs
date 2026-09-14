@@ -85,9 +85,17 @@ pub async fn fs_read_file(
     handle.file_ops.read_file_for_editor(&path).await
 }
 
+fn emit_file_tree_changed(app_handle: &AppHandle, workspace_id: Uuid) {
+    let _ = app_handle.emit(
+        "fs:changed",
+        serde_json::json!({ "workspaceId": workspace_id }),
+    );
+}
+
 #[tauri::command]
 pub async fn fs_write_file(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     workspace_id: Uuid,
     path: String,
     content: String,
@@ -95,7 +103,14 @@ pub async fn fs_write_file(
 ) -> Result<WriteOutcome, AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
-    handle.file_ops.write_file(&path, &content, expected_mtime).await
+    let outcome = handle
+        .file_ops
+        .write_file(&path, &content, expected_mtime)
+        .await?;
+    if matches!(outcome, WriteOutcome::Written { .. }) {
+        emit_file_tree_changed(&app_handle, workspace_id);
+    }
+    Ok(outcome)
 }
 
 /// "Reopen with Encoding"（参考 VS Code）：忽略自动探测，强制按指定编码重新解码。
@@ -117,6 +132,7 @@ pub async fn fs_read_file_with_encoding(
 #[tauri::command]
 pub async fn fs_write_file_with_encoding(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     workspace_id: Uuid,
     path: String,
     content: String,
@@ -126,7 +142,14 @@ pub async fn fs_write_file_with_encoding(
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
     let bytes = encoding::encode_with(&content, &encoding_label).map_err(AppError::Internal)?;
-    handle.file_ops.write_file_bytes(&path, &bytes, expected_mtime).await
+    let outcome = handle
+        .file_ops
+        .write_file_bytes(&path, &bytes, expected_mtime)
+        .await?;
+    if matches!(outcome, WriteOutcome::Written { .. }) {
+        emit_file_tree_changed(&app_handle, workspace_id);
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -241,29 +264,35 @@ pub async fn fs_inspect_jar(state: State<'_, AppState>, workspace_id: Uuid, path
 
 /// Explorer 右键"删除"（参考 VS Code）。
 #[tauri::command]
-pub async fn fs_delete(state: State<'_, AppState>, workspace_id: Uuid, path: String, is_dir: bool) -> Result<(), AppError> {
+pub async fn fs_delete(state: State<'_, AppState>, app_handle: AppHandle, workspace_id: Uuid, path: String, is_dir: bool) -> Result<(), AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
-    handle.file_ops.delete(&path, is_dir).await
+    handle.file_ops.delete(&path, is_dir).await?;
+    emit_file_tree_changed(&app_handle, workspace_id);
+    Ok(())
 }
 
 /// Explorer 右键"重命名"（参考 VS Code）；也用于"剪切+粘贴"的移动——剪切在前端只是
 /// 记一下 clipboard 状态，真正的移动动作就是对目标父目录调一次 rename。
 #[tauri::command]
-pub async fn fs_rename(state: State<'_, AppState>, workspace_id: Uuid, from: String, to: String) -> Result<(), AppError> {
+pub async fn fs_rename(state: State<'_, AppState>, app_handle: AppHandle, workspace_id: Uuid, from: String, to: String) -> Result<(), AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &from)?;
     guard_local_path(&handle, &to)?;
-    handle.file_ops.rename(&from, &to).await
+    handle.file_ops.rename(&from, &to).await?;
+    emit_file_tree_changed(&app_handle, workspace_id);
+    Ok(())
 }
 
 /// Explorer 右键"复制+粘贴"（参考 VS Code）。目前只支持文件，见 `FileOps::copy` 的文档注释。
 #[tauri::command]
-pub async fn fs_copy(state: State<'_, AppState>, workspace_id: Uuid, from: String, to: String, is_dir: bool) -> Result<(), AppError> {
+pub async fn fs_copy(state: State<'_, AppState>, app_handle: AppHandle, workspace_id: Uuid, from: String, to: String, is_dir: bool) -> Result<(), AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &from)?;
     guard_local_path(&handle, &to)?;
-    handle.file_ops.copy(&from, &to, is_dir).await
+    handle.file_ops.copy(&from, &to, is_dir).await?;
+    emit_file_tree_changed(&app_handle, workspace_id);
+    Ok(())
 }
 
 /// Explorer 右键"新建文件夹"（2026-09-03 需求）。`FileOps::create_dir` 之前只被
@@ -271,10 +300,12 @@ pub async fn fs_copy(state: State<'_, AppState>, workspace_id: Uuid, from: Strin
 /// 命令——直接复用 `fs_write_file`，传空内容、`expected_mtime: None`（`write_file`
 /// 文档注释里"新建文件"本来就是这个参数为空时的既有语义，不用另起一个命令）。
 #[tauri::command]
-pub async fn fs_create_dir(state: State<'_, AppState>, workspace_id: Uuid, path: String) -> Result<(), AppError> {
+pub async fn fs_create_dir(state: State<'_, AppState>, app_handle: AppHandle, workspace_id: Uuid, path: String) -> Result<(), AppError> {
     let handle = get_handle(&state, workspace_id).await?;
     guard_local_path(&handle, &path)?;
-    handle.file_ops.create_dir(&path).await
+    handle.file_ops.create_dir(&path).await?;
+    emit_file_tree_changed(&app_handle, workspace_id);
+    Ok(())
 }
 
 /// 左侧目录树的"搜索"功能（参考 VS Code 全局搜索面板）：流式返回，见
@@ -353,6 +384,7 @@ pub fn fs_search_cancel(state: State<'_, AppState>, request_id: Uuid) {
 #[tauri::command]
 pub async fn fs_replace(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     workspace_id: Uuid,
     paths: Vec<String>,
     query: String,
@@ -363,5 +395,12 @@ pub async fn fs_replace(
     for path in &paths {
         guard_local_path(&handle, path)?;
     }
-    handle.file_ops.replace_text(&paths, &query, &replacement, &options).await
+    let summary = handle
+        .file_ops
+        .replace_text(&paths, &query, &replacement, &options)
+        .await?;
+    if summary.files_changed > 0 {
+        emit_file_tree_changed(&app_handle, workspace_id);
+    }
+    Ok(summary)
 }

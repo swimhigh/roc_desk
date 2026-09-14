@@ -116,10 +116,11 @@ use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_EX_APPWINDOW,
-    WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+    EnumWindows, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, GWL_STYLE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
 };
 
 use crate::connection::{ConnectionManager, ConnectionProfile, Protocol};
@@ -194,16 +195,26 @@ pub struct RdpSessionManager {
 
 impl RdpSessionManager {
     pub fn new(connection_manager: Arc<ConnectionManager>) -> Self {
-        Self { sessions: Mutex::new(HashMap::new()), connection_manager }
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            connection_manager,
+        }
     }
 
-    pub async fn connect(&self, app_handle: &AppHandle, profile_id: Uuid, bounds: PanelBounds) -> Result<Uuid, AppError> {
+    pub async fn connect(
+        &self,
+        app_handle: &AppHandle,
+        profile_id: Uuid,
+        bounds: PanelBounds,
+    ) -> Result<Uuid, AppError> {
         let profile: ConnectionProfile = self
             .connection_manager
             .get(profile_id)?
             .ok_or_else(|| AppError::NotFound(format!("connection not found: {profile_id}")))?;
         if profile.protocol != Protocol::Rdp {
-            return Err(AppError::Conflict(format!("connection {profile_id} is not an RDP profile")));
+            return Err(AppError::Conflict(format!(
+                "connection {profile_id} is not an RDP profile"
+            )));
         }
         let secret = self
             .connection_manager
@@ -218,7 +229,11 @@ impl RdpSessionManager {
             .unwrap_or_default();
         let width = opts.width.unwrap_or(1280);
         let height = opts.height.unwrap_or(800);
-        let server = if profile.port == 3389 { profile.host.clone() } else { format!("{}:{}", profile.host, profile.port) };
+        let server = if profile.port == 3389 {
+            profile.host.clone()
+        } else {
+            format!("{}:{}", profile.host, profile.port)
+        };
         let user_arg = match opts.domain.as_deref() {
             Some(domain) if !domain.is_empty() => format!("{domain}\\{}", profile.username),
             _ => profile.username.clone(),
@@ -230,57 +245,60 @@ impl RdpSessionManager {
         // 不占用 async 运行时的 worker 线程（等窗口最多要等 15 秒）。`HWND` 内部是
         // 裸指针不是 `Send`，过不了 `spawn_blocking` 返回值的边界——闭包内部转成
         // `isize` 带出来，外面再用 `hwnd_from_isize` 转回去。
-        let (child, hwnd_raw, pid) = tokio::task::spawn_blocking(move || -> Result<(Child, isize, u32), AppError> {
-            let mut child = Command::new(&wfreerdp)
-                .arg(format!("/v:{server}"))
-                .arg(format!("/u:{user_arg}"))
-                .arg(format!("/p:{secret}"))
-                .arg(format!("/size:{width}x{height}"))
-                // 我们的 GUI 进程没有控制台可以回答交互式确认，跳过证书信任提示、
-                // 直接接受——不然会卡在一个没人能应答的确认请求上，等价于之前
-                // ActiveX 方案里"没有事件接收者应答 OnReceivedTSPublicKey"那个坑。
-                .arg("/cert:ignore")
-                // 真机联调直接在命令行跑 wfreerdp（不经过我们的应用）逐台复现过两台
-                // 测试服务器的真实失败原因，不是猜的：
-                //   - 10.203.0.111：默认安全协商成功但 TLS 握手本身失败
-                //     （`BIO_do_handshake failed`）——和这个会话最开始 `rustls` 踩的坑
-                //     同一类问题，现代加密库的默认安全策略比服务器的 SChannel 配置更
-                //     严格，直接拒绝协商。
-                //   - 10.203.0.113：连 TLS 握手都没到，安全协商阶段服务器直接回绝
-                //     SSL/TLS（`SSL_NOT_ALLOWED_BY_SERVER`）——`/tls:seclevel:0` 对
-                //     这种情况完全没用，因为根本没走到 TLS 那一步。
-                // 两台服务器表现不同，但 `/sec:rdp`（强制走最老、几乎所有 RDP 服务器
-                // 都支持的经典 RDP 安全层，不用 TLS）对两台都测通了——不用分别处理，
-                // 一个参数覆盖两种失败模式。代价：这条连接不再有 TLS 加密，是接受的
-                // 取舍（这些都是内网测试服务器，`/cert:ignore` 已经是同一个信任模型）。
-                .arg("/sec:rdp")
-                // 这份 `wfreerdp.exe`（Chocolatey `freerdp.portable` 包）是用
-                // `WITH_CLIENT_SDL2=ON` 编译的——启动日志里明确打过这行 build 选项，
-                // 之前一直没意识到这条信息的分量：意味着它的窗口渲染走的是 SDL2
-                // （默认用 Direct3D/OpenGL 之类硬件加速后端），不是想当然以为的老式
-                // GDI。换了客户端还是"窗口属性正常、内容纯黑"这个和 mstsc.exe 一模
-                // 一样的症状，根因很可能也是同一类：跨进程 `SetParent` 之后硬件加速
-                // 表面没有正确挂到新宿主上。SDL2 提供标准环境变量强制走纯软件渲染，
-                // 绕开这整条硬件合成路径——`SDL_RENDER_DRIVER=software` 关掉硬件
-                // 加速渲染器，`SDL_VIDEODRIVER=windows` 保证用的是原生 Win32 窗口
-                // （不是 SDL 自己的其它后端）。
-                .env("SDL_RENDER_DRIVER", "software")
-                .env("SDL_VIDEODRIVER", "windows")
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| AppError::Internal(format!("启动 wfreerdp.exe 失败：{e}")))?;
+        let (child, hwnd_raw, pid) =
+            tokio::task::spawn_blocking(move || -> Result<(Child, isize, u32), AppError> {
+                let mut child = Command::new(&wfreerdp)
+                    .arg(format!("/v:{server}"))
+                    .arg(format!("/u:{user_arg}"))
+                    .arg(format!("/p:{secret}"))
+                    .arg(format!("/size:{width}x{height}"))
+                    // 我们的 GUI 进程没有控制台可以回答交互式确认，跳过证书信任提示、
+                    // 直接接受——不然会卡在一个没人能应答的确认请求上，等价于之前
+                    // ActiveX 方案里"没有事件接收者应答 OnReceivedTSPublicKey"那个坑。
+                    .arg("/cert:ignore")
+                    // 真机联调直接在命令行跑 wfreerdp（不经过我们的应用）逐台复现过两台
+                    // 测试服务器的真实失败原因，不是猜的：
+                    //   - 10.203.0.111：默认安全协商成功但 TLS 握手本身失败
+                    //     （`BIO_do_handshake failed`）——和这个会话最开始 `rustls` 踩的坑
+                    //     同一类问题，现代加密库的默认安全策略比服务器的 SChannel 配置更
+                    //     严格，直接拒绝协商。
+                    //   - 10.203.0.113：连 TLS 握手都没到，安全协商阶段服务器直接回绝
+                    //     SSL/TLS（`SSL_NOT_ALLOWED_BY_SERVER`）——`/tls:seclevel:0` 对
+                    //     这种情况完全没用，因为根本没走到 TLS 那一步。
+                    // 两台服务器表现不同，但 `/sec:rdp`（强制走最老、几乎所有 RDP 服务器
+                    // 都支持的经典 RDP 安全层，不用 TLS）对两台都测通了——不用分别处理，
+                    // 一个参数覆盖两种失败模式。代价：这条连接不再有 TLS 加密，是接受的
+                    // 取舍（这些都是内网测试服务器，`/cert:ignore` 已经是同一个信任模型）。
+                    .arg("/sec:rdp")
+                    // 这份 `wfreerdp.exe`（Chocolatey `freerdp.portable` 包）是用
+                    // `WITH_CLIENT_SDL2=ON` 编译的——启动日志里明确打过这行 build 选项，
+                    // 之前一直没意识到这条信息的分量：意味着它的窗口渲染走的是 SDL2
+                    // （默认用 Direct3D/OpenGL 之类硬件加速后端），不是想当然以为的老式
+                    // GDI。换了客户端还是"窗口属性正常、内容纯黑"这个和 mstsc.exe 一模
+                    // 一样的症状，根因很可能也是同一类：跨进程 `SetParent` 之后硬件加速
+                    // 表面没有正确挂到新宿主上。SDL2 提供标准环境变量强制走纯软件渲染，
+                    // 绕开这整条硬件合成路径——`SDL_RENDER_DRIVER=software` 关掉硬件
+                    // 加速渲染器，`SDL_VIDEODRIVER=windows` 保证用的是原生 Win32 窗口
+                    // （不是 SDL 自己的其它后端）。
+                    .env("SDL_RENDER_DRIVER", "software")
+                    .env("SDL_VIDEODRIVER", "windows")
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .map_err(|e| AppError::Internal(format!("启动 wfreerdp.exe 失败：{e}")))?;
 
-            let pid = child.id();
-            match find_window_for_process(pid, Duration::from_secs(15)) {
-                Some(hwnd) => Ok((child, hwnd.0 as isize, pid)),
-                None => {
-                    let _ = child.kill();
-                    Err(AppError::Connection("等待 RDP 客户端窗口出现超时（15 秒）".into()))
+                let pid = child.id();
+                match find_window_for_process(pid, Duration::from_secs(15)) {
+                    Some(hwnd) => Ok((child, hwnd.0 as isize, pid)),
+                    None => {
+                        let _ = child.kill();
+                        Err(AppError::Connection(
+                            "等待 RDP 客户端窗口出现超时（15 秒）".into(),
+                        ))
+                    }
                 }
-            }
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("后台任务异常：{e}")))??;
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("后台任务异常：{e}")))??;
         let hwnd = hwnd_from_isize(hwnd_raw);
 
         let parent = main_window_hwnd(app_handle)?;
@@ -300,15 +318,38 @@ impl RdpSessionManager {
             let hwnd_state = hwnd_state.clone();
             let last_bounds = last_bounds.clone();
             let stop = stop.clone();
-            move || watch_and_reembed(pid, app_handle, hwnd_from_isize(parent_raw), hwnd_state, last_bounds, stop)
+            move || {
+                watch_and_reembed(
+                    pid,
+                    app_handle,
+                    hwnd_from_isize(parent_raw),
+                    hwnd_state,
+                    last_bounds,
+                    stop,
+                )
+            }
         });
 
         let session_id = Uuid::new_v4();
-        self.sessions.lock().unwrap().insert(session_id, EmbeddedSession { child, hwnd: hwnd_state, last_bounds, stop, watcher });
+        self.sessions.lock().unwrap().insert(
+            session_id,
+            EmbeddedSession {
+                child,
+                hwnd: hwnd_state,
+                last_bounds,
+                stop,
+                watcher,
+            },
+        );
         Ok(session_id)
     }
 
-    pub fn set_bounds(&self, app_handle: &AppHandle, session_id: Uuid, bounds: PanelBounds) -> Result<(), AppError> {
+    pub fn set_bounds(
+        &self,
+        app_handle: &AppHandle,
+        session_id: Uuid,
+        bounds: PanelBounds,
+    ) -> Result<(), AppError> {
         let parent = main_window_hwnd(app_handle)?;
         let scale = window_scale_factor(app_handle)?;
         let sessions = self.sessions.lock().unwrap();
@@ -335,7 +376,12 @@ impl RdpSessionManager {
         Ok(())
     }
 
-    pub fn show(&self, app_handle: &AppHandle, session_id: Uuid, bounds: PanelBounds) -> Result<(), AppError> {
+    pub fn show(
+        &self,
+        app_handle: &AppHandle,
+        session_id: Uuid,
+        bounds: PanelBounds,
+    ) -> Result<(), AppError> {
         let parent = main_window_hwnd(app_handle)?;
         let scale = window_scale_factor(app_handle)?;
         let sessions = self.sessions.lock().unwrap();
@@ -355,10 +401,15 @@ impl RdpSessionManager {
 
     pub fn status(&self, session_id: Uuid) -> Result<RdpStatus, AppError> {
         let sessions = self.sessions.lock().unwrap();
-        let session = sessions.get(&session_id).ok_or_else(|| AppError::NotFound("RDP 会话不存在".into()))?;
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| AppError::NotFound("RDP 会话不存在".into()))?;
         let hwnd = session.hwnd.load(Ordering::Relaxed);
         let (state, diagnostics) = if hwnd == 0 {
-            (RdpStatusState::Connecting, "尚未找到 RDP 客户端窗口".to_string())
+            (
+                RdpStatusState::Connecting,
+                "尚未找到 RDP 客户端窗口".to_string(),
+            )
         } else {
             let h = hwnd_from_isize(hwnd);
             let visible = unsafe { IsWindowVisible(h) }.as_bool();
@@ -368,9 +419,16 @@ impl RdpSessionManager {
             } else {
                 "?".to_string()
             };
-            (RdpStatusState::Connected, format!("嵌入窗口 hwnd=0x{hwnd:X} 可见={visible} 尺寸={rect_text}"))
+            (
+                RdpStatusState::Connected,
+                format!("嵌入窗口 hwnd=0x{hwnd:X} 可见={visible} 尺寸={rect_text}"),
+            )
         };
-        Ok(RdpStatus { state, reason: None, diagnostics })
+        Ok(RdpStatus {
+            state,
+            reason: None,
+            diagnostics,
+        })
     }
 
     pub fn disconnect(&self, session_id: Uuid) -> Result<(), AppError> {
@@ -403,14 +461,19 @@ impl RdpSessionManager {
 /// 场景下可执行文件在 `target/debug` 之类目录、旁边不会有这个文件，退回到编译期
 /// 就确定的仓库内 `vendor/` 目录（只在 dev 构建里有意义，便携版不依赖这条路径）。
 fn find_wfreerdp_exe() -> Result<PathBuf, AppError> {
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
     if let Some(dir) = &exe_dir {
         let candidate = dir.join("wfreerdp.exe");
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
-    let dev_candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("vendor").join("wfreerdp.exe");
+    let dev_candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("vendor")
+        .join("wfreerdp.exe");
     if dev_candidate.is_file() {
         return Ok(dev_candidate);
     }
@@ -444,17 +507,30 @@ fn window_scale_factor(app_handle: &AppHandle) -> Result<f64, AppError> {
 fn attach_owned_window(child: HWND, owner: HWND) -> Result<(), AppError> {
     unsafe {
         let style = WINDOW_STYLE(GetWindowLongPtrW(child, GWL_STYLE) as u32);
-        let stripped = style & !(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        let stripped =
+            style & !(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
         SetWindowLongPtrW(child, GWL_STYLE, (stripped | WS_VISIBLE).0 as isize);
 
         let ex_style = WINDOW_EX_STYLE(GetWindowLongPtrW(child, GWL_EXSTYLE) as u32);
-        SetWindowLongPtrW(child, GWL_EXSTYLE, ((ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW).0 as isize);
+        SetWindowLongPtrW(
+            child,
+            GWL_EXSTYLE,
+            ((ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW).0 as isize,
+        );
 
         SetWindowLongPtrW(child, GWLP_HWNDPARENT, owner.0 as isize);
 
         // 只是让上面两次样式改动生效（`SWP_FRAMECHANGED`），不移动/不缩放/不改
         // z-order——真正的位置由 `position_window` 负责。
-        let _ = SetWindowPos(child, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        let _ = SetWindowPos(
+            child,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
     Ok(())
 }
@@ -464,7 +540,12 @@ fn attach_owned_window(child: HWND, owner: HWND) -> Result<(), AppError> {
 /// 换算一次。`child` 现在是独立顶层窗口（不再是子窗口），`SetWindowPos` 的坐标是
 /// 屏幕坐标，不再是"相对父窗口客户区"，所以要先用 `ClientToScreen` 把主窗口客户区
 /// 原点换算成屏幕坐标，再加上面板的相对偏移。
-fn position_window(child: HWND, owner: HWND, scale: f64, bounds: PanelBounds) -> Result<(), AppError> {
+fn position_window(
+    child: HWND,
+    owner: HWND,
+    scale: f64,
+    bounds: PanelBounds,
+) -> Result<(), AppError> {
     let mut origin = POINT::default();
     unsafe {
         ClientToScreen(owner, &mut origin)
@@ -476,8 +557,16 @@ fn position_window(child: HWND, owner: HWND, scale: f64, bounds: PanelBounds) ->
     let width = (bounds.width * scale).round().max(0.0) as i32;
     let height = (bounds.height * scale).round().max(0.0) as i32;
     unsafe {
-        SetWindowPos(child, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
-            .map_err(|e| AppError::Internal(format!("SetWindowPos 失败：{e}")))?;
+        SetWindowPos(
+            child,
+            None,
+            x,
+            y,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .map_err(|e| AppError::Internal(format!("SetWindowPos 失败：{e}")))?;
     }
     Ok(())
 }
@@ -497,7 +586,9 @@ fn watch_and_reembed(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let Some(found) = find_window_for_process(pid, Duration::ZERO) else { continue };
+        let Some(found) = find_window_for_process(pid, Duration::ZERO) else {
+            continue;
+        };
         let found_raw = found.0 as isize;
         if found_raw == hwnd_state.load(Ordering::Relaxed) {
             continue;
@@ -505,7 +596,10 @@ fn watch_and_reembed(
         if attach_owned_window(found, parent).is_err() {
             continue;
         }
-        if let (Ok(scale), Some(bounds)) = (window_scale_factor(&app_handle), *last_bounds.lock().unwrap()) {
+        if let (Ok(scale), Some(bounds)) = (
+            window_scale_factor(&app_handle),
+            *last_bounds.lock().unwrap(),
+        ) {
             let _ = position_window(found, parent, scale, bounds);
         }
         hwnd_state.store(found_raw, Ordering::Relaxed);
@@ -543,7 +637,11 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
     if area <= 0 {
         return BOOL(1);
     }
-    if state.best.map(|(_, best_area)| area > best_area).unwrap_or(true) {
+    if state
+        .best
+        .map(|(_, best_area)| area > best_area)
+        .unwrap_or(true)
+    {
         state.best = Some((hwnd, area));
     }
     BOOL(1) // 继续枚举——要扫完全部才能确定"最大"，不能找到一个就停
@@ -555,7 +653,10 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
 fn find_window_for_process(pid: u32, timeout: Duration) -> Option<HWND> {
     let deadline = Instant::now() + timeout;
     loop {
-        let mut state = EnumState { target_pid: pid, best: None };
+        let mut state = EnumState {
+            target_pid: pid,
+            best: None,
+        };
         let lparam = LPARAM(&mut state as *mut EnumState as isize);
         unsafe {
             let _ = EnumWindows(Some(enum_windows_callback), lparam);

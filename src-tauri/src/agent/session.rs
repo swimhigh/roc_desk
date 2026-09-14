@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use roc_desk_protocol::{
-    decode_json, encode_json, read_frame, write_frame, FrameType, Request, Response, ResponseBody, DATA_CHUNK_SIZE, PROTOCOL_VERSION,
+    decode_json, encode_json, read_frame, write_frame, FrameType, Request, Response, ResponseBody,
+    DATA_CHUNK_SIZE, PROTOCOL_VERSION,
 };
 use rustls::pki_types::ServerName;
 use tauri::{AppHandle, Emitter};
@@ -49,7 +50,10 @@ enum PendingKind {
     /// `FileMeta` 的 Control 响应就当终态，摘掉注册；为 true 时（`OpenShell` 交互式
     /// 终端）——Control 帧（`ShellResize` 的回声/心跳之类，目前其实不会真收到，
     /// 纯粹是留了这个开关）不代表流结束，只有显式的 `StreamEnd` 才摘注册。
-    Stream { tx: mpsc::UnboundedSender<StreamFrame>, keep_open_on_control: bool },
+    Stream {
+        tx: mpsc::UnboundedSender<StreamFrame>,
+        keep_open_on_control: bool,
+    },
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -64,13 +68,21 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    pub async fn connect(profile: &ConnectionProfile, token: String, cert_verifier: &AgentCertVerifier) -> Result<Self, AppError> {
+    pub async fn connect(
+        profile: &ConnectionProfile,
+        token: String,
+        cert_verifier: &AgentCertVerifier,
+    ) -> Result<Self, AppError> {
         let host = profile.host.trim().to_string();
         let (tls_stream, fingerprint) = Self::tls_connect(&host, profile.port).await?;
 
-        let trusted = cert_verifier.verify(profile.id, &host, profile.port, &fingerprint).await?;
+        let trusted = cert_verifier
+            .verify(profile.id, &host, profile.port, &fingerprint)
+            .await?;
         if !trusted {
-            return Err(AppError::HostKeyRejected("用户拒绝信任 Agent 证书指纹".into()));
+            return Err(AppError::HostKeyRejected(
+                "用户拒绝信任 Agent 证书指纹".into(),
+            ));
         }
 
         let session = Self::from_stream(tls_stream);
@@ -82,16 +94,29 @@ impl AgentSession {
     /// 校验能通过"，不落库、不做证书指纹 TOFU 持久化、也不经过 `ConnectionProfile`
     /// （表单里填的可能还没保存）。测试完就地断开——不返回 `Self`，调用方拿到结果
     /// 就够了，没有理由为了一次性验证保留这条连接。
-    pub async fn test_connect(host: &str, port: u16, token: String) -> Result<TestConnectResult, AppError> {
+    pub async fn test_connect(
+        host: &str,
+        port: u16,
+        token: String,
+    ) -> Result<TestConnectResult, AppError> {
         let host = host.trim().to_string();
         let (tls_stream, fingerprint) = Self::tls_connect(&host, port).await?;
         let session = Self::from_stream(tls_stream);
         let (server_version, hostname) = session.handshake(token).await?;
-        Ok(TestConnectResult { hostname, server_version, fingerprint })
+        Ok(TestConnectResult {
+            hostname,
+            server_version,
+            fingerprint,
+        })
     }
 
-    async fn tls_connect(host: &str, port: u16) -> Result<(tokio_rustls::client::TlsStream<TcpStream>, String), AppError> {
-        let tcp = TcpStream::connect((host, port)).await.map_err(|e| AppError::Connection(e.to_string()))?;
+    async fn tls_connect(
+        host: &str,
+        port: u16,
+    ) -> Result<(tokio_rustls::client::TlsStream<TcpStream>, String), AppError> {
+        let tcp = TcpStream::connect((host, port))
+            .await
+            .map_err(|e| AppError::Connection(e.to_string()))?;
 
         let capture = TofuCertCapture::new();
         let tls_config = rustls::ClientConfig::builder()
@@ -99,10 +124,17 @@ impl AgentSession {
             .with_custom_certificate_verifier(capture.clone())
             .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(tls_config));
-        let server_name = ServerName::try_from(host.to_string()).map_err(|e| AppError::Connection(format!("无效主机名: {e}")))?.to_owned();
-        let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| AppError::Connection(format!("TLS 握手失败: {e}")))?;
+        let server_name = ServerName::try_from(host.to_string())
+            .map_err(|e| AppError::Connection(format!("无效主机名: {e}")))?
+            .to_owned();
+        let tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .map_err(|e| AppError::Connection(format!("TLS 握手失败: {e}")))?;
 
-        let fingerprint = capture.take_fingerprint_sha256().ok_or_else(|| AppError::Connection("未能获取 Agent 证书".into()))?;
+        let fingerprint = capture
+            .take_fingerprint_sha256()
+            .ok_or_else(|| AppError::Connection("未能获取 Agent 证书".into()))?;
         Ok((tls_stream, fingerprint))
     }
 
@@ -116,7 +148,10 @@ impl AgentSession {
 
         tokio::spawn(async move {
             while let Some((stream_id, frame_type, payload)) = out_rx.recv().await {
-                if write_frame(&mut writer, stream_id, frame_type, &payload).await.is_err() {
+                if write_frame(&mut writer, stream_id, frame_type, &payload)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -132,20 +167,27 @@ impl AgentSession {
                 };
                 match frame.frame_type {
                     FrameType::Control => {
-                        let Ok(response) = decode_json::<Response>(&frame.payload) else { continue };
+                        let Ok(response) = decode_json::<Response>(&frame.payload) else {
+                            continue;
+                        };
                         let mut map = pending_reader.lock().await;
                         // `ReadFile`/`ReadFileBounded` 的首帧是 `FileMeta`，后面还有
                         // `DataChunk`/`StreamEnd`；其它一切响应（含流式请求的 Error）
                         // 都是终态，不会再有后续帧，收到就要把注册表项摘掉——除非这个
                         // 流显式声明"Control 帧不代表结束"（`OpenShell` 交互式终端）。
-                        let looks_terminal = !matches!(response, Response::Ok(ResponseBody::FileMeta { .. }));
+                        let looks_terminal =
+                            !matches!(response, Response::Ok(ResponseBody::FileMeta { .. }));
                         match map.get(&frame.stream_id) {
                             Some(PendingKind::Oneshot(_)) => {
-                                if let Some(PendingKind::Oneshot(tx)) = map.remove(&frame.stream_id) {
+                                if let Some(PendingKind::Oneshot(tx)) = map.remove(&frame.stream_id)
+                                {
                                     let _ = tx.send(response);
                                 }
                             }
-                            Some(PendingKind::Stream { tx, keep_open_on_control }) => {
+                            Some(PendingKind::Stream {
+                                tx,
+                                keep_open_on_control,
+                            }) => {
                                 let keep_open = *keep_open_on_control;
                                 let _ = tx.send(StreamFrame::Control(response));
                                 if looks_terminal && !keep_open {
@@ -173,15 +215,27 @@ impl AgentSession {
             pending_reader.lock().await.clear();
         });
 
-        Self { out_tx, pending, next_stream_id: AtomicU32::new(1), shell_channels: Mutex::new(HashMap::new()) }
+        Self {
+            out_tx,
+            pending,
+            next_stream_id: AtomicU32::new(1),
+            shell_channels: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 返回 `(server_version, hostname)`——`connect()` 目前不需要这两个值，但
     /// `test_connect()` 需要拿它们拼一句"连接成功：主机 XXX，Agent 版本 XXX"给用户看。
     async fn handshake(&self, token: String) -> Result<(String, String), AppError> {
-        let request = Request::Handshake { token, protocol_version: PROTOCOL_VERSION, client_version: env!("CARGO_PKG_VERSION").to_string() };
+        let request = Request::Handshake {
+            token,
+            protocol_version: PROTOCOL_VERSION,
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
         match tokio::time::timeout(REQUEST_TIMEOUT, self.request(request)).await {
-            Ok(Ok(Response::Ok(ResponseBody::Handshake { server_version, hostname }))) => Ok((server_version, hostname)),
+            Ok(Ok(Response::Ok(ResponseBody::Handshake {
+                server_version,
+                hostname,
+            }))) => Ok((server_version, hostname)),
             Ok(Ok(Response::Error { message, .. })) => Err(AppError::Auth(message)),
             Ok(Ok(_)) => Err(AppError::Internal("Agent 握手返回了意外的响应类型".into())),
             Ok(Err(e)) => Err(e),
@@ -205,7 +259,10 @@ impl AgentSession {
     pub async fn request(&self, request: Request) -> Result<Response, AppError> {
         let stream_id = self.alloc_stream_id();
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(stream_id, PendingKind::Oneshot(tx));
+        self.pending
+            .lock()
+            .await
+            .insert(stream_id, PendingKind::Oneshot(tx));
         if let Err(e) = self.send_control(stream_id, &request).await {
             self.pending.lock().await.remove(&stream_id);
             return Err(e);
@@ -222,10 +279,19 @@ impl AgentSession {
 
     /// `ReadFile`/`ReadFileBounded`：先收到一个 Control 帧（`FileMeta` 或 `Error`），
     /// 再收到若干 `DataChunk`，最后 `StreamEnd`。
-    pub async fn request_streamed(&self, request: Request) -> Result<mpsc::UnboundedReceiver<StreamFrame>, AppError> {
+    pub async fn request_streamed(
+        &self,
+        request: Request,
+    ) -> Result<mpsc::UnboundedReceiver<StreamFrame>, AppError> {
         let stream_id = self.alloc_stream_id();
         let (tx, rx) = mpsc::unbounded_channel();
-        self.pending.lock().await.insert(stream_id, PendingKind::Stream { tx, keep_open_on_control: false });
+        self.pending.lock().await.insert(
+            stream_id,
+            PendingKind::Stream {
+                tx,
+                keep_open_on_control: false,
+            },
+        );
         if let Err(e) = self.send_control(stream_id, &request).await {
             self.pending.lock().await.remove(&stream_id);
             return Err(e);
@@ -238,18 +304,29 @@ impl AgentSession {
     pub async fn write_stream(&self, request: Request, bytes: &[u8]) -> Result<Response, AppError> {
         let stream_id = self.alloc_stream_id();
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(stream_id, PendingKind::Oneshot(tx));
+        self.pending
+            .lock()
+            .await
+            .insert(stream_id, PendingKind::Oneshot(tx));
         if let Err(e) = self.send_control(stream_id, &request).await {
             self.pending.lock().await.remove(&stream_id);
             return Err(e);
         }
         for chunk in bytes.chunks(DATA_CHUNK_SIZE) {
-            if self.out_tx.send((stream_id, FrameType::DataChunk, chunk.to_vec())).is_err() {
+            if self
+                .out_tx
+                .send((stream_id, FrameType::DataChunk, chunk.to_vec()))
+                .is_err()
+            {
                 self.pending.lock().await.remove(&stream_id);
                 return Err(AppError::Connection("Agent 连接已断开".into()));
             }
         }
-        if self.out_tx.send((stream_id, FrameType::StreamEnd, Vec::new())).is_err() {
+        if self
+            .out_tx
+            .send((stream_id, FrameType::StreamEnd, Vec::new()))
+            .is_err()
+        {
             self.pending.lock().await.remove(&stream_id);
             return Err(AppError::Connection("Agent 连接已断开".into()));
         }
@@ -268,14 +345,25 @@ impl AgentSession {
     /// "拼一个字符串"只发生在 `cmd.exe /C` 这一层，和 SSH 那边把整行丢给远端 shell
     /// 解析是同一件事，只是 Windows 下没有引号转义规则失配的问题）。
     pub async fn exec(&self, command: &str, cwd: &str) -> Result<String, AppError> {
-        self.exec_argv("cmd.exe", &["/C".to_string(), command.to_string()], cwd).await
+        self.exec_argv("cmd.exe", &["/C".to_string(), command.to_string()], cwd)
+            .await
     }
 
     /// 直接传参数数组给 `CreateProcess`，不经过 `cmd.exe` 解析——没有任何"拼字符串
     /// 再转义"的环节，`git_ops.rs` 的 Git 集成用这个而不是 `exec()`，从根上避免
     /// POSIX `shell_quote` 规则套在 Windows 目标上失配的问题（AGENT_DESIGN.md §一）。
-    pub async fn exec_argv(&self, command: &str, args: &[String], cwd: &str) -> Result<String, AppError> {
-        let request = Request::Exec { command: command.to_string(), args: args.to_vec(), cwd: cwd.to_string(), timeout_secs: 0 };
+    pub async fn exec_argv(
+        &self,
+        command: &str,
+        args: &[String],
+        cwd: &str,
+    ) -> Result<String, AppError> {
+        let request = Request::Exec {
+            command: command.to_string(),
+            args: args.to_vec(),
+            cwd: cwd.to_string(),
+            timeout_secs: 0,
+        };
         match self.request(request).await? {
             Response::Ok(ResponseBody::ExecResult { output, .. }) => Ok(output),
             Response::Error { message, .. } => Err(AppError::Internal(message)),
@@ -287,11 +375,27 @@ impl AgentSession {
     /// 后续通过它调用 `write_shell`/`resize_shell`/`close_shell`；远端 PTY 输出经
     /// `agent:data` 事件推送——和 `ssh::session::SshSession::open_shell` 是同一套接口
     /// 形状，方便前端复用同一个 `TerminalView` 组件。
-    pub async fn open_shell(&self, rows: u16, cols: u16, cwd: &str, app_handle: AppHandle) -> Result<Uuid, AppError> {
+    pub async fn open_shell(
+        &self,
+        rows: u16,
+        cols: u16,
+        cwd: &str,
+        app_handle: AppHandle,
+    ) -> Result<Uuid, AppError> {
         let stream_id = self.alloc_stream_id();
         let (tx, mut rx) = mpsc::unbounded_channel::<StreamFrame>();
-        self.pending.lock().await.insert(stream_id, PendingKind::Stream { tx, keep_open_on_control: true });
-        let request = Request::OpenShell { cols, rows, cwd: cwd.to_string() };
+        self.pending.lock().await.insert(
+            stream_id,
+            PendingKind::Stream {
+                tx,
+                keep_open_on_control: true,
+            },
+        );
+        let request = Request::OpenShell {
+            cols,
+            rows,
+            cwd: cwd.to_string(),
+        };
         if let Err(e) = self.send_control(stream_id, &request).await {
             self.pending.lock().await.remove(&stream_id);
             return Err(e);
@@ -330,10 +434,16 @@ impl AgentSession {
             while let Some(item) = rx.recv().await {
                 match item {
                     StreamFrame::Data(bytes) => {
-                        let _ = app_handle.emit("agent:data", serde_json::json!({ "channelId": local_id, "data": bytes }));
+                        let _ = app_handle.emit(
+                            "agent:data",
+                            serde_json::json!({ "channelId": local_id, "data": bytes }),
+                        );
                     }
                     StreamFrame::End => {
-                        let _ = app_handle.emit("agent:status", serde_json::json!({ "channelId": local_id, "status": "disconnected" }));
+                        let _ = app_handle.emit(
+                            "agent:status",
+                            serde_json::json!({ "channelId": local_id, "status": "disconnected" }),
+                        );
                         break;
                     }
                     StreamFrame::Control(_) => {}
@@ -350,7 +460,9 @@ impl AgentSession {
             .lock()
             .await
             .get(&local_id)
-            .ok_or_else(|| AppError::NotFound(format!("agent shell channel not found: {local_id}")))?;
+            .ok_or_else(|| {
+                AppError::NotFound(format!("agent shell channel not found: {local_id}"))
+            })?;
         self.out_tx
             .send((stream_id, FrameType::DataChunk, data))
             .map_err(|_| AppError::Connection("Agent 连接已断开".into()))
@@ -362,8 +474,11 @@ impl AgentSession {
             .lock()
             .await
             .get(&local_id)
-            .ok_or_else(|| AppError::NotFound(format!("agent shell channel not found: {local_id}")))?;
-        let payload = encode_json(&Request::ShellResize { cols, rows }).map_err(|e| AppError::Internal(e.to_string()))?;
+            .ok_or_else(|| {
+                AppError::NotFound(format!("agent shell channel not found: {local_id}"))
+            })?;
+        let payload = encode_json(&Request::ShellResize { cols, rows })
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         self.out_tx
             .send((stream_id, FrameType::Control, payload))
             .map_err(|_| AppError::Connection("Agent 连接已断开".into()))
@@ -376,7 +491,9 @@ impl AgentSession {
         let stream_id = self.shell_channels.lock().await.remove(&local_id);
         if let Some(stream_id) = stream_id {
             self.pending.lock().await.remove(&stream_id);
-            let _ = self.out_tx.send((stream_id, FrameType::StreamEnd, Vec::new()));
+            let _ = self
+                .out_tx
+                .send((stream_id, FrameType::StreamEnd, Vec::new()));
         }
         Ok(())
     }

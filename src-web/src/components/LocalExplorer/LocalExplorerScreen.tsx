@@ -15,6 +15,7 @@ import {
   Search,
   Server,
   Trash2,
+  TerminalSquare,
   X,
 } from "lucide-react";
 import { localFsService } from "../../services/localFsService";
@@ -34,6 +35,8 @@ import { AGENT_ROOT, agentParentPath, isAgentRoot } from "../../utils/windowsPat
 import type { ConnectionProfile, FileEntry } from "../../types/bindings";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTerminalStore } from "../../stores/terminalStore";
+import { TerminalPanel } from "../Terminal/TerminalPanel";
 
 type Side = "left" | "right";
 type Protocol = "local" | "ssh" | "agent";
@@ -290,6 +293,39 @@ export const LocalExplorerScreen: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<{ side: Side; tabId: string; entries: FileEntry[] } | null>(null);
   const listRefs = useRef<Record<Side, HTMLDivElement | null>>({ left: null, right: null });
   const restoringRef = useRef(true);
+
+  // Explorer owns Ctrl+O: open a native terminal in the active pane directory.
+  // Capture phase runs before App's global file-open shortcut, avoiding a conflict.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const tab = activeTab(activeSide);
+        if (tab) void openTerminalAt(tab);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  });
+
+  const openTerminalAt = async (tab: FileTab) => {
+    try {
+      const terminal = useTerminalStore.getState();
+      if (terminal.currentWorkspaceId !== "__explorer__") {
+        await terminal.switchWorkspace("__explorer__");
+      }
+      const id = tab.protocol === "ssh" && tab.connectionId
+        ? await terminal.openTerminal({ kind: "ssh", profileId: tab.connectionId, cwd: tab.path })
+        : tab.protocol === "agent" && tab.connectionId
+          ? await terminal.openTerminal({ kind: "agent", profileId: tab.connectionId, cwd: tab.path })
+          : await terminal.openTerminal({ kind: "local", cwd: tab.path });
+      terminal.setActive(id);
+      terminal.setPanelOpen(true);
+    } catch (e) {
+      push("error", `打开终端失败：${formatError(e)}`);
+    }
+  };
 
   const getTab = (side: Side, tabId: string): FileTab | undefined => pane[side].tabs.find((t) => t.id === tabId);
   const activeTab = (side: Side): FileTab | undefined => getTab(side, pane[side].activeId);
@@ -707,6 +743,14 @@ export const LocalExplorerScreen: React.FC = () => {
           <button className="btn ghost sm" title="刷新" onClick={() => void refresh(side, tab.id)}>
             <RotateCw style={{ width: 12, height: 12 }} />
           </button>
+          <button
+            className="btn ghost sm"
+            title={tab.protocol === "local" ? "在当前目录打开终端 (Ctrl+O)" : "远程目录暂不支持本机终端"}
+            disabled={tab.protocol !== "local"}
+            onClick={() => void openTerminalAt(tab)}
+          >
+            <TerminalSquare style={{ width: 12, height: 12 }} />
+          </button>
         </div>
 
         <div className="sftp-filter-bar">
@@ -862,8 +906,29 @@ export const LocalExplorerScreen: React.FC = () => {
     return items;
   })();
 
+  const openTerminalHere = async () => {
+    const tab = activeSrcTab;
+    if (!tab) return;
+    try {
+      const terminal = useTerminalStore.getState();
+      if (terminal.currentWorkspaceId !== "__explorer__") {
+        await terminal.switchWorkspace("__explorer__");
+      }
+      const cwd = tab.path;
+      const id = tab.protocol === "ssh" && tab.connectionId
+        ? await terminal.openTerminal({ kind: "ssh", profileId: tab.connectionId, cwd })
+        : tab.protocol === "agent" && tab.connectionId
+          ? await terminal.openTerminal({ kind: "agent", profileId: tab.connectionId, cwd })
+          : await terminal.openTerminal({ kind: "local", cwd });
+      terminal.setActive(id);
+      terminal.setPanelOpen(true);
+    } catch (e) {
+      push("error", `打开终端失败：${formatError(e)}`);
+    }
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div className="tab-bar">
         <button className="quick-tool-btn" onClick={() => void goHome()} title="返回首页">
           <Home />
@@ -873,6 +938,9 @@ export const LocalExplorerScreen: React.FC = () => {
           资源管理器
         </span>
         <div className="quick-tools" style={{ marginLeft: "auto" }}>
+          <button className="quick-tool-btn" title="在当前目录打开终端 (Ctrl+O)" onClick={() => void openTerminalHere()}>
+            <TerminalSquare />
+          </button>
           <ThemeToggle />
         </div>
       </div>
@@ -894,6 +962,9 @@ export const LocalExplorerScreen: React.FC = () => {
       </div>
 
       <div className="host-stats-bar explorer-action-bar" style={{ gap: 8 }}>
+        <button className="btn ghost sm" title="在当前目录打开终端 (Ctrl+O)" onClick={() => void openTerminalHere()} disabled={!activeSrcTab}>
+          <TerminalSquare style={{ width: 12, height: 12 }} /> 终端
+        </button>
         <button
           className="btn ghost sm"
           title={activeSrcTab?.protocol === "local" ? "新建文件夹" : "远程目录暂不支持新建文件夹"}
@@ -937,6 +1008,18 @@ export const LocalExplorerScreen: React.FC = () => {
             : "点选文件后可用工具栏或右键操作；「+」新建本地/SSH/Agent 标签"}
         </span>
       </div>
+
+      {activeSrcTab && (
+        <TerminalPanel
+          target={
+            activeSrcTab.protocol === "ssh" && activeSrcTab.connectionId
+              ? { kind: "ssh", profileId: activeSrcTab.connectionId, cwd: activeSrcTab.path }
+              : activeSrcTab.protocol === "agent" && activeSrcTab.connectionId
+                ? { kind: "agent", profileId: activeSrcTab.connectionId, cwd: activeSrcTab.path }
+                : { kind: "local", cwd: activeSrcTab.path }
+          }
+        />
+      )}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />}
       {addTabMenu && <ContextMenu x={addTabMenu.x} y={addTabMenu.y} items={addTabMenuItems} onClose={() => setAddTabMenu(null)} />}

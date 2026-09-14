@@ -5,13 +5,13 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::agent::{AgentConnectionPool, AgentTrustPromptRegistry};
-use crate::ai::{AiChatClient, AiProviderManager};
-use crate::coding::{CodingSession, CommandConfirmRegistry, QuestionRegistry};
+use crate::ai::{AiChatClient, AiProviderManager, AiRuntime};
+use crate::coding::{ChangeStore, CodingSession, CommandConfirmRegistry, QuestionRegistry};
 use crate::connection::{ConnectionGroupManager, ConnectionManager};
 use crate::credential::CredentialStore;
 use crate::db::repo::audit_log_repo::AuditLogRepo;
-use crate::db::repo::coding_history_repo::CodingHistoryRepo;
 use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
+use crate::db::repo::coding_history_repo::CodingHistoryRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
 use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
@@ -46,10 +46,16 @@ pub struct AppState {
     pub log_engine: Arc<LogSearchEngine>,
     pub log_importer: Arc<LogImporter>,
     pub ai_provider_manager: Arc<AiProviderManager>,
+    pub ai_runtime: Arc<AiRuntime>,
     pub ai_chat_client: Arc<AiChatClient>,
     /// AI 编程助手会话，key 为 workspace id——每个工作区自动绑定最多一个活跃会话
     /// （DESIGN.md §3.8.1"自动绑定当前工作区"），不需要额外的 session_id 概念。
     pub coding_sessions: Arc<RwLock<HashMap<Uuid, Arc<Mutex<CodingSession>>>>>,
+    /// 文件改动（Diff/Accept/Undo/Redo）状态，和 `coding_sessions` 平级、同样以
+    /// workspace_id 为 key，但故意拆成独立的锁——不能让"应用/拒绝某个文件改动"
+    /// 卡在等一个可能跑一两分钟的 AI 对话轮次释放 `coding_sessions` 里那把锁
+    /// （2026-09 用户真实反馈，详见 `coding::ChangeStore` 的文档注释）。
+    pub coding_changes: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChangeStore>>>>>,
     pub command_confirms: CommandConfirmRegistry,
     pub audit_log: Arc<AuditLogRepo>,
     pub coding_history: Arc<CodingHistoryRepo>,
@@ -92,4 +98,16 @@ pub struct AppState {
     /// 那样是一次性事件，这两个值在整个进程生命周期内固定不变，前端可以随时查询。
     pub launch_mode: Option<String>,
     pub launch_open: Option<String>,
+    /// AI 编程助手"停止"按钮（2026-09 用户反馈：中转过载时一轮对话能卡一两
+    /// 分钟，之前完全没有办法主动打断）用的取消信号，key 为 workspace id——
+    /// 和 `active_search`/`cancelled_transfers` 是同一种"不跟长任务抢同一把锁"
+    /// 的模式：`coding_send_message` 持有 `coding_sessions` 里那把锁一直到整
+    /// 轮对话结束，`coding_cancel_turn` 如果也去抢那把锁会被同样卡住，所以
+    /// 取消信号必须存在一个独立的地方。用 `tokio_util::sync::CancellationToken`
+    /// 而不是像那两个一样用纯轮询的 `HashSet`——AI 对话轮次的瓶颈是单次可能
+    /// 卡很久的网络 await（HTTP 请求/`codex_engine::run_turn`），不是天然逐条
+    /// 处理的循环，`CancellationToken::cancelled()` 能配合 `tokio::select!`
+    /// 精确打断这次 await，不需要轮询。
+    pub coding_cancel_tokens:
+        Arc<StdMutex<HashMap<Uuid, tokio_util::sync::CancellationToken>>>,
 }

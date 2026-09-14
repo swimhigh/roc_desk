@@ -92,7 +92,12 @@ impl TransferLogRepo {
 
     /// `search` 简单匹配本地/远程路径和连接名称——够用的"查询追溯"，不需要一整套
     /// 结构化筛选器。
-    pub fn list(&self, limit: u32, offset: u32, search: Option<&str>) -> Result<Vec<TransferLogEntry>, AppError> {
+    pub fn list(
+        &self,
+        limit: u32,
+        offset: u32,
+        search: Option<&str>,
+    ) -> Result<Vec<TransferLogEntry>, AppError> {
         let conn = self.pool.get()?;
         let like = search.map(|s| format!("%{s}%"));
         let mut stmt = conn.prepare(

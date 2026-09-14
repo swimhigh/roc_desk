@@ -20,7 +20,12 @@ impl KnownHostsRepo {
     }
 
     /// TOFU / 指纹比对（DESIGN.md §3.2.1）。
-    pub fn lookup(&self, host: &str, port: u16, fingerprint: &str) -> Result<KnownHostStatus, AppError> {
+    pub fn lookup(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<KnownHostStatus, AppError> {
         let conn = self.pool.get()?;
         let existing: Option<String> = conn
             .query_row(

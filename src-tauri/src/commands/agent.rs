@@ -5,7 +5,9 @@ use crate::db::repo::transfer_log_repo::TransferLogInput;
 use crate::error::AppError;
 use crate::fsops::agent::AgentFileOps;
 use crate::fsops::local::LocalFileOps;
-use crate::fsops::{copy_between, FileContent, FileEntry, FileOps, WriteOutcome, TRANSFER_CANCELLED_MESSAGE};
+use crate::fsops::{
+    copy_between, FileContent, FileEntry, FileOps, WriteOutcome, TRANSFER_CANCELLED_MESSAGE,
+};
 use crate::state::AppState;
 
 /// 和 `commands::sftp` 里的同名函数（那边注释更详细）是同一套逻辑，两份没有共用
@@ -23,7 +25,11 @@ fn finish_transfer_log(
     started_at: &str,
     result: &Result<(), AppError>,
 ) {
-    state.cancelled_transfers.lock().unwrap().remove(&request_id);
+    state
+        .cancelled_transfers
+        .lock()
+        .unwrap()
+        .remove(&request_id);
     let profile_name = state
         .connection_manager
         .get(profile_id)
@@ -68,14 +74,21 @@ pub async fn agent_connect(state: State<'_, AppState>, profile_id: Uuid) -> Resu
 }
 
 #[tauri::command]
-pub async fn agent_disconnect(state: State<'_, AppState>, profile_id: Uuid) -> Result<(), AppError> {
+pub async fn agent_disconnect(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<(), AppError> {
     state.agent_pool.disconnect(profile_id).await
 }
 
 /// 响应 TLS 证书指纹 TOFU / 指纹变化弹窗（AGENT_DESIGN.md §3.1），
 /// 和 `ssh_confirm_host_key` 是同一种模式。
 #[tauri::command]
-pub async fn agent_confirm_cert(state: State<'_, AppState>, request_id: Uuid, trust: bool) -> Result<(), AppError> {
+pub async fn agent_confirm_cert(
+    state: State<'_, AppState>,
+    request_id: Uuid,
+    trust: bool,
+) -> Result<(), AppError> {
     state.agent_trust_prompts.resolve(request_id, trust).await;
     Ok(())
 }
@@ -85,7 +98,11 @@ pub async fn agent_confirm_cert(state: State<'_, AppState>, request_id: Uuid, tr
 /// 保存）、不做证书指纹 TOFU 持久化——纯粹的"这几个字段填得对不对"验证，返回一句
 /// 人类可读的结果文本。
 #[tauri::command]
-pub async fn agent_test_connection(host: String, port: u16, token: String) -> Result<String, AppError> {
+pub async fn agent_test_connection(
+    host: String,
+    port: u16,
+    token: String,
+) -> Result<String, AppError> {
     let result = crate::agent::AgentSession::test_connect(&host, port, token).await?;
     Ok(format!(
         "连接成功：主机 {}，Agent 版本 {}，证书指纹 {}",
@@ -97,16 +114,26 @@ pub async fn agent_test_connection(host: String, port: u16, token: String) -> Re
 /// 分开一个命令是因为协议完全不同——SFTP 走 `RemoteFileOps`，这里走
 /// `AgentFileOps`，都实现同一个 `FileOps` trait，直接复用其 `list_dir`）。
 #[tauri::command]
-pub async fn agent_list_dir(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<Vec<FileEntry>, AppError> {
+pub async fn agent_list_dir(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<Vec<FileEntry>, AppError> {
     file_ops(&state, profile_id).await?.list_dir(&path).await
 }
 
 /// Windows 盘符列表（Explorer 树的"根"概念）——工作区挂载向导浏览 Agent 目标机器时
 /// 用它渲染"此电脑"下的盘符，而不是像 SSH 那样从 `/` 开始（AGENT_DESIGN.md §3.3）。
 #[tauri::command]
-pub async fn agent_list_roots(state: State<'_, AppState>, profile_id: Uuid) -> Result<Vec<String>, AppError> {
+pub async fn agent_list_roots(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+) -> Result<Vec<String>, AppError> {
     let session = state.agent_pool.get_or_connect(profile_id).await?;
-    match session.request(roc_desk_protocol::Request::ListRoots).await? {
+    match session
+        .request(roc_desk_protocol::Request::ListRoots)
+        .await?
+    {
         roc_desk_protocol::Response::Ok(roc_desk_protocol::ResponseBody::Roots(roots)) => Ok(roots),
         roc_desk_protocol::Response::Error { message, .. } => Err(AppError::Internal(message)),
         _ => Err(AppError::Internal("Agent 返回了意外的响应类型".into())),
@@ -125,36 +152,50 @@ pub async fn agent_open_shell(
     cwd: Option<String>,
 ) -> Result<Uuid, AppError> {
     let session = state.agent_pool.get_or_connect(profile_id).await?;
-    session.open_shell(rows, cols, cwd.as_deref().unwrap_or(""), app_handle).await
+    session
+        .open_shell(rows, cols, cwd.as_deref().unwrap_or(""), app_handle)
+        .await
 }
 
 #[tauri::command]
-pub async fn agent_write(state: State<'_, AppState>, profile_id: Uuid, channel_id: Uuid, data: Vec<u8>) -> Result<(), AppError> {
-    let session = state
-        .agent_pool
-        .get(profile_id)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("no active agent session for {profile_id}")))?;
+pub async fn agent_write(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    channel_id: Uuid,
+    data: Vec<u8>,
+) -> Result<(), AppError> {
+    let session =
+        state.agent_pool.get(profile_id).await.ok_or_else(|| {
+            AppError::NotFound(format!("no active agent session for {profile_id}"))
+        })?;
     session.write_shell(channel_id, data).await
 }
 
 #[tauri::command]
-pub async fn agent_resize(state: State<'_, AppState>, profile_id: Uuid, channel_id: Uuid, rows: u16, cols: u16) -> Result<(), AppError> {
-    let session = state
-        .agent_pool
-        .get(profile_id)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("no active agent session for {profile_id}")))?;
+pub async fn agent_resize(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    channel_id: Uuid,
+    rows: u16,
+    cols: u16,
+) -> Result<(), AppError> {
+    let session =
+        state.agent_pool.get(profile_id).await.ok_or_else(|| {
+            AppError::NotFound(format!("no active agent session for {profile_id}"))
+        })?;
     session.resize_shell(channel_id, cols, rows).await
 }
 
 #[tauri::command]
-pub async fn agent_close_channel(state: State<'_, AppState>, profile_id: Uuid, channel_id: Uuid) -> Result<(), AppError> {
-    let session = state
-        .agent_pool
-        .get(profile_id)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("no active agent session for {profile_id}")))?;
+pub async fn agent_close_channel(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    channel_id: Uuid,
+) -> Result<(), AppError> {
+    let session =
+        state.agent_pool.get(profile_id).await.ok_or_else(|| {
+            AppError::NotFound(format!("no active agent session for {profile_id}"))
+        })?;
     session.close_shell(channel_id).await
 }
 
@@ -164,8 +205,15 @@ pub async fn agent_close_channel(state: State<'_, AppState>, profile_id: Uuid, c
 // 工作区之外的路径。) ---
 
 #[tauri::command]
-pub async fn agent_read_file(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<FileContent, AppError> {
-    file_ops(&state, profile_id).await?.read_file_for_editor(&path).await
+pub async fn agent_read_file(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<FileContent, AppError> {
+    file_ops(&state, profile_id)
+        .await?
+        .read_file_for_editor(&path)
+        .await
 }
 
 #[tauri::command]
@@ -176,36 +224,86 @@ pub async fn agent_write_file(
     content: String,
     expected_mtime: Option<i64>,
 ) -> Result<WriteOutcome, AppError> {
-    file_ops(&state, profile_id).await?.write_file(&path, &content, expected_mtime).await
+    file_ops(&state, profile_id)
+        .await?
+        .write_file(&path, &content, expected_mtime)
+        .await
 }
 
 #[tauri::command]
-pub async fn agent_delete(state: State<'_, AppState>, profile_id: Uuid, path: String, is_dir: bool) -> Result<(), AppError> {
-    file_ops(&state, profile_id).await?.delete(&path, is_dir).await
+pub async fn agent_delete(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+    is_dir: bool,
+) -> Result<(), AppError> {
+    file_ops(&state, profile_id)
+        .await?
+        .delete(&path, is_dir)
+        .await
 }
 
 #[tauri::command]
-pub async fn agent_rename(state: State<'_, AppState>, profile_id: Uuid, from: String, to: String) -> Result<(), AppError> {
+pub async fn agent_rename(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    from: String,
+    to: String,
+) -> Result<(), AppError> {
     file_ops(&state, profile_id).await?.rename(&from, &to).await
 }
 
 #[tauri::command]
-pub async fn agent_create_dir(state: State<'_, AppState>, profile_id: Uuid, path: String) -> Result<(), AppError> {
+pub async fn agent_create_dir(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    path: String,
+) -> Result<(), AppError> {
     file_ops(&state, profile_id).await?.create_dir(&path).await
 }
 
 #[tauri::command]
-pub async fn agent_download(state: State<'_, AppState>, profile_id: Uuid, remote_path: String, local_path: String) -> Result<(), AppError> {
+pub async fn agent_download(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    remote_path: String,
+    local_path: String,
+) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
     let file_count = std::sync::atomic::AtomicU64::new(0);
-    copy_between(&ops, &remote_path, &LocalFileOps, &local_path, false, &None, &|| false, &file_count).await
+    copy_between(
+        &ops,
+        &remote_path,
+        &LocalFileOps,
+        &local_path,
+        false,
+        &None,
+        &|| false,
+        &file_count,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn agent_upload(state: State<'_, AppState>, profile_id: Uuid, local_path: String, remote_path: String) -> Result<(), AppError> {
+pub async fn agent_upload(
+    state: State<'_, AppState>,
+    profile_id: Uuid,
+    local_path: String,
+    remote_path: String,
+) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
     let file_count = std::sync::atomic::AtomicU64::new(0);
-    copy_between(&LocalFileOps, &local_path, &ops, &remote_path, false, &None, &|| false, &file_count).await
+    copy_between(
+        &LocalFileOps,
+        &local_path,
+        &ops,
+        &remote_path,
+        false,
+        &None,
+        &|| false,
+        &file_count,
+    )
+    .await
 }
 
 /// 双栏浏览器的"下载到本地目录"：目标文件/目录名沿用远程原名，落在 `local_dir`
@@ -221,7 +319,11 @@ pub async fn agent_download_entry(
     request_id: Uuid,
 ) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
-    let name = remote_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&remote_path);
+    let name = remote_path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&remote_path);
     let local_target = format!("{}/{}", local_dir.trim_end_matches(['/', '\\']), name);
 
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -229,7 +331,17 @@ pub async fn agent_download_entry(
     let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
-    let result = copy_between(&ops, &remote_path, &LocalFileOps, &local_target, is_dir, &Some((app_handle, request_id)), &should_cancel, &file_count).await;
+    let result = copy_between(
+        &ops,
+        &remote_path,
+        &LocalFileOps,
+        &local_target,
+        is_dir,
+        &Some((app_handle, request_id)),
+        &should_cancel,
+        &file_count,
+    )
+    .await;
 
     finish_transfer_log(
         &state,
@@ -258,7 +370,11 @@ pub async fn agent_upload_entry(
     request_id: Uuid,
 ) -> Result<(), AppError> {
     let ops = file_ops(&state, profile_id).await?;
-    let name = local_path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&local_path);
+    let name = local_path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&local_path);
     let remote_target = format!("{}/{}", remote_dir.trim_end_matches('/'), name);
 
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -266,7 +382,17 @@ pub async fn agent_upload_entry(
     let should_cancel = move || cancelled_transfers.lock().unwrap().contains(&request_id);
     let file_count = std::sync::atomic::AtomicU64::new(0);
 
-    let result = copy_between(&LocalFileOps, &local_path, &ops, &remote_target, is_dir, &Some((app_handle, request_id)), &should_cancel, &file_count).await;
+    let result = copy_between(
+        &LocalFileOps,
+        &local_path,
+        &ops,
+        &remote_target,
+        is_dir,
+        &Some((app_handle, request_id)),
+        &should_cancel,
+        &file_count,
+    )
+    .await;
 
     finish_transfer_log(
         &state,

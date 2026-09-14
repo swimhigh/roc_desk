@@ -21,7 +21,9 @@ fn conpty_available() -> bool {
     use windows::core::s;
     use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     unsafe {
-        let Ok(kernel32) = GetModuleHandleA(s!("kernel32.dll")) else { return false };
+        let Ok(kernel32) = GetModuleHandleA(s!("kernel32.dll")) else {
+            return false;
+        };
         GetProcAddress(kernel32, s!("CreatePseudoConsole")).is_some()
     }
 }
@@ -39,14 +41,22 @@ pub fn open(cols: u16, rows: u16, cwd: &str) -> Result<OpenedShell, (ErrorCode, 
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| (ErrorCode::Internal, format!("open pty failed: {e}")))?;
 
     let mut cmd = CommandBuilder::new("powershell.exe");
     if !cwd.is_empty() {
         cmd.cwd(cwd);
     }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| (ErrorCode::Internal, format!("spawn shell failed: {e}")))?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| (ErrorCode::Internal, format!("spawn shell failed: {e}")))?;
     // slave 端这边不再需要——不 drop 的话 master 侧的读端永远等不到 EOF
     // （和 src-tauri/src/pty/mod.rs 同一个坑）。
     drop(pair.slave);
@@ -55,11 +65,24 @@ pub fn open(cols: u16, rows: u16, cwd: &str) -> Result<OpenedShell, (ErrorCode, 
         .master
         .try_clone_reader()
         .map_err(|e| (ErrorCode::Internal, format!("clone pty reader failed: {e}")))?;
-    let writer = pair.master.take_writer().map_err(|e| (ErrorCode::Internal, format!("take pty writer failed: {e}")))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| (ErrorCode::Internal, format!("take pty writer failed: {e}")))?;
 
-    Ok(OpenedShell { master: pair.master, writer, child, reader })
+    Ok(OpenedShell {
+        master: pair.master,
+        writer,
+        child,
+        reader,
+    })
 }
 
 pub fn resize(master: &dyn MasterPty, cols: u16, rows: u16) {
-    let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+    let _ = master.resize(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    });
 }

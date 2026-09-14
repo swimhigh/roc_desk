@@ -50,6 +50,7 @@ pub async fn ai_chat_send(
     let api_key = state.ai_provider_manager.resolve_api_key(&provider).await?;
 
     let request_id = Uuid::new_v4();
+    let runtime = state.ai_runtime.clone();
     let client = state.ai_chat_client.clone();
     tokio::spawn(async move {
         client
@@ -61,9 +62,18 @@ pub async fn ai_chat_send(
                 web_search_enabled,
                 app_handle,
                 request_id,
+                Some(&runtime),
             )
             .await;
     });
 
     Ok(request_id)
+}
+
+#[tauri::command]
+pub async fn ai_chat_cancel(
+    state: State<'_, AppState>,
+    request_id: Uuid,
+) -> Result<bool, AppError> {
+    Ok(state.ai_runtime.cancel_chat(request_id))
 }

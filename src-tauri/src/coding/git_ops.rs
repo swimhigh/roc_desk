@@ -17,17 +17,33 @@ use crate::ssh::SshConnectionPool;
 /// 改动前完全一致的行为，不在这次改动里动它）；Agent 分支直接把 `args` 作为
 /// `CreateProcess` 的参数数组传给 `git.exe`，不经过任何 shell 解析，天然没有
 /// POSIX 转义规则套在 Windows 目标上失配的问题（AGENT_DESIGN.md §一）。
-async fn run_git(target: &CodingTarget, cwd: &str, args: &[&str], ssh_pool: &SshConnectionPool, agent_pool: &AgentConnectionPool) -> Result<String, AppError> {
+async fn run_git(
+    target: &CodingTarget,
+    cwd: &str,
+    args: &[&str],
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+) -> Result<String, AppError> {
     match target {
         CodingTarget::Local => {
-            let quoted = args.iter().map(|a| crate::log::remote::shell_quote(a)).collect::<Vec<_>>().join(" ");
+            let quoted = args
+                .iter()
+                .map(|a| crate::log::remote::shell_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
             run_local_command(&format!("git {quoted}"), cwd).await
         }
         CodingTarget::Remote { connection_id, .. } => {
             let session = ssh_pool.get_or_connect(*connection_id).await?;
             let quoted_cwd = crate::log::remote::shell_quote(cwd);
-            let quoted = args.iter().map(|a| crate::log::remote::shell_quote(a)).collect::<Vec<_>>().join(" ");
-            session.exec(&format!("cd {quoted_cwd} && git {quoted}")).await
+            let quoted = args
+                .iter()
+                .map(|a| crate::log::remote::shell_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            session
+                .exec(&format!("cd {quoted_cwd} && git {quoted}"))
+                .await
         }
         // Agent 的 `Exec` 请求原生带 `cwd` 字段，不需要像 SSH 那样自己拼
         // `cd <目录> &&`——这正是 AGENT_DESIGN.md §四.4 强调的"命令执行原语原生
@@ -43,8 +59,21 @@ async fn run_git(target: &CodingTarget, cwd: &str, args: &[&str], ssh_pool: &Ssh
 /// 探测工作区根目录是否在一个 Git 仓库里——不是仓库（或者目标机器压根没装 git）
 /// 时前端应该把"自动提交"开关直接 disable 掉，而不是让用户勾上了才在每次
 /// Accept 时才发现根本用不了。
-pub async fn is_git_repo(target: &CodingTarget, cwd: &str, ssh_pool: &SshConnectionPool, agent_pool: &AgentConnectionPool) -> bool {
-    match run_git(target, cwd, &["rev-parse", "--is-inside-work-tree"], ssh_pool, agent_pool).await {
+pub async fn is_git_repo(
+    target: &CodingTarget,
+    cwd: &str,
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+) -> bool {
+    match run_git(
+        target,
+        cwd,
+        &["rev-parse", "--is-inside-work-tree"],
+        ssh_pool,
+        agent_pool,
+    )
+    .await
+    {
         Ok(out) => out.trim() == "true",
         Err(_) => false,
     }
@@ -69,5 +98,12 @@ pub async fn commit_file(
     agent_pool: &AgentConnectionPool,
 ) -> Result<String, AppError> {
     run_git(target, cwd, &["add", "--", path], ssh_pool, agent_pool).await?;
-    run_git(target, cwd, &["commit", "-m", message], ssh_pool, agent_pool).await
+    run_git(
+        target,
+        cwd,
+        &["commit", "-m", message],
+        ssh_pool,
+        agent_pool,
+    )
+    .await
 }
