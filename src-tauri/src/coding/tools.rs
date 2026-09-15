@@ -160,7 +160,7 @@ pub fn tool_schema() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "question",
-                "description": "向用户提出一个结构化问题并等待回答，用于任务中出现需要用户决策/澄清的岔路口（而不是把问题混在最终答案文字里）；提供 options 时前端渲染成按钮组，否则渲染文本输入框",
+                "description": "向用户提出一个结构化问题并等待回答，用于任务中出现需要用户决策/澄清的岔路口（而不是把问题混在最终答案文字里）；也适用于用户这句话本身有明显歧义、可能对应几种差别很大的意图时——把想到的几种理解列成 options 让用户选，不要凭猜测直接选一种展开长篇回答。提供 options 时前端渲染成按钮组，否则渲染文本输入框",
                 "parameters": {
                     "type": "object",
                     "properties": {

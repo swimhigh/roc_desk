@@ -157,6 +157,33 @@ const MAX_TOOL_ITERATIONS: usize = 30;
 /// 最后这么多轮强制不再提供工具，逼模型收尾给结论（见 send_message 里的用法和注释）。
 const FORCE_CONCLUDE_LAST_N: usize = 5;
 
+/// 2026-09 用户反馈："GPT 模型经常报错（Selected model is at capacity / 503），
+/// 希望有重试机制"——这几个状态码/关键词基本都是"服务端临时顶不住"，不是请求本身
+/// 有问题，重试大概率能成。3 次（不算首次请求，总共最多打 4 次）配合指数退避，
+/// 既给瞬时过载留出恢复时间，又不会让用户等太久。
+const MAX_HTTP_RETRIES: u32 = 3;
+/// 重试间隔的基数（秒），第 N 次重试等 `RETRY_BASE_DELAY_SECS * 2^(N-1)`——
+/// 1s/2s/4s，指数退避，不是每次固定等一样久。
+const RETRY_BASE_DELAY_SECS: u64 = 1;
+
+/// HTTP 状态码层面判断"值得重试"：429（限流）、5xx（服务端错误/网关/过载）——
+/// 4xx 里其余的（401 认证失败、400 参数错误）重试没有意义，问题不会自己消失。
+fn is_retryable_http_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.is_server_error()
+}
+
+/// 有些 Provider 即使返回的 HTTP 状态码看着正常（甚至 200），也会在响应体文本里
+/// 说"当前过载/请换个模型"这类话（2026-09 用户真实复现的原文就是"Selected model
+/// is at capacity. Please try a different model."）——纯看状态码会漏掉这种情况，
+/// 所以额外兜底扫一遍响应体文本里的关键词。只做英文关键词匹配，不做多语言穷举，
+/// 覆盖不到的极端情况就走"重试次数用完/不可重试"这条路径，不是本质缺陷。
+fn is_retryable_error_text(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    ["overloaded", "at capacity", "rate limit", "try again", "temporarily unavailable"]
+        .iter()
+        .any(|keyword| lower.contains(keyword))
+}
+
 /// 单条工具结果塞进 `self.messages` 前的字符数上限——`run_command`（截 4000 字符）
 /// 和 `webfetch`（截 8000 字符）从一开始就有这层保护，`read_file`/`list_directory`
 /// 之前完全没有：`self.messages` 不会随对话推进而裁剪，每一轮都整份重新序列化进
@@ -172,10 +199,12 @@ const MAX_TOOL_RESULT_CHARS: usize = 20_000;
 /// 整个会话发给模型的上下文上限，按 token 估算（见 `estimate_tokens`）而不是原始字符数——
 /// 2026-09 复盘：原来直接拿字符数当预算单位，对不同模型的真实上下文窗口没有代表性
 /// （尤其中文场景：一个汉字在 UTF-8 里是 3 字节，用字符数算预算会系统性低估实际 token
-/// 消耗）。100_000 token 是一个偏保守的全局默认值，留出安全余量给上下文窗口较小的模型，
+/// 消耗）。真实复现过一次"HTTP 400 context_too_large"——用户接的 provider 实际能接受
+/// 的窗口明显比这里假设的更小，60_000 是收紧后的全局默认值，宁可压缩得频繁一点，也不
+/// 要让请求真的超限被 Provider 拒绝（拒绝了这一整轮就白跑，压缩只是多花一次轻量调用）。
 /// 不是精确值——真要精确匹配每个 provider 的上下文窗口需要一份 per-provider 配置，
 /// 这次先不做。
-const MAX_CONTEXT_TOKENS_ESTIMATE: usize = 100_000;
+const MAX_CONTEXT_TOKENS_ESTIMATE: usize = 60_000;
 /// 在总量没有触顶时，仍只保留最近这些用户轮次，避免长时间会话缓慢挤占内存。
 const MAX_CONTEXT_USER_TURNS: usize = 8;
 /// 标记 `self.messages[1]`（如果存在）是"早前对话摘要"消息，不是真实的历史内容——
@@ -187,11 +216,15 @@ const MAX_CONTEXT_SUMMARY_CHARS: usize = 4_000;
 /// 摘要请求本身的超时——摘要是锦上添花，不能变成新的卡死点，超时/失败就直接退回硬删。
 const CONTEXT_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 把字节数换算成一个粗略的 token 估算——4 字节 ≈ 1 token，向上取整。这是 codex-core
-/// 自己（`vendor/codex/codex-rs/core/src/context_manager/history.rs`）在没有接入真实
-/// 分词器时用的同款启发式，roc_desk 这里是照着思路重新实现，不依赖任何 tokenizer 依赖。
+/// 把字节数换算成一个粗略的 token 估算——3 字节 ≈ 1 token，向上取整。codex-core 自己
+/// （`vendor/codex/codex-rs/core/src/context_manager/history.rs`）在没有接入真实分词器
+/// 时用的是 4 字节/token，但那是面向英文场景的经验值；roc_desk 的对话大量是中文（系统
+/// 提示词、用户输入、模型回复都是），一个汉字在 UTF-8 里是 3 字节，真实分词器通常给它
+/// 1-2 个 token，用 4 字节/token 会系统性低估。这里的预算判断"宁可估多、不要估少"——
+/// 估计偏高只会让压缩触发得早一点（多花一次摘要请求），估计偏低才会让真正超限的请求
+/// 放过去被 Provider 拒绝（2026-09 真实复现过）。
 fn estimate_tokens(byte_len: usize) -> usize {
-    byte_len.div_ceil(4)
+    byte_len.div_ceil(3)
 }
 
 /// 把即将从 `self.messages` 里删掉的一批轮次压成一段 2-4 句的摘要——发一次不带
@@ -279,12 +312,21 @@ fn cap_tool_result(text: String) -> String {
 }
 
 impl CodingSession {
-    /// 把上下文限制在一个可预期的内存/token 预算内。删历史时以"用户消息"为边界，
-    /// 因此一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，不会留下
-    /// OpenAI 兼容接口无法接受的孤立 tool message；最前面的 system 提示和项目约定
-    /// 永远不删。真要删的那批轮次不是直接丢弃——会先花一次轻量模型调用把它们压成
-    /// 一段摘要，追加进 `self.messages` 里专门的摘要消息（见 `append_context_summary`），
-    /// 让后续对话还能看到"早前做过什么"，而不是完全没有痕迹。
+    /// 把上下文限制在一个可预期的内存/token 预算内。优先删历史时以"用户消息"为
+    /// 边界整轮删（一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，
+    /// 不会留下 OpenAI 兼容接口无法接受的孤立 tool message；最前面的 system 提示
+    /// 和项目约定永远不删）。
+    ///
+    /// 2026-09 真实复现："继续几轮会话后模型又报 context_too_large"——根因是这套
+    /// 整轮删除的策略只能删"已经有下一条用户消息、已经跑完的完整轮次"，对
+    /// **当前正在跑的这一轮**完全无能为力：如果这一轮本身就带着好几十次工具调用、
+    /// 每次都读了不小的文件/搜索结果，光是这一轮自己积累的 token 就能冲破预算，
+    /// 而循环里找不到"下一条用户消息"作为 `end`，直接 `break` 放弃，请求原样带着
+    /// 超预算的内容发出去，Provider 直接拒绝。codex-core 的压缩（`compact.rs`）是
+    /// 按 token 数触发、不区分"轮次边界"的，这里补上同样的思路：找不到完整轮次可删
+    /// 时，退而求其次，在**当前这一轮内部**找最旧的一组"assistant 工具调用 + 对应
+    /// tool 结果"整体删掉（`trim_oldest_exchange_in_current_round`），只保留这一轮
+    /// 最新的一组不动——模型至少还看得到最近一次工具调用的结果，旧的换成摘要。
     async fn limit_context(&mut self, client: &reqwest::Client, provider: &AiProvider, api_key: &Option<String>) {
         let mut user_turns = self
             .messages
@@ -308,25 +350,77 @@ impl CodingSession {
             else {
                 break;
             };
-            let Some(end) =
-                self.messages
-                    .iter()
-                    .enumerate()
-                    .skip(start + 1)
-                    .find_map(|(index, message)| {
-                        (message["role"].as_str() == Some("user")).then_some(index)
-                    })
-            else {
-                break;
-            };
-            let dropped: Vec<serde_json::Value> = self.messages.drain(start..end).collect();
-            user_turns -= 1;
-            if let Some(summary) =
-                summarize_dropped_turns(&dropped, client, provider, api_key).await
-            {
-                self.append_context_summary(&summary);
+            let end = self
+                .messages
+                .iter()
+                .enumerate()
+                .skip(start + 1)
+                .find_map(|(index, message)| {
+                    (message["role"].as_str() == Some("user")).then_some(index)
+                });
+            match end {
+                Some(end) => {
+                    let dropped: Vec<serde_json::Value> = self.messages.drain(start..end).collect();
+                    user_turns -= 1;
+                    if let Some(summary) =
+                        summarize_dropped_turns(&dropped, client, provider, api_key).await
+                    {
+                        self.append_context_summary(&summary);
+                    }
+                }
+                None => {
+                    if !self
+                        .trim_oldest_exchange_in_current_round(start, client, provider, api_key)
+                        .await
+                    {
+                        // 当前这一轮里已经没有"更旧、可以安全删掉"的工具交换了
+                        // （只剩最新一组，不能动）——没有更多能做的，放弃继续裁剪，
+                        // 避免死循环；请求可能仍然超预算，但已经尽力压缩过。
+                        break;
+                    }
+                }
             }
         }
+    }
+
+    /// 在当前这一轮（`round_start` 是这一轮用户消息的下标）内部，找最旧的一组
+    /// "assistant 工具调用 + 紧随其后的 tool 结果"整体删掉，换成一段摘要——是
+    /// `limit_context` 在"没有完整轮次可删"时的退路（见上面文档）。刻意保留这一轮
+    /// **最新**的一组交换不动：模型至少要能看到刚发生的这次工具调用结果，不能因为
+    /// 压缩把手头正在用的信息也删掉。只剩一组交换（就是最新这组）时没有更旧的可删，
+    /// 返回 `false` 告诉调用方"这里已经没办法再压缩了"。
+    async fn trim_oldest_exchange_in_current_round(
+        &mut self,
+        round_start: usize,
+        client: &reqwest::Client,
+        provider: &AiProvider,
+        api_key: &Option<String>,
+    ) -> bool {
+        let mut exchanges: Vec<(usize, usize)> = Vec::new();
+        let mut i = round_start + 1;
+        while i < self.messages.len() {
+            if self.messages[i]["role"].as_str() == Some("assistant") {
+                let unit_start = i;
+                let mut j = i + 1;
+                while j < self.messages.len() && self.messages[j]["role"].as_str() == Some("tool")
+                {
+                    j += 1;
+                }
+                exchanges.push((unit_start, j));
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        if exchanges.len() <= 1 {
+            return false;
+        }
+        let (unit_start, unit_end) = exchanges[0];
+        let dropped: Vec<serde_json::Value> = self.messages.drain(unit_start..unit_end).collect();
+        if let Some(summary) = summarize_dropped_turns(&dropped, client, provider, api_key).await {
+            self.append_context_summary(&summary);
+        }
+        true
     }
 
     /// 把一段新摘要文本并入 `self.messages` 里专门的摘要消息——用 `CONTEXT_SUMMARY_PREFIX`
@@ -416,7 +510,13 @@ impl CodingSession {
              工具调用总次数是有限的（几十次量级），不是无限预算：面对\"分析整个项目\"这类开放式大任务时，\
              优先用 search_files/list_directory 快速定位最相关的一小批文件（不需要每个文件都读一遍），\
              读完这些就给出结论；不要为了追求\"看得更全\"而无休止地继续搜索/读取，觉得信息已经够回答用户的\
-             问题时就直接总结，而不是再多看几个文件。",
+             问题时就直接总结，而不是再多看几个文件。\
+             \n\n用户的话如果有明显歧义、可能对应两种差别很大的意图（比如一句简短的\"继续\"\"报错了\"\
+             \"确认\"，既可能是在接着上一个没答完的问题往下走，也可能是在描述一件跟上文完全无关的新情况），\
+             不要凭猜测直接选一种理解就展开长篇回答——调用 question 工具，把你想到的几种理解列成\
+             options 让用户选一下，等用户选完再按确定下来的理解继续，比自己猜错了、答非所问、用户还要\
+             再纠正一轮更省事。只有在意图已经足够清楚、只是细节需要你自己判断的情况下，才不需要用这个\
+             工具反复确认——不要把它用成什么都要问一遍的过度谨慎。",
         );
         Self {
             id,
@@ -659,29 +759,110 @@ impl CodingSession {
                 }
                 body
             };
-            let mut req = client.post(&url).json(&body);
-            if let Some(key) = &api_key {
-                req = req.bearer_auth(key);
-            }
             // "停止"按钮：单次请求本身就是这个循环里最容易卡很久的一步（网络慢/
             // 服务端限流排队），所以在这一步单独包一层取消——`req.send()` 败给
             // 取消信号时直接丢弃即可，`reqwest` 的请求 future 被 drop 时会中止
             // 底层连接，不会有资源泄漏。
-            let resp = tokio::select! {
-                biased;
-                result = req.send() => result?,
-                _ = cancel_token.cancelled() => {
-                    return Err(AppError::Internal(
-                        "已停止：用户取消了当前对话轮次".to_string(),
-                    ));
+            // 2026-09 真实复现：请求失败（HTTP 错误/网络错误/响应解析失败）之前
+            // 直接 `return Err(...)`，`self.messages` 里什么痕迹都不留——用户看到
+            // 报错后回一句"报错了，请继续回答上个问题"，下一轮模型看到的对话历史
+            // 是"提了问题→查了一堆东西→用户突然说报错了"，完全没有信号能判断
+            // "报错"指的是"你上次没答完"还是"我自己的程序运行出错了"，往往会理解
+            // 成后者，答非所问。这里在每个失败分支返回之前，先往历史里补一条
+            // system 消息把"刚才这次请求失败了"这件事讲清楚，下一轮就有明确依据。
+            //
+            // 2026-09 用户反馈："GPT 模型经常报错（Selected model is at capacity /
+            // 503），希望有重试机制"——之前是完全不重试的，一次瞬时过载就直接判
+            // 这一轮失败。503/502/504/429 这几个状态码、以及响应体里带
+            // "overloaded"/"at capacity"/"rate limit" 这类字样，基本都是"服务端
+            // 临时顶不住，过会儿再试大概率能成"，不是请求本身有问题，值得自动重试；
+            // 其余 4xx（比如 401 认证失败、400 参数错误）重试没有意义，直接失败。
+            // 重试之间用指数退避（1s/2s/4s）等一下，不是立刻重打，给服务端一点喘息
+            // 空间；等待过程中同样响应取消。
+            let mut retry_count = 0u32;
+            let (resp, body_text) = loop {
+                let mut req = client.post(&url).json(&body);
+                if let Some(key) = &api_key {
+                    req = req.bearer_auth(key);
+                }
+                let send_result = tokio::select! {
+                    biased;
+                    result = req.send() => result,
+                    _ = cancel_token.cancelled() => {
+                        return Err(AppError::Internal(
+                            "已停止：用户取消了当前对话轮次".to_string(),
+                        ));
+                    }
+                };
+                let (status, body_text) = match send_result {
+                    Ok(resp) if resp.status().is_success() => break (Some(resp), String::new()),
+                    Ok(resp) => {
+                        let status = resp.status();
+                        (Some(status), resp.text().await.unwrap_or_default())
+                    }
+                    Err(e) => (None, e.to_string()),
+                };
+                let retryable = match status {
+                    Some(status) => is_retryable_http_status(status),
+                    None => true, // 网络层面的错误（连不上/超时）也值得重试
+                } || is_retryable_error_text(&body_text);
+                if retryable && retry_count < MAX_HTTP_RETRIES {
+                    retry_count += 1;
+                    let _ = app_handle.emit(
+                        "coding:assistant-note",
+                        json!({
+                            "sessionId": self.id,
+                            "text": format!(
+                                "接口响应异常（{}），{} 秒后自动重试第 {}/{} 次……",
+                                status.map(|s| s.to_string()).unwrap_or_else(|| body_text.clone()),
+                                RETRY_BASE_DELAY_SECS * (1u64 << (retry_count - 1)),
+                                retry_count,
+                                MAX_HTTP_RETRIES
+                            ),
+                            "kind": "status"
+                        }),
+                    );
+                    let delay = std::time::Duration::from_secs(
+                        RETRY_BASE_DELAY_SECS * (1u64 << (retry_count - 1)),
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = cancel_token.cancelled() => {
+                            return Err(AppError::Internal(
+                                "已停止：用户取消了当前对话轮次".to_string(),
+                            ));
+                        }
+                    }
+                    continue;
+                }
+                break (None, format!("{}: {body_text}", status.map(|s| s.to_string()).unwrap_or_else(|| "连接失败".to_string())));
+            };
+            let Some(resp) = resp else {
+                self.messages.push(json!({
+                    "role": "system",
+                    "content": format!(
+                        "[系统提示] 上一次请求失败（{body_text}），重试 {retry_count} 次后仍未成功，\
+                         没有得到正常回复，上面那个问题还没有被回答。如果用户接下来说\"继续\"\
+                         \"报错了请继续回答\"之类的话，是指继续回答上面被打断的那个问题，不是\
+                         在描述一个新的、跟这次请求无关的错误。"
+                    )
+                }));
+                return Err(AppError::Connection(body_text));
+            };
+            body = match resp.json().await {
+                Ok(b) => b,
+                Err(e) => {
+                    self.messages.push(json!({
+                        "role": "system",
+                        "content": format!(
+                            "[系统提示] 上一次请求返回的内容解析失败（{e}），没有得到正常回复，\
+                             上面那个问题还没有被回答。如果用户接下来说\"继续\"之类的话，是指\
+                             继续回答上面被打断的那个问题。"
+                        )
+                    }));
+                    return Err(AppError::Internal(format!("解析响应失败: {e}")));
                 }
             };
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(AppError::Connection(format!("HTTP {status}: {body}")));
-            }
-            body = resp.json().await?;
             if let Some((prompt, completion, total)) = extract_token_usage(&body, &provider.wire_api)
             {
                 turn_prompt_tokens += prompt;
@@ -779,7 +960,16 @@ impl CodingSession {
                 } else {
                     tools::parse_tool_call(&fn_name, fn_args)
                 };
-                let result_text = match call_result {
+                // 2026-09 真实复现：远程目标下 `search_files` 直接把 `rg`/`grep`
+                // 的原始输出整段返回（`Local` 分支自己限了 50 条结果，`Remote`/
+                // `Agent` 分支当时漏了同样的限制），一次搜到大量匹配时单条工具
+                // 结果能到两千多万字符，Responses API 直接报
+                // "input[i].output: string too long" 拒绝整个请求——`cap_tool_result`
+                // 之前只在 `read_file`/`list_directory` 这两个调用点手动套了一层，
+                // 不是每个工具分支都记得套。这里挪到 `execute_tool` 唯一的结果
+                // 汇聚点统一兜底，不管以后新增哪个工具、哪个分支忘记自己限制长度，
+                // 单条工具结果都不可能超过 `MAX_TOOL_RESULT_CHARS`。
+                let result_text = cap_tool_result(match call_result {
                     Ok(call) => self
                         .execute_tool(
                             call,
@@ -795,7 +985,7 @@ impl CodingSession {
                         .await
                         .unwrap_or_else(|e| format!("工具执行出错：{e}")),
                     Err(e) => format!("工具调用参数解析失败：{e}"),
-                };
+                });
 
                 // 带上 `result_text`：之前这个事件只报"哪个工具跑完了"，实际拿到的
                 // 结果只存进 `self.messages` 发给模型，前端完全看不到——用户反馈
@@ -1082,8 +1272,13 @@ impl CodingSession {
                 let session = ssh_pool.get_or_connect(*connection_id).await?;
                 let quoted_pattern = crate::log::remote::shell_quote(pattern);
                 let quoted_path = crate::log::remote::shell_quote(path);
+                // 2026-09 真实复现：这条命令原来没有任何行数上限，一次搜到大量
+                // 匹配时单条工具结果能到两千多万字符，直接把 Responses API 的单
+                // 字段长度上限（10MB）冲爆，整个请求被拒绝——`Local` 分支自己
+                // 限了 50 条结果，这里当时漏了同样的限制。`head -n 200` 让远端
+                // 自己截断，比"整段传回来本地再截"省一次几十 MB 的 SSH 往返。
                 let cmd = format!(
-                    "rg -n -F -- {quoted_pattern} {quoted_path} 2>/dev/null || grep -rn -F -- {quoted_pattern} {quoted_path} 2>/dev/null"
+                    "rg -n -F -- {quoted_pattern} {quoted_path} 2>/dev/null | head -n 200 || grep -rn -F -- {quoted_pattern} {quoted_path} 2>/dev/null | head -n 200"
                 );
                 session.exec(&cmd).await
             }
@@ -1109,9 +1304,16 @@ impl CodingSession {
                         if results.is_empty() {
                             return Ok("没有匹配结果".to_string());
                         }
+                        // 跟 `Local`/`Remote` 分支同一个理由（见上面 `Remote` 分支的
+                        // 注释）：Agent 协议本身没有 limit 参数，返回多少条这里就收
+                        // 多少条，客户端这层至少不把它拼成一个无上限的大字符串——
+                        // 200 条封顶，跟 `Remote` 分支的 `head -n 200` 对齐。
                         let mut lines = Vec::new();
-                        for file in results {
+                        'outer: for file in results {
                             for m in file.matches {
+                                if lines.len() >= 200 {
+                                    break 'outer;
+                                }
                                 lines.push(format!(
                                     "{}:{}:{}",
                                     file.path,
