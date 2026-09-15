@@ -10,7 +10,14 @@ interface ProviderManagerDialogProps {
   onClose: (hasDraft: boolean) => void;
 }
 
-const emptyForm: AiProviderInput = { name: "", api_base: "", api_key: "", model: "", is_local: false };
+const emptyForm: AiProviderInput = {
+  name: "",
+  api_base: "",
+  api_key: "",
+  model: "",
+  is_local: false,
+  wire_api: "chat_completions",
+};
 interface ProviderDraft {
   form: AiProviderInput;
   editingId: string | null;
@@ -57,7 +64,14 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
     const p = providers.find((x) => x.id === id);
     if (!p) return;
     setEditingId(id);
-    const next = { name: p.name, api_base: p.api_base, api_key: "", model: p.model, is_local: p.is_local };
+    const next = {
+      name: p.name,
+      api_base: p.api_base,
+      api_key: "",
+      model: p.model,
+      is_local: p.is_local,
+      wire_api: p.wire_api || "chat_completions",
+    };
     setForm(next);
     providerDraft = { form: next, editingId: id };
   };
@@ -160,6 +174,16 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
           <input type="checkbox" checked={form.is_local} onChange={(e) => set("is_local", e.target.checked)} />
           <label className="form-label" style={{ margin: 0 }}>
             本地模型（不受数据出境脱敏策略约束）
+          </label>
+        </div>
+        <div className="form-row" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={form.wire_api === "responses"}
+            onChange={(e) => set("wire_api", e.target.checked ? "responses" : "chat_completions")}
+          />
+          <label className="form-label" style={{ margin: 0 }}>
+            使用 Responses API（而不是 Chat Completions，官方 OpenAI/Azure/Bedrock 部分新模型需要）
           </label>
         </div>
         <div className="form-actions">

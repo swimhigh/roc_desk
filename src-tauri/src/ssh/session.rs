@@ -34,10 +34,10 @@ enum ChannelCommand {
 pub struct SshSession {
     handle: Handle<SshHandler>,
     channels: Mutex<HashMap<Uuid, mpsc::UnboundedSender<ChannelCommand>>>,
-    /// 串行化 `exec()`——2026-09 用户实测复现并定位：codex 引擎会并行派发多个
-    /// 工具调用（codex-core 内部确实有个叫 `tools::parallel` 的模块），对同一条
-    /// SSH 连接几乎同时发起多个 `channel_open_session()`；自研引擎的工具调用
-    /// 天生顺序执行，从没这样用过，也就从没触发过这个问题。日志时间戳证实过
+    /// 串行化 `exec()`——2026-09 用户实测复现并定位：某个 AI 引擎会并行派发多个
+    /// 工具调用，对同一条 SSH 连接几乎同时发起多个 `channel_open_session()`；
+    /// 自研引擎的工具调用天生顺序执行，从没这样用过，也就从没触发过这个问题。
+    /// 日志时间戳证实过
     /// 并发（两次 `run_command` 调用相差不到 200 微秒），并发触发之后每一个都
     /// 卡死在拿到 channel 之前，连黑名单检查这种纯同步代码都没能继续往下走——
     /// 说明问题出在更底层，不是我们自己这几行代码的逻辑问题，像是 `russh` 的
@@ -234,7 +234,7 @@ impl SshSession {
     /// 执行一次性命令并收集完整输出（AI 编程助手 `run_command` / 高危命令确认后走这个接口，
     /// 不复用终端 Shell Channel，见 DESIGN.md §3.8.4）。
     ///
-    /// 内部用 `exec_lock` 把同一条连接上的多次 `exec()` 串行化——codex 引擎会
+    /// 内部用 `exec_lock` 把同一条连接上的多次 `exec()` 串行化——某个 AI 引擎会
     /// 并行派发多个工具调用，对同一条 SSH 连接几乎同时发起多个
     /// `channel_open_session()`，2026-09 用户实测复现这会导致每一路都卡死在
     /// 拿到 channel 之前；串行化之后退回到和自研引擎一样"同一时刻只有一个

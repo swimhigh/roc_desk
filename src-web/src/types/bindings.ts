@@ -251,6 +251,7 @@ export interface AiProvider {
   api_key_ref: string | null;
   model: string;
   is_local: boolean;
+  wire_api: string;
   created_at: string;
 }
 
@@ -260,6 +261,7 @@ export interface AiProviderInput {
   api_key: string | null;
   model: string;
   is_local: boolean;
+  wire_api: string;
 }
 
 export type ChatRole = "system" | "user" | "assistant";
@@ -411,6 +413,10 @@ export interface CodingToolCallEvent {
    * 真实复现"看起来在循环"的问题时，只有工具名完全看不出是不是在反复处理
    * 同一个东西，加上这个字段才能一眼确认是真循环还是正常地一个个探索。 */
   detail?: string | null;
+  /** 只有 `coding:tool-call-end` 才带——这次调用实际执行完拿到的结果文本
+   * （`run_command` 是标准输出/错误合并、`read_file`/`search_files` 之类是它们
+   * 各自的返回内容），用户点开时间线里已完成的这一行时展示出来。 */
+  output?: string | null;
 }
 
 /** 模型在同一条消息里，工具调用之外顺带写的说明性文字（2026-08-18 需求："编程
@@ -419,6 +425,16 @@ export interface CodingAssistantNoteEvent {
   sessionId: string;
   text: string;
   kind?: "model" | "status";
+}
+
+/** 每次向模型发起请求后拿到的 token 消耗量（chat/completions 的 `usage` 或
+ * Responses API 的 `usage`，两种协议统一成同一个形状再广播），前端渲染成时间线
+ * 里的一条小字提示。 */
+export interface CodingTokenUsageEvent {
+  sessionId: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface CodingHistorySummary {

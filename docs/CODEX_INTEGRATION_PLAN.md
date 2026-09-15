@@ -1,5 +1,11 @@
 # 引入 codex-rs 重构 AI 编程助手模块 —— 方案（v2）
 
+> 2026-09：这套方案已回退，相关代码（`codex-engine` crate、`vendor/codex` 子模块、
+> `codex_exec_target.rs` 等）已全部删除——真实 SSH 远程目标实测发现 codex-core 的
+> `apply_patch` 在远程目标下不经过 roc_desk 自己的确认/撤销状态机，可信度不达标；
+> 老引擎改为直接支持 Responses API（见 `src-tauri/src/coding/session.rs`）弥补当初
+> 引入 codex-core 的真实动机（协议覆盖面）。本文档仅作历史记录保留，不反映当前架构。
+
 > 本文档设计如何把 OpenAI 开源的 Codex（`F:\code\开源\codex`，Rust workspace，Apache-2.0）深度嵌入 roc_desk，替换现有 AI 编程助手模块里"自己拼 HTTP 请求 + 手写工具循环"的对话引擎，同时保留 roc_desk 现有的 Diff/Accept/Undo 状态机、按轮次批量操作、完全授权模式、历史会话续聊、以及本地/SSH/Windows Agent 三态执行能力。
 >
 > 这是 v2 版本，基于两轮调研更新：第一轮确定了整体可行性和风险点，第二轮针对两边仓库的最新代码做了增量核实，其中一个发现改变了原方案的关键判断（见"§2 本轮最重要的新发现"）。v1 讨论过程中确定的选型：**双引擎架构**（codex 只接管 OpenAI/Azure/Bedrock/Ollama，国内 OpenAI 兼容渠道继续走现有自研实现）+ **深度源码嵌入**（`codex-core` 作为 path 依赖直接嵌入 roc_desk 进程，而不是包成 sidecar 子进程）。

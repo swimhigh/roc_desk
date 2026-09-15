@@ -35,6 +35,12 @@ pub struct ChangeStore {
     /// "完全授权模式"的实时状态：开启后 AI 提出的文件改动直接落盘，并跳过普通
     /// 命令确认。原子值使开关能在 AI 任务运行中立即影响后续工具调用。
     pub full_auto: AtomicBool,
+    /// "自动放行只读命令"的实时状态——同样的原因用原子值（不是 `CodingSession`
+    /// 的普通字段）：`send_message` 处理一轮对话期间会一直持有 `CodingSession`
+    /// 自己那把锁，普通字段的话用户在 AI 任务运行中点这个开关，实际是在排队等
+    /// 当前这一轮说完才能拿到锁改成，界面上看起来"点了没反应"，跟 `full_auto`
+    /// 2026-09 修过的是同一类问题（见上面 `full_auto` 和本结构体顶部的文档）。
+    pub auto_allow_readonly: AtomicBool,
     changes: Vec<FileChange>,
     undo_stack: Vec<FileChange>,
 }
@@ -59,6 +65,7 @@ impl ChangeStore {
             git_repo,
             auto_git_commit: false,
             full_auto: AtomicBool::new(false),
+            auto_allow_readonly: AtomicBool::new(false),
             changes: Vec::new(),
             undo_stack: Vec::new(),
         }

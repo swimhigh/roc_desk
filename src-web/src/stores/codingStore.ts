@@ -18,6 +18,7 @@ import type {
   CodingSessionInfo,
   CodingToolCallEvent,
   CodingTodoUpdateEvent,
+  CodingTokenUsageEvent,
   FileChange,
   CodingHistorySummary,
   McpServer,
@@ -64,10 +65,11 @@ export type TimelineEntry =
    * 区分开（2026-08-18 需求，见 CodingAssistantNoteEvent 的注释）。 */
   | { kind: "note"; id: string; text: string }
   | { kind: "progress"; id: string; text: string }
-  | { kind: "tool"; id: string; tool: string; running: boolean; detail?: string | null; startedAt?: number }
+  | { kind: "tool"; id: string; tool: string; running: boolean; detail?: string | null; startedAt?: number; output?: string | null; expanded?: boolean }
   | { kind: "change"; id: string; changeId: string }
   | { kind: "blocked"; id: string; command: string }
-  | { kind: "git"; id: string; path: string; output: string };
+  | { kind: "git"; id: string; path: string; output: string }
+  | { kind: "usage"; id: string; promptTokens: number; completionTokens: number; totalTokens: number; isTurnTotal: boolean };
 
 /** 有界保活的 LRU 上限——同时"活着"的工作区编程会话数（终端侧
  * `terminalStore.ts` 用同一个常量、同一套策略，两边各自独立维护，不共享一份
@@ -96,7 +98,7 @@ interface CodingState {
   optimizing: boolean;
   confirmRequest: CommandConfirmRequest | null;
   /** 排在 `confirmRequest` 后面、还没展示出来的待确认请求——2026-09 用户实测
-   * 复现：codex-core 会并发发起多个工具调用（比如远程 SSH 目标下一连串
+   * 复现：AI 引擎会并发发起多个工具调用（比如远程 SSH 目标下一连串
    * `run_command`），每个都各自触发一次 `coding:command-confirm-request`。
    * `confirmRequest` 之前是单个可空字段，事件监听器直接整体覆盖，第二个
    * 确认请求一来就把还没被用户处理的第一个悄悄顶掉——被顶掉那个在后端
@@ -153,6 +155,9 @@ interface CodingState {
   optimizePrompt: (text: string) => Promise<string>;
   acceptChange: (changeId: string) => Promise<void>;
   rejectChange: (changeId: string) => Promise<void>;
+  /** 点开/收起时间线里某条已完成工具调用的执行结果——纯前端展示状态，不涉及
+   * 任何后端往返。 */
+  toggleToolOutput: (id: string) => void;
   undoChange: (changeId: string) => Promise<void>;
   redoChange: () => Promise<void>;
   /** 撤销某一轮对话里 AI 做出的全部已应用改动（参考 Cursor/Windsurf 的按轮次
@@ -327,6 +332,14 @@ export const useCodingStore = create<CodingState>((set, get) => ({
       set({ optimizing: false, error: formatError(e) });
       return text;
     }
+  },
+
+  toggleToolOutput: (id) => {
+    set((s) => ({
+      timeline: s.timeline.map((entry) =>
+        entry.kind === "tool" && entry.id === id ? { ...entry, expanded: !entry.expanded } : entry,
+      ),
+    }));
   },
 
   acceptChange: async (changeId) => {
@@ -757,7 +770,7 @@ export function registerCodingListeners(): Promise<() => void> {
         const realIdx = s.timeline.length - 1 - idx;
         const timeline = [...s.timeline];
         const entry = timeline[realIdx];
-        if (entry.kind === "tool") timeline[realIdx] = { ...entry, running: false };
+        if (entry.kind === "tool") timeline[realIdx] = { ...entry, running: false, output: event.payload.output };
         return { timeline };
       });
       checkpointHistory();
@@ -768,6 +781,41 @@ export function registerCodingListeners(): Promise<() => void> {
         timeline: [...s.timeline, event.payload.kind === "status"
           ? { kind: "progress", id: nextId(), text: event.payload.text }
           : { kind: "note", id: nextId(), text: event.payload.text }],
+      }));
+    }),
+    listen<CodingTokenUsageEvent>("coding:token-usage", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      useCodingStore.setState((s) => ({
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "usage",
+            id: nextId(),
+            promptTokens: event.payload.promptTokens,
+            completionTokens: event.payload.completionTokens,
+            totalTokens: event.payload.totalTokens,
+            isTurnTotal: false,
+          },
+        ],
+      }));
+    }),
+    // 一整轮对话（一条用户消息到最终给出结论，中间可能跑了好几次工具调用/API
+    // 请求）结束时的汇总，和上面单次请求的 `coding:token-usage` 是两个不同粒度
+    // 的事件——单次请求那条在过程中当进度参考，这条是"这一轮总共花了多少"。
+    listen<CodingTokenUsageEvent>("coding:token-usage-summary", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      useCodingStore.setState((s) => ({
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "usage",
+            id: nextId(),
+            promptTokens: event.payload.promptTokens,
+            completionTokens: event.payload.completionTokens,
+            totalTokens: event.payload.totalTokens,
+            isTurnTotal: true,
+          },
+        ],
       }));
     }),
     listen<CodingFileChangeEvent>("coding:file-change", (event) => {
@@ -801,7 +849,7 @@ export function registerCodingListeners(): Promise<() => void> {
         kind: event.payload.kind ?? "command",
         matchKey: event.payload.matchKey,
       };
-      // codex-core 可能并发发起多个工具调用，每个都各自触发一次这个事件——
+      // AI 引擎可能并发发起多个工具调用，每个都各自触发一次这个事件——
       // 已经有一个在展示的话排到队列末尾，不能直接覆盖 `confirmRequest`，
       // 否则被覆盖那个在后端永远等不到回应（见 `confirmQueue` 的文档注释，
       // 2026-09 用户实测复现的"AI 工作卡住不回应"）。

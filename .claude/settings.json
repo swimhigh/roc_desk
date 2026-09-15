@@ -15,7 +15,13 @@
       "Bash(git push *)",
       "Bash(git tag *)",
       "Bash(gh run *)",
-      "PowerShell(gh run list --repo swimhigh/roc_desk --limit 5 2>&1)"
+      "PowerShell(gh run list --repo swimhigh/roc_desk --limit 5 2>&1)",
+      "Bash(tasklist //FI \"IMAGENAME eq roc_desk.exe\")",
+      "Bash(git submodule *)",
+      "Bash(git rm *)",
+      "Bash(rm -f .gitmodules)",
+      "Bash(rm -rf codex-engine)",
+      "Bash(rm -f src-tauri/src/coding/codex_exec_target.rs)"
     ]
   }
 }

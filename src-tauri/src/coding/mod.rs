@@ -1,5 +1,4 @@
 pub mod changes;
-pub mod codex_exec_target;
 pub mod diff;
 pub mod git_ops;
 pub mod guard;
@@ -19,19 +18,6 @@ pub use changes::ChangeStore;
 pub use session::{
     ChangeStatus, ChatAttachment, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
 };
-
-/// 双引擎路由（docs/CODEX_INTEGRATION_PLAN.md Phase 6，2026-09 改为"codex 为核心"）：
-/// `CodexCoreEngine` 现在是默认引擎，任何 provider 都先尝试挂载，`attach_codex_engine`
-/// 初始化失败（或者后续第一次请求发现协议对不上）才落回自研引擎——不再按 `api_base`
-/// 字符串特征搞白名单。之所以还留着这个函数（而不是直接删掉调用点），是因为
-/// `codex-core` 的模型协议层写死了 OpenAI Responses API（`WireApi` 枚举现在只剩
-/// `Responses` 一个值，Chat Completions 支持已被官方砍掉，见
-/// `vendor/codex/codex-rs/model-provider-info/src/lib.rs` 的 `CHAT_WIRE_API_REMOVED_ERROR`）：
-/// 纯 Chat Completions 协议的第三方中转天生跟 codex-core 说不通话，这不是 roc_desk
-/// 这边能补的能力缺口，只能指望初始化/首次请求失败后的静默回退兜底。
-pub(crate) fn routes_to_codex_engine(_provider: &crate::ai::AiProvider) -> bool {
-    true
-}
 
 /// 等待前端响应的 `run_command` 确认请求（DESIGN.md §3.8.2.1），和
 /// `ssh::known_hosts::TrustPromptRegistry` 是同一套 oneshot 模式，分开建一个类型

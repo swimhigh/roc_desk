@@ -1098,6 +1098,7 @@
 .tool-file-ref { padding: 0; color: var(--text-secondary); opacity: 0.8; background: none; font: inherit; cursor: pointer; }
 .tool-file-ref:hover { color: var(--accent); opacity: 1; text-decoration: underline; }
 .tool-detail-cmd { font-family: var(--font-mono); font-size: 0.95em; padding: 1px 6px; border-radius: 4px; background: var(--bg-terminal); color: var(--shell-cmd); }
+.tool-output-pane { margin: 4px 0 4px 16px; padding: 6px 8px; border-radius: 4px; background: var(--bg-terminal); color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; }
 
 /* === Coding Agent conversation (Codex/OpenCode inspired hierarchy) === */
 .agent-model-select {

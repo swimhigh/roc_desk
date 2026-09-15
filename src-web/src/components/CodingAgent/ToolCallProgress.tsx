@@ -1,5 +1,5 @@
 import React from "react";
-import { Check } from "lucide-react";
+import { Check, ChevronDown, ChevronRight } from "lucide-react";
 
 interface ToolCallProgressProps {
   tool: string;
@@ -13,6 +13,12 @@ interface ToolCallProgressProps {
    * 一眼就能确认。 */
   detail?: string | null;
   onOpenFile?: () => void;
+  /** 这次调用实际拿到的结果文本（`coding:tool-call-end` 带回来的）——2026-09
+   * 用户需求："想点一下时间线里已完成的命令，看看它到底执行出了什么"。只有
+   * `done` 且有内容时才会出现可展开的入口，运行中/没有输出内容的调用不受影响。 */
+  output?: string | null;
+  expanded?: boolean;
+  onToggleOutput?: () => void;
 }
 
 export function toolLabel(tool: string): string {
@@ -34,20 +40,45 @@ export function toolLabel(tool: string): string {
  * （SSH 往返有延迟）；本地目标如果单次调用 < 300ms，由调用方直接不渲染这个组件，
  * 阈值属于业务决策，组件本身只负责展示。
  */
-export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({ tool, elapsedMs, done, detail, onOpenFile }) => {
+export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({
+  tool,
+  elapsedMs,
+  done,
+  detail,
+  onOpenFile,
+  output,
+  expanded,
+  onToggleOutput,
+}) => {
   const isCommand = tool === "run_command";
+  const canExpand = Boolean(done && output && onToggleOutput);
   return (
-    <div className="tool-call-progress">
-      {done ? <Check style={{ width: 10, height: 10, color: "var(--text-secondary)" }} /> : <span className="spinner" />}
-      {done ? `已完成 ${toolLabel(tool)}` : `正在${toolLabel(tool)} · ${(elapsedMs / 1000).toFixed(1)}s`}
-      {detail && (
-        onOpenFile ? (
-          <button className="tool-file-ref" onClick={onOpenFile}>· {detail}</button>
-        ) : isCommand ? (
-          <code className="tool-detail-cmd">{detail}</code>
-        ) : (
-          <span style={{ opacity: 0.7 }}>· {detail}</span>
-        )
+    <div>
+      <div
+        className="tool-call-progress"
+        style={canExpand ? { cursor: "pointer" } : undefined}
+        onClick={canExpand ? onToggleOutput : undefined}
+        title={canExpand ? (expanded ? "点击收起执行结果" : "点击查看执行结果") : undefined}
+      >
+        {done ? <Check style={{ width: 10, height: 10, color: "var(--text-secondary)" }} /> : <span className="spinner" />}
+        {done ? `已完成 ${toolLabel(tool)}` : `正在${toolLabel(tool)} · ${(elapsedMs / 1000).toFixed(1)}s`}
+        {detail && (
+          onOpenFile ? (
+            <button className="tool-file-ref" onClick={(e) => { e.stopPropagation(); onOpenFile(); }}>· {detail}</button>
+          ) : isCommand ? (
+            <code className="tool-detail-cmd">{detail}</code>
+          ) : (
+            <span style={{ opacity: 0.7 }}>· {detail}</span>
+          )
+        )}
+        {canExpand && (
+          expanded
+            ? <ChevronDown style={{ width: 12, height: 12, color: "var(--text-secondary)", marginLeft: "auto", flexShrink: 0 }} />
+            : <ChevronRight style={{ width: 12, height: 12, color: "var(--text-secondary)", marginLeft: "auto", flexShrink: 0 }} />
+        )}
+      </div>
+      {expanded && output && (
+        <pre className="tool-output-pane">{output}</pre>
       )}
     </div>
   );

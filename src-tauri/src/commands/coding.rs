@@ -217,7 +217,9 @@ async fn session_info(session: &CodingSession) -> CodingSessionInfo {
         provider_id: session.provider_id,
         mode: session.mode,
         target: session.target.clone(),
-        auto_allow_readonly: session.auto_allow_readonly,
+        auto_allow_readonly: store
+            .auto_allow_readonly
+            .load(std::sync::atomic::Ordering::Relaxed),
         git_repo: store.git_repo(),
         auto_git_commit: store.auto_git_commit,
         full_auto: store.full_auto.load(std::sync::atomic::Ordering::Relaxed),
@@ -230,44 +232,17 @@ async fn session_info(session: &CodingSession) -> CodingSessionInfo {
 #[tauri::command]
 pub async fn coding_set_provider(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<(), AppError> {
-    let Some(provider) = state.ai_provider_manager.get(provider_id)? else {
+    let Some(_provider) = state.ai_provider_manager.get(provider_id)? else {
         return Err(AppError::NotFound(format!(
             "ai provider not found: {provider_id}"
         )));
     };
     let session = get_session(&state, workspace_id).await?;
-    let change_store = get_change_store(&state, workspace_id).await?;
     let mut guard = session.lock().await;
     guard.provider_id = provider_id;
-    // 切换 provider 时，会话之前若已经挂了 `CodexCoreEngine`，那个引擎是绑定着
-    // 切换前那个 provider 的 api_key/model/base_url 构造出来的——`send_message`
-    // 的 codex 分支只看 `self.codex_engine.is_some()`，不会重新读 `provider_id`
-    // 选引擎，所以不重新挂的话请求会继续悄悄发到旧 provider（2026-09 用户反馈：
-    // 切换 provider 后同一会话"感觉不正常"，新建会话换新 provider 却是正常的——
-    // 根因就是这里，新会话走的是 `build_new_session` 里的挂载逻辑，是新构造的）。
-    guard.detach_codex_engine();
-    if crate::coding::routes_to_codex_engine(&provider) {
-        if let Ok(Some(api_key)) = state.ai_provider_manager.resolve_api_key(&provider).await {
-            if let Err(e) = attach_codex_engine(
-                &mut guard,
-                &provider,
-                api_key,
-                &change_store,
-                &state,
-                &app_handle,
-            )
-            .await
-            {
-                tracing::warn!(
-                    "workspace {workspace_id}: 切换 provider 后 codex engine 初始化失败，回退到自研引擎: {e}"
-                );
-            }
-        }
-    }
     Ok(())
 }
 
@@ -286,7 +261,6 @@ async fn build_new_session(
     provider_id: Uuid,
     resume_recent: bool,
     override_id: Option<Uuid>,
-    app_handle: &AppHandle,
 ) -> Result<(CodingSession, Arc<Mutex<ChangeStore>>), AppError> {
     let workspaces = state.workspaces.read().await;
     let handle = workspaces
@@ -364,26 +338,6 @@ async fn build_new_session(
     session.apply_project_memory(memory);
     session.apply_skills(skills);
 
-    // 双引擎路由（docs/CODEX_INTEGRATION_PLAN.md Phase 3/4/6，2026-09 改为"codex 为核心"）：
-    // 不再局限于 `CodingTarget::Local`——`SessionExecTarget`（`codex_exec_target.rs`）
-    // 已经按目标类型（Local/Remote-SSH/Agent-Windows）翻译 codex-core 的 `cwd`/路径，
-    // Local/Remote/Agent 三态都默认尝试挂载 `CodexCoreEngine`；任何一步失败（初始化
-    // 报错、或者 provider 协议本身跟 codex-core 写死的 Responses API 不兼容）都静默
-    // 回退到自研引擎，不能因为这条路径的问题让"开始 AI 会话"本身失败。
-    if let Ok(Some(provider)) = state.ai_provider_manager.get(provider_id) {
-        if crate::coding::routes_to_codex_engine(&provider) {
-            match state.ai_provider_manager.resolve_api_key(&provider).await {
-                Ok(Some(api_key)) => {
-                    if let Err(e) = attach_codex_engine(&mut session, &provider, api_key, &change_store, state, app_handle).await {
-                        tracing::warn!("workspace {workspace_id}: codex engine 初始化失败，回退到自研引擎: {e}");
-                    }
-                }
-                Ok(None) => tracing::warn!("workspace {workspace_id}: provider {} 命中 codex 路由但没有配置 API Key，回退到自研引擎", provider.name),
-                Err(e) => tracing::warn!("workspace {workspace_id}: 读取 API Key 失败，回退到自研引擎: {e}"),
-            }
-        }
-    }
-
     if resume_recent {
         if let Ok(histories) = history_list_with_import(state, workspace_id).await {
             if let Some(latest) = histories.first() {
@@ -409,98 +363,10 @@ async fn build_new_session(
     Ok((session, change_store))
 }
 
-/// 构造并挂载 `CodexCoreEngine`——起一个专属的 `RocDeskExecServer`（本地
-/// loopback WebSocket，见 `codex-engine` crate），把 codex-core 的 `fs/*`/
-/// `process/*` 请求路由到 `SessionExecTarget`（复用现有 `ChangeStore`/权限规则
-/// 引擎），再用 roc_desk 自己管理的 API Key 构造 `ThreadManager`/`CodexThread`。
-/// `codex_home` 用本机临时目录、按 session id 分开，不是用户全局的 `~/.codex`
-/// ——不需要和真的装了官方 codex CLI 的用户产生状态冲突，`Config.ephemeral =
-/// true` 也没打算依赖这份状态跨进程重启存活。
-async fn attach_codex_engine(
-    session: &mut CodingSession,
-    provider: &crate::ai::AiProvider,
-    api_key: String,
-    change_store: &Arc<Mutex<ChangeStore>>,
-    state: &State<'_, AppState>,
-    app_handle: &AppHandle,
-) -> Result<(), AppError> {
-    let turn_id = Arc::new(std::sync::Mutex::new(Uuid::new_v4()));
-    let codex_home = std::env::temp_dir()
-        .join("roc_desk")
-        .join("codex_home")
-        .join(session.id.to_string());
-    // codex-core 内部用 `AbsolutePathBuf`/`PathUri` 处理 `cwd`，这两个类型按"运行
-    // roc_desk 的这台宿主机（Windows）的原生路径语法"解析——对 `CodingTarget::Local`
-    // 这没问题（`workspace_root` 本来就是本机真实路径）；但对 Remote(SSH)/Agent 这种
-    // 远程目标，`workspace_root` 是远端主机上的路径（比如 SSH 上的
-    // `/data/lipeng/kgmscli`），不是 Windows 绝对路径语法，直接传给 codex-core 会被
-    // 它内部的路径归一化按 Windows 语义强行拼出一个跟真实远程路径毫不相干的本机路径。
-    // 这里改传一个真实存在于本机磁盘的占位目录哄 codex-core——它自己从不读写这个
-    // 目录的内容，所有 `fs/*`/`process/*` 请求最终都会经过 `ExecTarget` 转发到
-    // SSH/Agent，`SessionExecTarget::resolve_workspace_path` 负责把"相对这个占位
-    // 目录的路径"翻译回真正的远程 `workspace_root`。
-    let local_cwd_placeholder = if matches!(session.target, CodingTarget::Local) {
-        None
-    } else {
-        let placeholder = codex_home.join("cwd");
-        tokio::fs::create_dir_all(&placeholder)
-            .await
-            .map_err(|e| AppError::Internal(format!("创建 codex cwd 占位目录失败: {e}")))?;
-        Some(placeholder)
-    };
-    let engine_cwd = local_cwd_placeholder
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from(&session.workspace_root));
-    let exec_target: Arc<dyn codex_engine::ExecTarget> =
-        Arc::new(crate::coding::codex_exec_target::SessionExecTarget::new(
-            session.id,
-            session.workspace_root.clone(),
-            session.target.clone(),
-            local_cwd_placeholder,
-            session.codex_mode.clone(),
-            session.codex_auto_allow_readonly.clone(),
-            session.file_ops.clone(),
-            change_store.clone(),
-            turn_id.clone(),
-            state.ssh_pool.clone(),
-            state.agent_pool.clone(),
-            state.audit_log.clone(),
-            state.command_confirms.clone(),
-            state.permission_rules.clone(),
-            app_handle.clone(),
-        ));
-    let exec_server = codex_engine::RocDeskExecServer::bind(exec_target)
-        .await
-        .map_err(|e| AppError::Internal(format!("exec-server bind: {e}")))?;
-    let options = codex_engine::CodexCoreEngineOptions {
-        api_key,
-        model: Some(provider.model.clone()),
-        // roc_desk 配置的 provider 永远传自己的 `api_base`，不用 codex 内建的
-        // 官方 OpenAI provider——即使 URL 命中了 `routes_to_codex_engine` 的
-        // "看起来像官方/Azure/Bedrock" 启发式，也应该按用户实际配置的地址请求，
-        // 而不是悄悄地打真正的 api.openai.com。
-        base_url: Some(provider.api_base.clone()),
-        codex_home,
-        cwd: engine_cwd,
-        exec_server_url: exec_server.websocket_url(),
-        environment_id: format!("roc-desk-{}", session.id),
-    };
-    // `CodexCoreEngineHandle::spawn`（不是直接 `CodexCoreEngine::new`）——见
-    // codex-engine/src/engine.rs 顶部注释：codex-core 的深层异步调用链在默认
-    // 线程栈大小下会栈溢出（Windows 上是进程级致命错误），必须挪到专用大栈
-    // 线程上跑，这里只是异步等一个"初始化完成"的信号。
-    let engine = codex_engine::CodexCoreEngineHandle::spawn(options)
-        .await
-        .map_err(|e| AppError::Internal(format!("codex core engine: {e}")))?;
-    session.attach_codex_engine(engine, exec_server, turn_id);
-    Ok(())
-}
-
 /// 自动绑定当前工作区打开（或复用已有的）编程助手会话（DESIGN.md §3.8.1）。
 #[tauri::command]
 pub async fn coding_start(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -549,7 +415,7 @@ pub async fn coding_start(
     }
 
     let (session, change_store) =
-        build_new_session(&state, workspace_id, provider_id, true, None, &app_handle).await?;
+        build_new_session(&state, workspace_id, provider_id, true, None).await?;
     let info = session_info(&session).await;
     state
         .coding_sessions
@@ -567,7 +433,6 @@ pub async fn coding_start(
 #[tauri::command]
 pub async fn coding_new_session(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -579,7 +444,7 @@ pub async fn coding_new_session(
     state.coding_sessions.write().await.remove(&workspace_id);
     state.coding_changes.write().await.remove(&workspace_id);
     let (session, change_store) =
-        build_new_session(&state, workspace_id, provider_id, false, None, &app_handle).await?;
+        build_new_session(&state, workspace_id, provider_id, false, None).await?;
     let info = session_info(&session).await;
     state
         .coding_sessions
@@ -615,27 +480,26 @@ pub async fn coding_set_mode(
     let session = get_session(&state, workspace_id).await?;
     let mut session = session.lock().await;
     session.mode = mode;
-    session.codex_mode.store(
-        match mode {
-            CodingMode::Plan => 0,
-            CodingMode::Build => 1,
-        },
-        std::sync::atomic::Ordering::Relaxed,
-    );
     Ok(())
 }
 
+/// "自动放行只读命令"开关——走独立的 `coding_changes` 锁，不碰 `CodingSession`
+/// 自己那把锁（和 `coding_set_full_auto`/`coding_set_auto_git_commit` 同理，见
+/// `ChangeStore::auto_allow_readonly` 的文档）：这个值原来是 `CodingSession` 的
+/// 普通字段，`send_message` 处理一轮对话期间会一直持有会话锁，用户在 AI 任务
+/// 运行中点这个开关会排队等当前这轮说完才生效，界面上看起来"点了没反应"
+/// （2026-09 用户反馈）。
 #[tauri::command]
 pub async fn coding_set_auto_allow_readonly(
     state: State<'_, AppState>,
     workspace_id: Uuid,
     enabled: bool,
 ) -> Result<(), AppError> {
-    let session = get_session(&state, workspace_id).await?;
-    let mut session = session.lock().await;
-    session.auto_allow_readonly = enabled;
-    session
-        .codex_auto_allow_readonly
+    let store = get_change_store(&state, workspace_id).await?;
+    store
+        .lock()
+        .await
+        .auto_allow_readonly
         .store(enabled, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -1211,7 +1075,6 @@ pub async fn coding_history_get(
 #[tauri::command]
 pub async fn coding_history_resume(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
     workspace_id: Uuid,
     history_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -1238,17 +1101,14 @@ pub async fn coding_history_resume(
     }
 
     // `override_id: Some(history_id)` ——之前是构造完会话再 `session.id =
-    // history_id` 事后覆盖，但 codex 引擎的挂载（`build_new_session` 内部）要用
-    // 最终的 session id 构造 `SessionExecTarget`/审计日志/事件广播，事后覆盖会
-    // 导致这些地方用的还是构造时随手生成的临时 id，和前端实际展示的 session id
-    // 对不上。
+    // history_id` 事后覆盖，会导致审计日志/事件广播用的还是构造时随手生成的
+    // 临时 id，和前端实际展示的 session id 对不上，直接用最终 id 构造会话。
     let (mut session, change_store) = build_new_session(
         &state,
         workspace_id,
         detail.summary.provider_id,
         false,
         Some(history_id),
-        &app_handle,
     )
     .await?;
     session.mode = if detail.summary.mode == "build" {

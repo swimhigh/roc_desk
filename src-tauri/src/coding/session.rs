@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -17,14 +16,13 @@ use super::tools::{self, TodoItem, ToolCall};
 use super::webfetch;
 use super::{CommandConfirmRegistry, QuestionRegistry};
 use crate::agent::AgentConnectionPool;
-use crate::ai::{search_web_results, AiProviderManager};
+use crate::ai::{search_web_results, AiProvider, AiProviderManager};
 use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
 use crate::error::AppError;
 use crate::fsops::{search_stream, FileOps, SearchMode, SearchOptions};
 use crate::mcp::McpServerManager;
 use crate::ssh::SshConnectionPool;
-use codex_engine::EngineEventSink;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,12 +122,6 @@ pub struct CodingSession {
     pub target: CodingTarget,
     pub mode: CodingMode,
     pub provider_id: Uuid,
-    pub auto_allow_readonly: bool,
-    /// 供 Codex exec-server 回调读取的共享镜像。Codex 回调不能锁回当前
-    /// `CodingSession`，否则会和正在等待引擎事件的 `send_message` 死锁。
-    pub(crate) codex_auto_allow_readonly: Arc<AtomicBool>,
-    /// Codex exec-server 的模式镜像：0=Plan，1=Build。
-    pub(crate) codex_mode: Arc<AtomicU8>,
     /// 文件改动（Diff/Accept/Undo/Redo）的独立状态容器，故意不是 `CodingSession`
     /// 的直接字段、而是一个单独加锁的 `Arc<Mutex<ChangeStore>>`——原因见
     /// `ChangeStore` 的文档注释：不能让"应用/拒绝某个文件改动"卡在等一个可能跑
@@ -148,87 +140,11 @@ pub struct CodingSession {
     /// 中存在的那些），前端用来在工具栏渲染"已加载 XXX"徽标。
     pub project_memory_loaded: Vec<String>,
     messages: Vec<serde_json::Value>,
-    /// `pub(crate)`：`coding::codex_exec_target` 的 `ExecTarget` 适配器读文件时
-    /// 要复用同一个 `FileOps`（三态执行的本地/SSH/Agent 差异已经封在这里面），
-    /// 不重新构造一份。
     pub(crate) file_ops: Arc<dyn FileOps>,
     /// 当前正在处理的用户消息轮次 id——`send_message` 一开始就生成一个新的，
     /// 这一轮里 `stage_change` 产生的所有 `FileChange` 都打上同一个 `turn_id`，
     /// 供前端做"这一轮"的批量操作。
     current_turn_id: Uuid,
-    /// 只有 provider 命中 `routes_to_codex_engine`（目前限定 OpenAI 官方/Azure/
-    /// Bedrock/Ollama 且目标是 `CodingTarget::Local`，见
-    /// docs/CODEX_INTEGRATION_PLAN.md）且初始化成功时才是 `Some`——由
-    /// `commands::coding::build_new_session` 在构造完会话后异步 attach 上去，
-    /// `CodingSession::new` 本身保持同步、不做任何 codex-core 相关的初始化。
-    codex_engine: Option<CodexEngineBundle>,
-}
-
-/// 深度嵌入 codex-core 的对话引擎 + 它专属的 exec-server（见
-/// docs/CODEX_INTEGRATION_PLAN.md Phase 3）。`_exec_server` 只是为了在
-/// `CodingSession` 存活期间保住这个值不被提前 drop——它的后台 WebSocket 监听
-/// 任务已经在 `RocDeskExecServer::bind` 里用 `tokio::spawn` 起来了，drop 这个
-/// 句柄本身不会停止那个任务，只是不这样保留会让代码读起来像"用完就可以扔"，
-/// 容易误导后来的改动。
-///
-/// `engine` 是 `CodexCoreEngineHandle`（不是裸的 `CodexCoreEngine`）——运行时
-/// 实测发现 codex-core 深层异步调用链（`ThreadManager::start_thread`/
-/// `CodexThread::next_event`）在默认线程栈大小下会直接
-/// `STATUS_STACK_OVERFLOW`（Windows 上是进程级致命错误，不是能捕获的
-/// panic）。`CodexCoreEngineHandle` 把真正的调用挪到了一个专用的大栈线程上，
-/// 这里通过 channel 通信，`CodingSession`/Tauri command 的正常异步上下文完全
-/// 不用关心栈大小问题。
-struct CodexEngineBundle {
-    engine: codex_engine::CodexCoreEngineHandle,
-    _exec_server: codex_engine::RocDeskExecServer,
-    /// 当前轮次 id，和 `CodingSession::current_turn_id` 保持同步（`send_message`
-    /// 每次开始新一轮时一起更新），供 `codex_exec_target::SessionExecTarget`
-    /// 在收到 codex 的 `fs/writeFile` 回调时读取，不需要它反过来访问
-    /// `CodingSession`（见 `codex_exec_target.rs` 顶部注释：那样会死锁）。
-    turn_id: Arc<std::sync::Mutex<Uuid>>,
-}
-
-/// 把 `codex_engine::EngineEventSink` 的回调转成 roc_desk 现有的 Tauri 事件——
-/// 事件名/形状故意和自研引擎（`send_message` 里散落的 `app_handle.emit` 调用）
-/// 保持一致，前端 `codingStore.ts` 不需要为了 codex 路由改任何监听逻辑。
-///
-/// 拥有（而不是借用）`AppHandle`——`CodexCoreEngineHandle::run_turn` 要求
-/// `Arc<dyn EngineEventSink>`（跨线程传给专用的大栈引擎线程），裸生命周期引用
-/// 过不了 `'static` 约束；`AppHandle` 本身就是一个可以随便 `clone()` 的轻量句柄，
-/// 拥有一份不是问题。
-struct TauriEventSink {
-    session_id: Uuid,
-    app_handle: AppHandle,
-}
-
-impl EngineEventSink for TauriEventSink {
-    fn on_assistant_delta(&self, text: &str) {
-        let _ = self.app_handle.emit(
-            "coding:assistant-note",
-            json!({ "sessionId": self.session_id, "text": text, "kind": "model" }),
-        );
-    }
-
-    fn on_reasoning_delta(&self, text: &str) {
-        let _ = self.app_handle.emit(
-            "coding:assistant-note",
-            json!({ "sessionId": self.session_id, "text": text, "kind": "status" }),
-        );
-    }
-
-    fn on_tool_progress(&self, label: &str) {
-        let _ = self.app_handle.emit(
-            "coding:tool-call-start",
-            json!({ "sessionId": self.session_id, "tool": "codex", "detail": label }),
-        );
-    }
-
-    fn on_tool_progress_end(&self) {
-        let _ = self.app_handle.emit(
-            "coding:tool-call-end",
-            json!({ "sessionId": self.session_id, "tool": "codex" }),
-        );
-    }
 }
 
 // 2026-08-18 用户真实反馈：让编程助手"分析本项目源代码，对代码进行评审"这类
@@ -253,11 +169,103 @@ const FORCE_CONCLUDE_LAST_N: usize = 5;
 /// 真需要看更多内容时模型应该用 `search_files`/`glob` 定位更精确的范围，
 /// 而不是指望一次 `read_file` 吃下整个大文件。
 const MAX_TOOL_RESULT_CHARS: usize = 20_000;
-/// 整个会话发给模型的上下文上限。每轮请求都会把它完整 JSON 序列化一次，因此只
-/// 限制单条工具结果仍不够：多轮工具调用、历史恢复和图片附件都会让总量持续累积。
-const MAX_CONTEXT_CHARS: usize = 1_000_000;
+/// 整个会话发给模型的上下文上限，按 token 估算（见 `estimate_tokens`）而不是原始字符数——
+/// 2026-09 复盘：原来直接拿字符数当预算单位，对不同模型的真实上下文窗口没有代表性
+/// （尤其中文场景：一个汉字在 UTF-8 里是 3 字节，用字符数算预算会系统性低估实际 token
+/// 消耗）。100_000 token 是一个偏保守的全局默认值，留出安全余量给上下文窗口较小的模型，
+/// 不是精确值——真要精确匹配每个 provider 的上下文窗口需要一份 per-provider 配置，
+/// 这次先不做。
+const MAX_CONTEXT_TOKENS_ESTIMATE: usize = 100_000;
 /// 在总量没有触顶时，仍只保留最近这些用户轮次，避免长时间会话缓慢挤占内存。
 const MAX_CONTEXT_USER_TURNS: usize = 8;
+/// 标记 `self.messages[1]`（如果存在）是"早前对话摘要"消息，不是真实的历史内容——
+/// `limit_context` 用这个前缀识别"要不要新建一条摘要消息，还是往已有的追加"。
+const CONTEXT_SUMMARY_PREFIX: &str = "【早前对话摘要】";
+/// 摘要消息自己的字符上限——长会话里如果不停追加摘要，摘要本身也会无限增长，超过这个
+/// 阈值就丢弃最早的一截摘要片段（不再摘要一次摘要，避免过度设计）。
+const MAX_CONTEXT_SUMMARY_CHARS: usize = 4_000;
+/// 摘要请求本身的超时——摘要是锦上添花，不能变成新的卡死点，超时/失败就直接退回硬删。
+const CONTEXT_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 把字节数换算成一个粗略的 token 估算——4 字节 ≈ 1 token，向上取整。这是 codex-core
+/// 自己（`vendor/codex/codex-rs/core/src/context_manager/history.rs`）在没有接入真实
+/// 分词器时用的同款启发式，roc_desk 这里是照着思路重新实现，不依赖任何 tokenizer 依赖。
+fn estimate_tokens(byte_len: usize) -> usize {
+    byte_len.div_ceil(4)
+}
+
+/// 把即将从 `self.messages` 里删掉的一批轮次压成一段 2-4 句的摘要——发一次不带
+/// `tools` 字段的轻量请求，不走 `MAX_TOOL_ITERATIONS` 预算（这是 `limit_context`
+/// 自己触发的独立请求，不是工具循环的一部分）。任何失败（网络错误、超时、响应里
+/// 没有可用的文本）都返回 `None`，调用方直接退回"这批轮次就是删掉、不留痕迹"的
+/// 原有行为——摘要是锦上添花，不能变成新的卡死点。
+async fn summarize_dropped_turns(
+    dropped: &[serde_json::Value],
+    client: &reqwest::Client,
+    provider: &AiProvider,
+    api_key: &Option<String>,
+) -> Option<String> {
+    let transcript: String = dropped
+        .iter()
+        .filter_map(|message| {
+            let role = message["role"].as_str()?;
+            let content = match &message["content"] {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            let content: String = content.chars().take(800).collect();
+            let tool_note = message["tool_calls"]
+                .as_array()
+                .filter(|calls| !calls.is_empty())
+                .map(|calls| format!("（调用了 {} 个工具）", calls.len()))
+                .unwrap_or_default();
+            Some(format!("[{role}]{tool_note} {content}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if transcript.trim().is_empty() {
+        return None;
+    }
+    let url = format!(
+        "{}/chat/completions",
+        provider.api_base.trim_end_matches('/')
+    );
+    let body = json!({
+        "model": provider.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是对话摘要助手。用 2-4 句中文总结下面这段编程助手对话做了什么、\
+                             涉及哪些文件/结论，给后续对话保留必要背景。不要客套，不要逐句复述，\
+                             只给结论性摘要。"
+            },
+            { "role": "user", "content": transcript }
+        ]
+    });
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+    let resp = match tokio::time::timeout(CONTEXT_SUMMARY_TIMEOUT, req.send()).await {
+        Ok(Ok(resp)) => resp,
+        _ => return None,
+    };
+    let body: serde_json::Value = match resp.json().await {
+        Ok(body) => body,
+        Err(_) => return None,
+    };
+    let text = body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
 
 fn cap_tool_result(text: String) -> String {
     if text.chars().count() <= MAX_TOOL_RESULT_CHARS {
@@ -271,23 +279,26 @@ fn cap_tool_result(text: String) -> String {
 }
 
 impl CodingSession {
-    /// 把上下文限制在一个可预期的内存与请求体大小内。删历史时以"用户消息"为
-    /// 边界，因此一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，
-    /// 不会留下 OpenAI 兼容接口无法接受的孤立 tool message；最前面的 system 提示
-    /// 和项目约定永远不删。
-    fn limit_context(&mut self) {
+    /// 把上下文限制在一个可预期的内存/token 预算内。删历史时以"用户消息"为边界，
+    /// 因此一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，不会留下
+    /// OpenAI 兼容接口无法接受的孤立 tool message；最前面的 system 提示和项目约定
+    /// 永远不删。真要删的那批轮次不是直接丢弃——会先花一次轻量模型调用把它们压成
+    /// 一段摘要，追加进 `self.messages` 里专门的摘要消息（见 `append_context_summary`），
+    /// 让后续对话还能看到"早前做过什么"，而不是完全没有痕迹。
+    async fn limit_context(&mut self, client: &reqwest::Client, provider: &AiProvider, api_key: &Option<String>) {
         let mut user_turns = self
             .messages
             .iter()
             .filter(|message| message["role"].as_str() == Some("user"))
             .count();
         loop {
-            let size = self
-                .messages
-                .iter()
-                .map(|message| message.to_string().len())
-                .sum::<usize>();
-            if size <= MAX_CONTEXT_CHARS && user_turns <= MAX_CONTEXT_USER_TURNS {
+            let size_tokens = estimate_tokens(
+                self.messages
+                    .iter()
+                    .map(|message| message.to_string().len())
+                    .sum::<usize>(),
+            );
+            if size_tokens <= MAX_CONTEXT_TOKENS_ESTIMATE && user_turns <= MAX_CONTEXT_USER_TURNS {
                 break;
             }
             let Some(start) = self
@@ -308,8 +319,61 @@ impl CodingSession {
             else {
                 break;
             };
-            self.messages.drain(start..end);
+            let dropped: Vec<serde_json::Value> = self.messages.drain(start..end).collect();
             user_turns -= 1;
+            if let Some(summary) =
+                summarize_dropped_turns(&dropped, client, provider, api_key).await
+            {
+                self.append_context_summary(&summary);
+            }
+        }
+    }
+
+    /// 把一段新摘要文本并入 `self.messages` 里专门的摘要消息——用 `CONTEXT_SUMMARY_PREFIX`
+    /// 这个前缀识别"哪条是摘要消息"，而不是假设固定下标：项目记忆（AGENTS.md/CLAUDE.md）
+    /// 也是插在最前面的 system 消息，数量随项目而变，摘要消息必须插在"所有前置 system
+    /// 消息之后、第一条非 system 消息之前"才不会打乱这个顺序。摘要自己超过字符上限时
+    /// 从最早的部分开始截，保留最近的内容——新摘要通常比旧摘要更贴近当前话题。
+    fn append_context_summary(&mut self, new_piece: &str) {
+        if let Some(existing) = self.messages.iter_mut().find(|message| {
+            message["role"].as_str() == Some("system")
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with(CONTEXT_SUMMARY_PREFIX))
+        }) {
+            let mut body = existing["content"]
+                .as_str()
+                .unwrap_or_default()
+                .strip_prefix(CONTEXT_SUMMARY_PREFIX)
+                .unwrap_or_default()
+                .trim_start_matches('\n')
+                .to_string();
+            body.push('\n');
+            body.push_str(new_piece);
+            if body.chars().count() > MAX_CONTEXT_SUMMARY_CHARS {
+                let skip = body.chars().count() - MAX_CONTEXT_SUMMARY_CHARS;
+                body = format!(
+                    "（更早的摘要已省略）\n{}",
+                    body.chars().skip(skip).collect::<String>()
+                );
+            }
+            *existing = json!({
+                "role": "system",
+                "content": format!("{CONTEXT_SUMMARY_PREFIX}\n{body}")
+            });
+        } else {
+            let insert_at = self
+                .messages
+                .iter()
+                .position(|message| message["role"].as_str() != Some("system"))
+                .unwrap_or(self.messages.len());
+            self.messages.insert(
+                insert_at,
+                json!({
+                    "role": "system",
+                    "content": format!("{CONTEXT_SUMMARY_PREFIX}\n{new_piece}")
+                }),
+            );
         }
     }
 
@@ -323,10 +387,20 @@ impl CodingSession {
         file_ops: Arc<dyn FileOps>,
         change_store: Arc<Mutex<ChangeStore>>,
     ) -> Self {
+        // 2026-09 复盘：不明确告诉模型"你在什么系统上、用什么 shell"，它会凭训练数据的
+        // 默认假设去猜命令语法（最常见的是无论目标是什么系统都先猜 Linux/bash），猜错了
+        // 要么命令直接执行失败、要么在远程/受限 shell 下产生更隐蔽的语法错误，模型自己
+        // 还得再花几轮工具调用才能反应过来。这里的平台/shell 映射跟
+        // `run_local_command_output_with_env`/`log::remote::shell_quote`/`cmd_quote`
+        // 现有的转义假设保持一致，不是新发明的映射关系。
         let target_desc = match &target {
-            CodingTarget::Local => "本地工作区".to_string(),
-            CodingTarget::Remote { host_label, .. } => format!("远程主机 {host_label}"),
-            CodingTarget::Agent { host_label, .. } => format!("远程 Windows 主机 {host_label}"),
+            CodingTarget::Local => "本地工作区，Windows，命令行执行环境是 PowerShell".to_string(),
+            CodingTarget::Remote { host_label, .. } => {
+                format!("远程主机 {host_label}，Linux，命令行执行环境是 bash")
+            }
+            CodingTarget::Agent { host_label, .. } => {
+                format!("远程 Windows 主机 {host_label}，命令行执行环境是 cmd.exe")
+            }
         };
         // 2026-08-18 真实复现：分析整个项目/做代码评审这类开放式大任务，模型会没完
         // 没了地交替 search_files/read_file，一直不给结论。后端有 FORCE_CONCLUDE_LAST_N
@@ -334,6 +408,7 @@ impl CodingSession {
         // "工具调用总量有限、该收敛就收敛"的预期，减少真的撞到硬限制的次数。
         let system_prompt = format!(
             "你是集成在 roc_desk 桌面工具里的 AI 编程助手，当前绑定的工作区根目录是 `{workspace_root}`（{target_desc}）。\
+             run_command 执行的命令必须匹配上面说明的 shell 语法，不要凭空假设是另一种系统/shell。\
              你可以用提供的工具读写文件、搜索代码、访问互联网、执行命令。涉及“今天/最新/新闻/外部事实”的问题必须先调用 web_search，\
              不要凭模型记忆回答。write_file/edit_file 产生的改动不会立即生效，\
              而是生成 Diff 交给用户确认，所以你可以放心连续提出多个改动，不需要等待每一步都被确认才能继续推理。\
@@ -350,9 +425,6 @@ impl CodingSession {
             target,
             mode: CodingMode::Plan,
             provider_id,
-            auto_allow_readonly: false,
-            codex_auto_allow_readonly: Arc::new(AtomicBool::new(false)),
-            codex_mode: Arc::new(AtomicU8::new(0)),
             change_store,
             todos: Vec::new(),
             skills: Vec::new(),
@@ -360,36 +432,7 @@ impl CodingSession {
             messages: vec![json!({ "role": "system", "content": system_prompt })],
             file_ops,
             current_turn_id: Uuid::new_v4(),
-            codex_engine: None,
         }
-    }
-
-    /// `commands::coding::build_new_session` 在判断这个会话的 provider 命中
-    /// codex 路由后调用——`CodingSession::new` 本身保持同步，codex-core 的初始化
-    /// （起 `RocDeskExecServer`/构造 `ThreadManager`）都是 async，只能在构造完
-    /// 会话之后另外接上。
-    pub(crate) fn attach_codex_engine(
-        &mut self,
-        engine: codex_engine::CodexCoreEngineHandle,
-        exec_server: codex_engine::RocDeskExecServer,
-        turn_id: Arc<std::sync::Mutex<Uuid>>,
-    ) {
-        self.codex_engine = Some(CodexEngineBundle {
-            engine,
-            _exec_server: exec_server,
-            turn_id,
-        });
-    }
-
-    /// 卸载当前挂着的 `CodexCoreEngine`（如果有）——`coding_set_provider` 切换
-    /// provider 时用：旧引擎是绑定着切换前那个 provider 的 api_key/model/
-    /// base_url 构造出来的，`provider_id` 字段本身只有自研引擎每轮请求时才会
-    /// 重新读取，codex 路径不调用这个方法的话会继续悄悄用旧 provider 发请求。
-    /// 调用方随后应该按新 provider 重新 `attach_codex_engine`；如果新 provider
-    /// 挂不上（协议不兼容/没配 API Key），保持 `None` 就能干净地落回自研引擎，
-    /// 不会残留一个绑定着错误 provider 的引擎。
-    pub(crate) fn detach_codex_engine(&mut self) {
-        self.codex_engine = None;
     }
 
     /// 读取工作区根目录下的 `AGENTS.md`/`CLAUDE.md`（两个都找就都注入，各自标注
@@ -448,7 +491,10 @@ impl CodingSession {
     pub fn restore_messages(&mut self, messages: Vec<serde_json::Value>) {
         if !messages.is_empty() {
             self.messages = messages;
-            self.limit_context();
+            // 不在这里裁剪——`limit_context` 现在是 async 的（触顶时会发一次摘要
+            // 请求），而这里没有现成的 provider/api_key 可用。恢复历史后的第一条
+            // 新消息会走 `send_message` 里的循环，进去就会调用一次 `limit_context`，
+            // 到时候一并裁剪即可，不需要在恢复这一步重复做。
         }
     }
 
@@ -470,62 +516,12 @@ impl CodingSession {
     ) -> Result<String, AppError> {
         self.current_turn_id = Uuid::new_v4();
 
-        // codex 路由分支：绕开下面整套自研 HTTP+工具循环，交给
-        // `CodexCoreEngine` 驱动。见 docs/CODEX_INTEGRATION_PLAN.md Phase 3——
-        // 目前只在 `attach_codex_engine` 成功挂上时才会走这条分支（provider 命中
-        // OpenAI 系 + `CodingTarget::Local`），其余情况原样走下面已经跑了很久的
-        // 自研引擎，行为不变。
-        if self.codex_engine.is_some() {
-            let inputs = codex_user_inputs(user_text, attachments, self.mode);
-            self.messages.push(
-                json!({ "role": "user", "content": user_message_content(user_text, attachments) }),
-            );
-            self.limit_context();
-            let sink: Arc<dyn EngineEventSink> = Arc::new(TauriEventSink {
-                session_id: self.id,
-                app_handle: app_handle.clone(),
-            });
-            let bundle = self.codex_engine.as_mut().expect("checked above");
-            *bundle.turn_id.lock().unwrap() = self.current_turn_id;
-            // "停止"按钮：`run_turn` 内部是 `oneshot::Receiver.await`（见
-            // `codex-engine/src/engine.rs` 的 `CodexCoreEngineHandle::run_turn`），
-            // 取消胜出时直接丢弃这个 future 是安全的——常驻的引擎线程稍后
-            // `reply.send(result)` 会因为接收端已经没人听而静默失败（`let _ =`），
-            // 不会 panic。同时调用 `interrupt_current_turn` 给 codex-core 自己的
-            // session 循环发 `Op::Interrupt`，让它正常收敛掉这一轮（而不是被
-            // roc_desk 这边强行抛弃，服务端状态却还在半途），下一轮对话开始时
-            // 不会因为上一轮"卡在一半"而混乱。
-            let text = tokio::select! {
-                biased;
-                result = bundle.engine.run_turn(inputs, sink) => {
-                    result.map_err(|e| AppError::Internal(format!("codex engine: {e}")))?
-                }
-                _ = cancel_token.cancelled() => {
-                    // `Op::Interrupt` 本身也是走 codex-core session 内部那条提交
-                    // 队列的——如果 session 的处理循环正卡在别的地方（比如我们
-                    // 自己的 exec-server 在等一个永远不会被回应的命令确认弹窗），
-                    // 这次提交也可能跟着卡住。这里的初衷是"尽量让 codex-core 干净
-                    // 收敛"，不能让它反过来把整个 `send_message`（进而是
-                    // `coding_sessions` 那把锁）也搭进去卡死，所以加一个超时兜底：
-                    // 超时就放弃干净中断，直接把控制权还给用户，好过用户连"停止"
-                    // 本身都点不动。
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        bundle.engine.interrupt_current_turn(),
-                    )
-                    .await;
-                    return Err(AppError::Internal("已停止：用户取消了当前对话轮次".to_string()));
-                }
-            };
-            self.messages
-                .push(json!({ "role": "assistant", "content": &text }));
-            return Ok(text);
-        }
-
         self.messages.push(
             json!({ "role": "user", "content": user_message_content(user_text, attachments) }),
         );
-        self.limit_context();
+        // 不在这里裁剪——下面工具循环的第一轮（`for i in 0..MAX_TOOL_ITERATIONS`）一
+        // 进去就会调用 `limit_context`，那时候 provider/api_key/client 才解析出来，
+        // 摘要请求需要用到它们。
         // 规则改动（比如刚点了"允许并记住"）只需要下一条消息生效，不需要额外的
         // 缓存失效通知——这里每条用户消息都重新从数据库现取一份规则快照。
         let permission_engine = PermissionEngine::load(permission_rules)?;
@@ -578,6 +574,30 @@ impl CodingSession {
         })?;
         let api_key = providers.resolve_api_key(&provider).await?;
         let client = reqwest::Client::new();
+        // 这一整轮（一条用户消息到最终给出结论）可能要跑好几次工具循环迭代，
+        // 每次迭代都是一次独立的 API 请求——累加起来才是用户真正关心的"这轮
+        // 对话一共花了多少 token"，单次请求的消耗只在过程中当进度参考。
+        let mut turn_prompt_tokens: i64 = 0;
+        let mut turn_completion_tokens: i64 = 0;
+        let mut turn_total_tokens: i64 = 0;
+        let session_id = self.id;
+        // 每个"这一轮结束"的出口（正常给出结论 / 工具调用次数耗尽）都要发一次
+        // 汇总，闭包只是为了不在好几个 return 点前重复写同一段 emit 代码；
+        // `total == 0` 时不发（provider 没回传 usage，或者这一轮压根没请求成功
+        // 过），避免时间线里堆一堆没有信息量的"0 tokens"提示。
+        let emit_turn_usage_summary = |prompt: i64, completion: i64, total: i64| {
+            if total > 0 {
+                let _ = app_handle.emit(
+                    "coding:token-usage-summary",
+                    json!({
+                        "sessionId": session_id,
+                        "promptTokens": prompt,
+                        "completionTokens": completion,
+                        "totalTokens": total,
+                    }),
+                );
+            }
+        };
 
         for i in 0..MAX_TOOL_ITERATIONS {
             if cancel_token.is_cancelled() {
@@ -585,11 +605,13 @@ impl CodingSession {
                     "已停止：用户取消了当前对话轮次".to_string(),
                 ));
             }
-            self.limit_context();
-            let url = format!(
-                "{}/chat/completions",
-                provider.api_base.trim_end_matches('/')
-            );
+            self.limit_context(&client, &provider, &api_key).await;
+            let is_responses = provider.wire_api == "responses";
+            let url = if is_responses {
+                format!("{}/responses", provider.api_base.trim_end_matches('/'))
+            } else {
+                format!("{}/chat/completions", provider.api_base.trim_end_matches('/'))
+            };
 
             // 2026-08-18 真实复现：让模型做"分析整个项目并评审"这类开放式大任务时，
             // 它会没完没了地交替 search_files/read_file，一直不给结论，直到把
@@ -606,15 +628,37 @@ impl CodingSession {
                 }));
             }
 
-            let mut body = json!({ "model": provider.model, "messages": self.messages });
-            if !force_conclude {
-                let mut tools = tools_for_mode(self.mode);
-                if let Some(arr) = tools.as_array_mut() {
-                    arr.extend(mcp_tool_defs.iter().cloned());
-                }
-                body["tools"] = tools;
-                body["tool_choice"] = json!("auto");
+            let mut tools = tools_for_mode(self.mode);
+            if let Some(arr) = tools.as_array_mut() {
+                arr.extend(mcp_tool_defs.iter().cloned());
             }
+            // Responses API 的 `input`/`instructions` 跟 chat/completions 的
+            // `messages` 是完全不同的请求形状（见 `messages_to_responses_input` 的
+            // 文档注释），但 `self.messages` 内部存储/`limit_context`/摘要机制/
+            // 历史持久化全都只认 chat/completions 这一种形状——转换只发生在这里，
+            // 发完请求之后响应也会被归一化回同一种形状（见下面 `message` 的构造），
+            // 其余代码完全不需要关心当前 provider 是哪种协议。
+            let mut body = if is_responses {
+                let (instructions, input) = messages_to_responses_input(&self.messages);
+                let mut body = json!({
+                    "model": provider.model,
+                    "instructions": instructions,
+                    "input": input,
+                    "stream": false,
+                });
+                if !force_conclude {
+                    body["tools"] = chat_tools_to_responses_tools(&tools);
+                    body["tool_choice"] = json!("auto");
+                }
+                body
+            } else {
+                let mut body = json!({ "model": provider.model, "messages": self.messages });
+                if !force_conclude {
+                    body["tools"] = tools;
+                    body["tool_choice"] = json!("auto");
+                }
+                body
+            };
             let mut req = client.post(&url).json(&body);
             if let Some(key) = &api_key {
                 req = req.bearer_auth(key);
@@ -637,8 +681,28 @@ impl CodingSession {
                 let body = resp.text().await.unwrap_or_default();
                 return Err(AppError::Connection(format!("HTTP {status}: {body}")));
             }
-            let body: serde_json::Value = resp.json().await?;
-            let message = body["choices"][0]["message"].clone();
+            body = resp.json().await?;
+            if let Some((prompt, completion, total)) = extract_token_usage(&body, &provider.wire_api)
+            {
+                turn_prompt_tokens += prompt;
+                turn_completion_tokens += completion;
+                turn_total_tokens += total;
+                let _ = app_handle.emit(
+                    "coding:token-usage",
+                    json!({
+                        "sessionId": self.id,
+                        "promptTokens": prompt,
+                        "completionTokens": completion,
+                        "totalTokens": total,
+                    }),
+                );
+            }
+            let message = if is_responses {
+                let (text, tool_calls) = parse_responses_output(&body);
+                json!({ "role": "assistant", "content": text, "tool_calls": tool_calls })
+            } else {
+                body["choices"][0]["message"].clone()
+            };
             let tool_calls = message["tool_calls"]
                 .as_array()
                 .cloned()
@@ -648,6 +712,7 @@ impl CodingSession {
                 let text = message["content"].as_str().unwrap_or("").to_string();
                 self.messages
                     .push(json!({ "role": "assistant", "content": text }));
+                emit_turn_usage_summary(turn_prompt_tokens, turn_completion_tokens, turn_total_tokens);
                 return Ok(text);
             }
 
@@ -732,9 +797,13 @@ impl CodingSession {
                     Err(e) => format!("工具调用参数解析失败：{e}"),
                 };
 
+                // 带上 `result_text`：之前这个事件只报"哪个工具跑完了"，实际拿到的
+                // 结果只存进 `self.messages` 发给模型，前端完全看不到——用户反馈
+                // "想点一下时间线里已完成的命令，看看它到底执行出了什么"，时间线
+                // 需要这份数据才能在用户点开时展示出来。
                 let _ = app_handle.emit(
                     "coding:tool-call-end",
-                    json!({ "sessionId": self.id, "tool": fn_name }),
+                    json!({ "sessionId": self.id, "tool": fn_name, "output": result_text }),
                 );
 
                 self.messages.push(json!({
@@ -745,6 +814,7 @@ impl CodingSession {
             }
         }
 
+        emit_turn_usage_summary(turn_prompt_tokens, turn_completion_tokens, turn_total_tokens);
         Err(AppError::Internal(format!(
             "这一轮已经调用了 {MAX_TOOL_ITERATIONS} 次工具还没给出最终结论，先停下来避免无限跑下去。\
              之前的进度都还在（对话上下文没丢），直接发\"继续\"就会接着刚才的内容往下做，不需要重新描述任务。"
@@ -1061,9 +1131,6 @@ impl CodingSession {
         }
     }
 
-    /// `pub(crate)`（而不是纯私有）：`codex::exec_target` 里对接 codex-core
-    /// exec-server 协议的 `ExecTarget` 适配器需要复用这同一套 Pending 状态机
-    /// 语义（见 docs/CODEX_INTEGRATION_PLAN.md §3.2），不重新实现一遍。
     pub(crate) async fn stage_change(
         &mut self,
         path: &str,
@@ -1095,14 +1162,8 @@ impl CodingSession {
         })
     }
 
-    /// `pub(crate)`：理由同 `stage_change`，codex-core exec-server 适配器
-    /// （`coding::codex_exec_target`）要复用同一套权限规则引擎/确认弹窗/三态
-    /// 执行路由，不重新实现一遍——实际逻辑在自由函数 `run_command_gated_shared`
-    /// 里（见下方），这里只是把 `&self` 上的几个字段拆出来传过去。拆成自由函数
-    /// 是因为 `codex_exec_target::SessionExecTarget` 不能持有
-    /// `Arc<Mutex<CodingSession>>` 来调用这个方法：codex-core 的 exec-server
-    /// 回调发生在 `send_message` 正在 `&mut self` 持有这个会话、且还在等
-    /// `thread.next_event()` 的时候，再去抢同一把锁会死锁。
+    /// 实际逻辑在自由函数 `run_command_gated_shared` 里（见下方），这里只是把
+    /// `&self` 上的几个字段拆出来传过去。
     pub(crate) async fn run_command_gated(
         &mut self,
         command: &str,
@@ -1113,17 +1174,18 @@ impl CodingSession {
         permission_engine: &PermissionEngine,
         app_handle: &AppHandle,
     ) -> Result<String, AppError> {
-        let full_auto = self
-            .change_store
-            .lock()
-            .await
-            .full_auto
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let (auto_allow_readonly, full_auto) = {
+            let store = self.change_store.lock().await;
+            (
+                store.auto_allow_readonly.load(std::sync::atomic::Ordering::Relaxed),
+                store.full_auto.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
         run_command_gated_shared(
             self.id,
             &self.target,
             &self.workspace_root,
-            self.auto_allow_readonly,
+            auto_allow_readonly,
             full_auto,
             command,
             ssh_pool,
@@ -1228,18 +1290,6 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
 ) -> Result<CommandExecutionResult, AppError> {
     let target_label = target_label_for(target);
     let is_windows_target = matches!(target, CodingTarget::Agent { .. });
-    // 2026-09 临时诊断日志：远程 SSH 目标下 codex 路由的 run_command 疑似卡死，
-    // 定位不清楚到底卡在黑名单检查/权限规则/等待确认弹窗/还是实际执行这几步
-    // 里的哪一步——先打点，等下一次复现时直接从日志读出卡在哪。确认问题后
-    // 应该删掉这几行，不是长期保留的诊断设施。
-    tracing::info!(
-        session_id = %session_id,
-        target = %target_label,
-        full_auto,
-        auto_allow_readonly,
-        command,
-        "run_command_gated: 进入函数"
-    );
 
     if guard::is_blacklisted(command, is_windows_target) {
         audit.record(session_id, &target_label, command, "blocked", None);
@@ -1267,11 +1317,9 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
             });
         }
         Some(Decision::Allow) => {
-            tracing::info!(session_id = %session_id, command, "run_command_gated: 命中权限规则 Allow，即将实际执行");
             audit.record(session_id, &target_label, command, "auto-allow-rule", None);
             let output =
                 run_target_command(target, cwd, env, command, ssh_pool, agent_pool).await?;
-            tracing::info!(session_id = %session_id, command, "run_command_gated: Allow 分支实际执行完成");
             let summary: String = output.output.chars().take(2000).collect();
             audit.record(
                 session_id,
@@ -1288,23 +1336,13 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
         _ => {}
     }
 
-    tracing::info!(session_id = %session_id, "run_command_gated: 通过黑名单/权限规则检查");
     let allowed = if full_auto || (auto_allow_readonly && guard::is_whitelisted(command)) {
-        tracing::info!(session_id = %session_id, command, "run_command_gated: 命中 full_auto/白名单，跳过确认");
         true
     } else {
-        tracing::info!(session_id = %session_id, "run_command_gated: 即将调用 confirms.register");
         let (request_id, rx) = confirms.register(session_id).await;
-        tracing::info!(session_id = %session_id, request_id = %request_id, "run_command_gated: confirms.register 已返回");
         let is_remote = matches!(
             target,
             CodingTarget::Remote { .. } | CodingTarget::Agent { .. }
-        );
-        tracing::info!(
-            session_id = %session_id,
-            request_id = %request_id,
-            command,
-            "run_command_gated: 已注册确认请求，即将 emit 弹窗事件"
         );
         let _ = app_handle.emit(
             "coding:command-confirm-request",
@@ -1316,14 +1354,7 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
                 "kind": "command",
             }),
         );
-        let result = rx.await.unwrap_or(false);
-        tracing::info!(
-            session_id = %session_id,
-            request_id = %request_id,
-            allowed = result,
-            "run_command_gated: 收到确认结果"
-        );
-        result
+        rx.await.unwrap_or(false)
     };
 
     if !allowed {
@@ -1334,9 +1365,7 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
         });
     }
 
-    tracing::info!(session_id = %session_id, command, "run_command_gated: 已放行，开始实际执行");
     let output = run_target_command(target, cwd, env, command, ssh_pool, agent_pool).await?;
-    tracing::info!(session_id = %session_id, command, "run_command_gated: 实际执行完成");
     let summary: String = output.output.chars().take(2000).collect();
     audit.record(
         session_id,
@@ -1494,43 +1523,185 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
     }
 }
 
+/// 把 chat/completions 的工具定义 `[{type:"function",function:{name,description,
+/// parameters}}]` 拍平成 Responses API 要求的形状
+/// `[{type:"function",name,description,parameters,strict:false}]`——两边字段名
+/// 一样，区别只是 `function` 这层嵌套被拆掉，多一个 `strict` 字段（本次实现固定
+/// 传 `false`，不做严格 JSON Schema 校验）。
+fn chat_tools_to_responses_tools(tools: &serde_json::Value) -> serde_json::Value {
+    let Some(arr) = tools.as_array() else {
+        return json!([]);
+    };
+    json!(
+        arr.iter()
+            .map(|tool| {
+                let f = &tool["function"];
+                json!({
+                    "type": "function",
+                    "name": f["name"],
+                    "description": f["description"],
+                    "parameters": f["parameters"],
+                    "strict": false,
+                })
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+/// 把内部统一存储的 `self.messages`（chat/completions 形状）转换成 Responses API
+/// 的 `(instructions, input)`——`system` 角色的内容抽出来拼成 `instructions`；
+/// `user`/`assistant` 文本消息转成 `message` item；`assistant` 消息里的
+/// `tool_calls` 数组每个转成一个独立的 `function_call` item（Responses API 把它
+/// 们当平级 item，不像 chat/completions 嵌在一条 assistant 消息里）；`tool` 消息
+/// 转成 `function_call_output` item，`call_id` 复用已有的 `tool_call_id`。
+fn messages_to_responses_input(
+    messages: &[serde_json::Value],
+) -> (String, Vec<serde_json::Value>) {
+    let mut instructions = String::new();
+    let mut input = Vec::new();
+    for message in messages {
+        match message["role"].as_str() {
+            Some("system") => {
+                if let Some(text) = message["content"].as_str() {
+                    if !instructions.is_empty() {
+                        instructions.push_str("\n\n");
+                    }
+                    instructions.push_str(text);
+                }
+            }
+            Some("user") => {
+                input.push(json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": content_to_responses_input_parts(&message["content"]),
+                }));
+            }
+            Some("assistant") => {
+                if let Some(text) = message["content"].as_str() {
+                    if !text.trim().is_empty() {
+                        input.push(json!({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{ "type": "output_text", "text": text }],
+                        }));
+                    }
+                }
+                if let Some(calls) = message["tool_calls"].as_array() {
+                    for call in calls {
+                        input.push(json!({
+                            "type": "function_call",
+                            "call_id": call["id"].as_str().unwrap_or_default(),
+                            "name": call["function"]["name"].as_str().unwrap_or_default(),
+                            "arguments": call["function"]["arguments"].as_str().unwrap_or("{}"),
+                        }));
+                    }
+                }
+            }
+            Some("tool") => {
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": message["tool_call_id"].as_str().unwrap_or_default(),
+                    "output": message["content"].as_str().unwrap_or_default(),
+                }));
+            }
+            _ => {}
+        }
+    }
+    (instructions, input)
+}
+
+/// `user_message_content` 生成的要么是纯字符串、要么是 OpenAI 风格的多模态 parts
+/// 数组（`{type:"text",text}`/`{type:"image_url",image_url:{url}}`）——转成
+/// Responses API 对应的 `input_text`/`input_image` item。
+fn content_to_responses_input_parts(content: &serde_json::Value) -> Vec<serde_json::Value> {
+    match content {
+        serde_json::Value::String(text) => vec![json!({ "type": "input_text", "text": text })],
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| match part["type"].as_str() {
+                Some("text") => part["text"]
+                    .as_str()
+                    .map(|text| json!({ "type": "input_text", "text": text })),
+                Some("image_url") => part["image_url"]["url"]
+                    .as_str()
+                    .map(|url| json!({ "type": "input_image", "image_url": url })),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 解析 Responses API 的非流式响应体（`{"output":[...], "usage":{...}}`），把
+/// `output` 数组归一化成跟 chat/completions 原生 `message` 完全一样的形状——
+/// `type=="message"` 的 item 里 `content[].type=="output_text"` 的文本拼起来当
+/// 助手回复；`type=="function_call"` 的 item 转成 chat/completions 风格的
+/// `tool_calls[i]`（`{id,type:"function",function:{name,arguments}}`）。转换后
+/// `self.messages`/`limit_context`/摘要机制完全不需要关心是哪种 wire 协议。
+fn parse_responses_output(body: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    if let Some(items) = body["output"].as_array() {
+        for item in items {
+            match item["type"].as_str() {
+                Some("message") => {
+                    if let Some(parts) = item["content"].as_array() {
+                        for part in parts {
+                            if part["type"].as_str() == Some("output_text") {
+                                if let Some(t) = part["text"].as_str() {
+                                    text.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some("function_call") => {
+                    tool_calls.push(json!({
+                        "id": item["call_id"].as_str().unwrap_or_default(),
+                        "type": "function",
+                        "function": {
+                            "name": item["name"].as_str().unwrap_or_default(),
+                            "arguments": item["arguments"].as_str().unwrap_or("{}"),
+                        }
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+    (text, tool_calls)
+}
+
+/// 两种协议的 `usage` 字段名不一样（chat/completions 是
+/// `prompt_tokens`/`completion_tokens`，Responses API 是
+/// `input_tokens`/`output_tokens`），统一抽成同一个形状供前端展示。拿不到就返回
+/// `None`——有些 provider 压根不回传 usage，静默跳过，不影响主流程。
+fn extract_token_usage(body: &serde_json::Value, wire_api: &str) -> Option<(i64, i64, i64)> {
+    let usage = &body["usage"];
+    if usage.is_null() {
+        return None;
+    }
+    let (prompt, completion) = if wire_api == "responses" {
+        (
+            usage["input_tokens"].as_i64()?,
+            usage["output_tokens"].as_i64()?,
+        )
+    } else {
+        (
+            usage["prompt_tokens"].as_i64()?,
+            usage["completion_tokens"].as_i64()?,
+        )
+    };
+    let total = usage["total_tokens"].as_i64().unwrap_or(prompt + completion);
+    Some((prompt, completion, total))
+}
+
 /// 把用户输入和附件拼成一条 user 消息的 `content`：没有附件时保持纯字符串
 /// （和改动前完全一致，不打扰不用附件的既有场景/历史数据格式）；有附件时才
 /// 切成 OpenAI 兼容的多模态 parts 数组——文本类附件直接拼进文字正文（模型不需要
 /// 支持 vision 也能读），图片作为独立的 `image_url` part（需要模型支持 vision
 /// 才"看得到"，不支持的模型会按各家实现忽略或报错，这里不做能力探测，交给用户
 /// 自己判断当前 Provider 是否支持）。
-fn codex_user_inputs(
-    user_text: &str,
-    attachments: &[ChatAttachment],
-    mode: CodingMode,
-) -> Vec<codex_engine::EngineInput> {
-    let mode_instruction = match mode {
-        CodingMode::Plan => {
-            "\n\n当前为 Plan 模式：只分析和提出方案，不得创建目录、修改文件或执行命令。"
-        }
-        CodingMode::Build => "\n\n当前为 Build 模式：可按工具权限执行实现任务。",
-    };
-    let mut text = format!("{user_text}{mode_instruction}");
-    for attachment in attachments {
-        if let ChatAttachment::File { name, content } = attachment {
-            text.push_str(&format!("\n\n--- 附件文件: {name} ---\n{content}"));
-        }
-    }
-    let mut inputs = vec![codex_engine::EngineInput::Text(text)];
-    for attachment in attachments {
-        if let ChatAttachment::Image {
-            mime, data_base64, ..
-        } = attachment
-        {
-            inputs.push(codex_engine::EngineInput::ImageDataUrl(format!(
-                "data:{mime};base64,{data_base64}"
-            )));
-        }
-    }
-    inputs
-}
-
 fn user_message_content(user_text: &str, attachments: &[ChatAttachment]) -> serde_json::Value {
     if attachments.is_empty() {
         return json!(user_text);
@@ -1592,6 +1763,24 @@ pub(super) async fn run_local_command_output(
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// `command` 的第一个空白分隔 token 如果是 `powershell.exe`/`pwsh.exe`（不管带不带
+/// 完整路径），说明它已经是"可执行文件 + 自带完整参数"的形式，返回
+/// `(可执行文件, 剩余参数原文)` 供直接 spawn，绕开 `cmd.exe /C` 对内嵌换行符的截断
+/// 问题（见下面 `run_local_command_output_with_env` 的注释）；否则返回 `None`，
+/// 调用方走 `cmd.exe /C` 那条路——不假设 exe 路径本身会被引号包住这种更复杂的情况。
+#[cfg(target_os = "windows")]
+fn split_direct_shell_invocation(command: &str) -> Option<(&str, &str)> {
+    let trimmed = command.trim_start();
+    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let exe = &trimmed[..end];
+    let exe_lower = exe.trim_matches('"').to_ascii_lowercase();
+    if exe_lower.ends_with("powershell.exe") || exe_lower.ends_with("pwsh.exe") {
+        Some((exe, trimmed[end..].trim_start()))
+    } else {
+        None
+    }
+}
+
 pub(super) async fn run_local_command_output_with_env(
     command: &str,
     cwd: &str,
@@ -1599,20 +1788,41 @@ pub(super) async fn run_local_command_output_with_env(
 ) -> Result<std::process::Output, AppError> {
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        // 用 `raw_arg` 而不是 `arg`——`command` 这个字符串（对 codex 路由来说，
-        // 是 `codex_exec_target.rs::run_command` 已经用 `cmd_quote` 手动按
-        // cmd.exe 语法转义、拼好的完整命令行）如果走普通的 `.arg()`，Rust 会
-        // 把它当成"一个不透明的参数值"再转义一遍——它自己已经加好的引号会被
-        // 当成需要保护的特殊字符处理，两层转义叠在一起，引号数量直接对不上。
-        // 2026-09 用户实测复现：模型报 PowerShell "字符数缺少终止符" 解析错误，
-        // 根因就是这次双重转义，不是编码问题（两个不同模型都被这条报错误导
-        // 去查 GBK/UTF-8 编码，两个都猜错了方向）。`raw_arg` 原样把字符串接到
-        // 命令行末尾，不做任何额外转义/加引号，`command` 已经是一条完整、
-        // 转义好的命令行，正需要这种"照抄不动"的语义。
-        let mut c = tokio::process::Command::new("cmd");
-        c.raw_arg("/C").raw_arg(command);
-        c.creation_flags(CREATE_NO_WINDOW);
-        c
+        // 用 `raw_arg` 而不是 `arg`——`command` 这个字符串如果已经是调用方按目标
+        // shell 语法手动转义、拼好的完整命令行，走普通的 `.arg()` 的话 Rust 会把它
+        // 当成"一个不透明的参数值"再转义一遍——它自己已经加好的引号会被当成需要
+        // 保护的特殊字符处理，两层转义叠在一起，引号数量直接对不上。2026-09 用户
+        // 实测复现：模型报 PowerShell "字符数缺少终止符" 解析错误，根因就是这次双重
+        // 转义，不是编码问题（两个不同模型都被这条报错误导去查 GBK/UTF-8 编码，
+        // 两个都猜错了方向）。`raw_arg` 原样把字符串接到命令行末尾，不做任何额外
+        // 转义/加引号，`command` 已经是一条完整、转义好的命令行，正需要这种"照抄
+        // 不动"的语义。
+        //
+        // 2026-09 第二轮诊断：`cmd.exe /C` 修好双重转义之后，命令仍然"执行
+        // 成功（exit 0）但输出完全是空的"——用 PowerShell 直接复现
+        // `cmd /c 'powershell -Command "a`nb"'`（`` `n `` 是真实换行符）确认：
+        // cmd.exe 的 `/C` 解析器按物理行处理语句边界，双引号包不住内嵌的换行——
+        // 换行后面的内容直接被吞掉，不报错、不进 stderr，只是"消失"。CRLF 也一样
+        // 吞。改用 `ProcessStartInfo` 直接起 `powershell.exe`（不经 cmd.exe）复现，
+        // 同一个带换行的参数原样保留、输出正常拿到。如果 `command` 已经是"完整
+        // 可执行文件路径 + 自带参数"的形式（`split_direct_shell_invocation` 识别），
+        // 就直接起这个可执行文件，走 Windows 标准命令行解析（`CommandLineToArgvW`，
+        // PowerShell 自己也是这套），双引号内的换行能原样保留，不会被截断；否则
+        // （任意 shell 命令字符串，比如 `git status`、`dir | findstr foo` 这类，
+        // 不一定是可执行文件路径开头）仍然需要 cmd.exe 当解释器，保持原来的包法。
+        if let Some((exe, rest)) = split_direct_shell_invocation(command) {
+            let mut c = tokio::process::Command::new(exe);
+            if !rest.is_empty() {
+                c.raw_arg(rest);
+            }
+            c.creation_flags(CREATE_NO_WINDOW);
+            c
+        } else {
+            let mut c = tokio::process::Command::new("cmd");
+            c.raw_arg("/C").raw_arg(command);
+            c.creation_flags(CREATE_NO_WINDOW);
+            c
+        }
     };
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {

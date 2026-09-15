@@ -20,6 +20,12 @@ pub struct AiProvider {
     pub api_key_ref: Option<String>,
     pub model: String,
     pub is_local: bool,
+    /// `"chat_completions"`（默认）或 `"responses"`——2026-09 老引擎新增 OpenAI
+    /// Responses API 支持后，每个 provider 要标注自己用哪种 wire 协议，用户在
+    /// Provider 设置里手动选，不做自动探测。裸字符串而不是枚举是跟现有代码风格
+    /// 保持一致（`is_local` 也是裸 `bool`），`session.rs` 用 `== "responses"`
+    /// 判断即可。
+    pub wire_api: String,
     pub created_at: String,
 }
 
@@ -30,6 +36,7 @@ pub struct AiProviderInput {
     pub api_key: Option<String>,
     pub model: String,
     pub is_local: bool,
+    pub wire_api: String,
 }
 
 fn credential_key(id: Uuid) -> String {
@@ -70,6 +77,7 @@ impl AiProviderManager {
             api_key_ref,
             model: input.model,
             is_local: input.is_local,
+            wire_api: input.wire_api,
             created_at: Utc::now().to_rfc3339(),
         };
         self.repo.create(&provider)?;
@@ -104,6 +112,7 @@ impl AiProviderManager {
             api_key_ref,
             model: input.model,
             is_local: input.is_local,
+            wire_api: input.wire_api,
             created_at: existing.created_at,
         };
         self.repo.update(&provider)?;

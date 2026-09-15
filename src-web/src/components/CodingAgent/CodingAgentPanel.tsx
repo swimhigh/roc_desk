@@ -90,6 +90,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     acceptChange,
     rejectChange,
     undoChange,
+    toggleToolOutput,
     revertTurn,
     resolveConfirm,
     resolveConfirmAndRemember,
@@ -450,6 +451,9 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
                   done={!entry.running}
                   detail={entry.detail}
                   onOpenFile={hasFileTarget && entry.detail && onOpenFile ? () => onOpenFile(entry.detail!) : undefined}
+                  output={entry.output}
+                  expanded={entry.expanded}
+                  onToggleOutput={() => toggleToolOutput(entry.id)}
                 />
               );
             }
@@ -472,6 +476,17 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
                     <div>Git 提交 {entry.path}</div>
                     <pre style={{ margin: 0, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", fontSize: 11 }}>{entry.output}</pre>
                   </div>
+                </div>
+              );
+            }
+            if (entry.kind === "usage") {
+              return entry.isTurnTotal ? (
+                <div key={entry.id} style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600, padding: "2px 0" }}>
+                  本轮对话共消耗 tokens：输入 {entry.promptTokens} · 输出 {entry.completionTokens} · 合计 {entry.totalTokens}
+                </div>
+              ) : (
+                <div key={entry.id} style={{ fontSize: 11, color: "var(--text-secondary)", opacity: 0.65 }}>
+                  本次请求消耗 tokens：输入 {entry.promptTokens} · 输出 {entry.completionTokens} · 合计 {entry.totalTokens}
                 </div>
               );
             }

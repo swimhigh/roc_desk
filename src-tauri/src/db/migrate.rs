@@ -51,6 +51,10 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0017_coding_history_messages",
         include_str!("../../migrations/0017_coding_history_messages.sql"),
     ),
+    (
+        "0018_ai_providers_wire_api",
+        include_str!("../../migrations/0018_ai_providers_wire_api.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
