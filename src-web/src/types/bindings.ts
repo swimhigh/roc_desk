@@ -4,6 +4,14 @@
 // Phase 1 先手写以加快首个可运行版本的落地，接入 tauri-specta 是后续要做的事，
 // 到时候这个文件会被生成结果替换（导出的类型名/形状保持不变即可）。
 
+/** "转到定义/声明"命中的一个候选位置（src-tauri/src/symbols/mod.rs::SymbolLocation）。*/
+export interface SymbolLocation {
+  path: string;
+  /** 1-based 行号，和 Monaco Range 的行号约定一致。 */
+  line: number;
+  kind: string;
+}
+
 export type WorkspaceKind = "local" | "remote";
 
 export interface WorkspaceProfile {
@@ -244,6 +252,28 @@ export interface IndexStats {
   job_count: number;
 }
 
+export interface LogImportFailure {
+  path: string;
+  error: string;
+}
+
+export interface LogImportOutcome {
+  lines_imported: number;
+  files_imported: number;
+  failed: LogImportFailure[];
+}
+
+export interface LogImportProgressEvent {
+  requestId: string;
+  path: string;
+  done: number;
+  total: number;
+}
+
+/** 对齐 Codex `config.toml` 的 `model_reasoning_effort`；`null`/未设置表示不传
+ * 这个参数，交给服务端默认值。 */
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
 export interface AiProvider {
   id: string;
   name: string;
@@ -252,6 +282,7 @@ export interface AiProvider {
   model: string;
   is_local: boolean;
   wire_api: string;
+  reasoning_effort: ReasoningEffort | string | null;
   created_at: string;
 }
 
@@ -262,6 +293,7 @@ export interface AiProviderInput {
   model: string;
   is_local: boolean;
   wire_api: string;
+  reasoning_effort: string | null;
 }
 
 export type ChatRole = "system" | "user" | "assistant";
@@ -394,6 +426,12 @@ export interface McpServerInput {
   enabled: boolean;
 }
 
+export interface SkillMeta {
+  name: string;
+  description: string;
+  dir: string;
+}
+
 export interface CodingTodoUpdateEvent {
   sessionId: string;
   todos: TodoItem[];
@@ -485,6 +523,22 @@ export interface CodingGitCommitResultEvent {
   sessionId: string;
   path: string;
   output: string;
+}
+
+/** 用户点了文件改动卡片的"应用/拒绝"、这一轮提议的改动全部处理完之后，后端
+ * 自动帮用户把对话续上——这一对事件通知前端"这个后台发起的续跑轮次开始/
+ * 结束了"，让 UI 表现得和手动发消息完全一致（时间线气泡、输入框禁用状态、
+ * 历史落盘），不需要用户手动再发一条消息才能感知到 AI 已经继续（2026-09
+ * 用户反馈：点了应用后 AI 什么反应都没有，必须等下一轮会话）。 */
+export interface CodingAutoContinueStartEvent {
+  sessionId: string;
+  note: string;
+}
+
+export interface CodingAutoContinueDoneEvent {
+  sessionId: string;
+  reply: string | null;
+  error: string | null;
 }
 
 export interface SftpTransferProgressEvent {

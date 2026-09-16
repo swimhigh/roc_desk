@@ -195,11 +195,18 @@ impl AiChatClient {
             "{}/chat/completions",
             provider.api_base.trim_end_matches('/')
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": provider.model,
             "messages": outgoing,
             "stream": true,
         });
+        // 和 `coding/session.rs` 同一份 Provider 级配置——对齐 Codex 的
+        // `model_reasoning_effort`，留空就不传，维持交给服务端默认值的行为。
+        // AI 问答这条路径始终走 chat/completions（不支持 Responses API），
+        // 顶层 `reasoning_effort` 是这一种协议对应的传参位置。
+        if let Some(effort) = &provider.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
         let client = runtime.map_or(&self.client, AiRuntime::client);
         let mut req = client.post(&url).json(&body);
         if let Some(key) = api_key {
@@ -272,7 +279,7 @@ impl AiChatClient {
             "{}/chat/completions",
             provider.api_base.trim_end_matches('/')
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": provider.model,
             "messages": [
                 { "role": "system", "content": system_prompt },
@@ -280,6 +287,9 @@ impl AiChatClient {
             ],
             "stream": false,
         });
+        if let Some(effort) = &provider.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
         let mut req = self.client.post(&url).json(&body);
         if let Some(key) = api_key {
             req = req.bearer_auth(key);

@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Search, FileInput, Trash2, RefreshCw, HelpCircle, Folder, File as FileIcon } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { Search, FileInput, FolderInput, Trash2, RefreshCw, HelpCircle, Folder, File as FileIcon, X } from "lucide-react";
 import { useLogSearchStore } from "../../stores/logSearchStore";
 import { sftpService } from "../../services/sftpService";
 import { SegmentedControl } from "../shared/SegmentedControl";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
-import type { FileEntry, LiveSearchResult, LogSearchResult } from "../../types/bindings";
+import type { FileEntry, LiveSearchResult, LogImportOutcome, LogImportProgressEvent, LogSearchResult } from "../../types/bindings";
 
 interface LogSearchPanelProps {
   workspaceKind: "local" | "remote";
@@ -58,8 +59,8 @@ export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, p
     select,
     runSearch,
     loadStats,
-    importLocalFile,
-    importRemoteFile,
+    importLocalPaths,
+    importRemotePaths,
     clearOlderThan,
   } = useLogSearchStore();
   const push = useToastStore((s) => s.push);
@@ -69,6 +70,13 @@ export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, p
   const [showExamples, setShowExamples] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 远程批量导入待选路径列表（2026-09 用户反馈：原来一次只能导入一个文件，体验
+  // 不好，想支持多选文件/整个目录）——本地有系统原生的多选文件对话框，远程没有
+  // 图形化浏览器，靠手动"输入路径 + 加入列表"攒一批，和"递归导入子目录"勾选框
+  // 搭配，语义对应后端 `log_import_remote_paths` 的 `paths: string[]` + `recursive`。
+  const [pendingRemotePaths, setPendingRemotePaths] = useState<string[]>([]);
+  const [recursive, setRecursive] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ path: string; done: number; total: number } | null>(null);
 
   useEffect(() => {
     loadStats();
@@ -122,26 +130,72 @@ export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, p
 
   const rows: Row[] = mode === "index" ? indexResults : liveResults;
 
-  const handleImport = async () => {
-    if (workspaceKind === "local") {
-      const selected = await open({ directory: false, multiple: false });
-      if (!selected || Array.isArray(selected)) return;
-      try {
-        const count = await importLocalFile(selected, workspaceName);
-        push("success", `已导入 ${count} 行`);
-      } catch (e) {
-        push("error", `导入失败：${formatError(e)}`);
-      }
+  const reportOutcome = (outcome: LogImportOutcome) => {
+    if (outcome.failed.length === 0) {
+      push("success", `已导入 ${outcome.lines_imported} 行（${outcome.files_imported} 个文件）`);
       return;
     }
-    if (!profileId || !importPath.trim()) return;
+    const first = outcome.failed[0];
+    const more = outcome.failed.length > 1 ? ` 等 ${outcome.failed.length} 个文件失败` : "";
+    push(
+      "error",
+      `已导入 ${outcome.lines_imported} 行（${outcome.files_imported} 个成功），${first.path}${more}：${first.error}`,
+    );
+  };
+
+  /** `paths` 为空直接跳过（比如目录选择框被取消）。进度事件按 `requestId` 过滤，
+   * 和 SFTP 传输进度（`SftpBrowser.tsx`）用的是同一套"组件本地监听 + 手动
+   * unlisten"模式。 */
+  const runImport = async (paths: string[], isLocal: boolean, recursiveFlag: boolean) => {
+    if (paths.length === 0) return;
+    const requestId = crypto.randomUUID();
+    setImportProgress({ path: "", done: 0, total: paths.length });
+    const unlisten = await listen<LogImportProgressEvent>("log:import-progress", (event) => {
+      if (event.payload.requestId !== requestId) return;
+      setImportProgress({ path: event.payload.path, done: event.payload.done, total: event.payload.total });
+    });
     try {
-      const count = await importRemoteFile(profileId, importPath.trim(), workspaceName);
-      push("success", `已导入 ${count} 行`);
+      const outcome = isLocal
+        ? await importLocalPaths(paths, recursiveFlag, workspaceName, requestId)
+        : await importRemotePaths(profileId!, paths, recursiveFlag, workspaceName, requestId);
+      reportOutcome(outcome);
+      setPendingRemotePaths([]);
       setImportPath("");
     } catch (e) {
       push("error", `导入失败：${formatError(e)}`);
+    } finally {
+      unlisten();
+      setImportProgress(null);
     }
+  };
+
+  const handleImportLocalFiles = async () => {
+    const selected = await open({ directory: false, multiple: true });
+    if (!selected) return;
+    await runImport(Array.isArray(selected) ? selected : [selected], true, false);
+  };
+
+  const handleImportLocalDir = async () => {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    await runImport([selected], true, true);
+  };
+
+  const addPendingRemotePath = () => {
+    const p = importPath.trim();
+    if (!p || pendingRemotePaths.includes(p)) return;
+    setPendingRemotePaths((ps) => [...ps, p]);
+    setImportPath("");
+    setShowSuggestions(false);
+  };
+
+  const handleImportRemote = async () => {
+    if (!profileId) return;
+    // 列表里已经攒了几个就导入那一批；列表是空的话，把输入框里正在打的这一个
+    // 当成唯一路径直接导入——不强制用户"先加入列表再点导入"，单文件场景（原来
+    // 唯一支持的用法）体验保持不变。
+    const paths = pendingRemotePaths.length > 0 ? pendingRemotePaths : importPath.trim() ? [importPath.trim()] : [];
+    await runImport(paths, false, recursive);
   };
 
   const handleClear = async () => {
@@ -251,31 +305,91 @@ export const LogSearchPanel: React.FC<LogSearchPanelProps> = ({ workspaceKind, p
       </div>
 
       {mode === "index" && (
-        <div
-          className="editor-toolbar"
-          style={{ height: "auto", minHeight: 32, gap: 8, borderTop: "1px solid var(--border-subtle)" }}
-        >
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-            {stats ? `已索引 ${stats.row_count} 行 · ${stats.job_count} 个导入任务` : "索引统计加载中…"}
-          </span>
-          {workspaceKind === "remote" && (
-            <input
-              className="form-input"
-              style={{ width: 220, height: 24 }}
-              placeholder="远程日志文件完整路径"
-              value={importPath}
-              onChange={(e) => setImportPath(e.target.value)}
-            />
+        <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
+          <div className="editor-toolbar" style={{ height: "auto", minHeight: 32, gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+              {stats ? `已索引 ${stats.row_count} 行 · ${stats.job_count} 个导入任务` : "索引统计加载中…"}
+            </span>
+            {workspaceKind === "local" ? (
+              <>
+                <button className="btn ghost sm" onClick={handleImportLocalFiles} disabled={importing} title="可一次选中多个文件">
+                  <FileInput style={{ width: 14, height: 14 }} /> {importing ? "导入中…" : "导入文件"}
+                </button>
+                <button className="btn ghost sm" onClick={handleImportLocalDir} disabled={importing} title="导入整个目录（含子目录）">
+                  <FolderInput style={{ width: 14, height: 14 }} /> 导入目录
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  className="form-input"
+                  style={{ width: 220, height: 24 }}
+                  placeholder="远程日志文件/目录完整路径"
+                  value={importPath}
+                  onChange={(e) => setImportPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addPendingRemotePath();
+                  }}
+                />
+                <button
+                  className="btn ghost sm"
+                  onClick={addPendingRemotePath}
+                  disabled={!importPath.trim()}
+                  title="加入待导入列表，可以攒好几个路径一起导入"
+                >
+                  + 加入列表
+                </button>
+                <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} />
+                  路径是目录时递归导入
+                </label>
+                <button
+                  className="btn ghost sm"
+                  onClick={handleImportRemote}
+                  disabled={importing || (pendingRemotePaths.length === 0 && !importPath.trim())}
+                >
+                  <FileInput style={{ width: 14, height: 14 }} />{" "}
+                  {importing ? "导入中…" : pendingRemotePaths.length > 0 ? `导入（${pendingRemotePaths.length} 项）` : "导入远程文件"}
+                </button>
+              </>
+            )}
+            <button className="btn ghost sm" onClick={loadStats} title="刷新统计">
+              <RefreshCw style={{ width: 14, height: 14 }} />
+            </button>
+            <button className="btn ghost sm" onClick={handleClear} title="清理 30 天前导入的索引（DESIGN.md §十-3 磁盘配额）">
+              <Trash2 style={{ width: 14, height: 14 }} />
+            </button>
+          </div>
+          {workspaceKind === "remote" && pendingRemotePaths.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 12px 8px" }}>
+              {pendingRemotePaths.map((p) => (
+                <span
+                  key={p}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 11,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: "var(--bg-surface-raised)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {p}
+                  <X
+                    style={{ width: 11, height: 11, cursor: "pointer" }}
+                    onClick={() => setPendingRemotePaths((ps) => ps.filter((x) => x !== p))}
+                  />
+                </span>
+              ))}
+            </div>
           )}
-          <button className="btn ghost sm" onClick={handleImport} disabled={importing}>
-            <FileInput style={{ width: 14, height: 14 }} /> {importing ? "导入中…" : workspaceKind === "local" ? "导入本地文件" : "导入远程文件"}
-          </button>
-          <button className="btn ghost sm" onClick={loadStats} title="刷新统计">
-            <RefreshCw style={{ width: 14, height: 14 }} />
-          </button>
-          <button className="btn ghost sm" onClick={handleClear} title="清理 30 天前导入的索引（DESIGN.md §十-3 磁盘配额）">
-            <Trash2 style={{ width: 14, height: 14 }} />
-          </button>
+          {importProgress && (
+            <div style={{ padding: "0 12px 8px", fontSize: 11, color: "var(--text-secondary)" }}>
+              正在导入第 {Math.min(importProgress.done + 1, Math.max(importProgress.total, 1))}/{importProgress.total} 个：{importProgress.path}
+            </div>
+          )}
         </div>
       )}
 

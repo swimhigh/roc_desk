@@ -3,12 +3,15 @@ import { listen } from "@tauri-apps/api/event";
 import { codingService } from "../services/codingService";
 import { permissionRuleService } from "../services/permissionRuleService";
 import { mcpServerService } from "../services/mcpServerService";
+import { skillService } from "../services/skillService";
 import { formatError } from "../utils/error";
 import { useAiChatStore } from "./aiChatStore";
 import { useEditorStore } from "./editorStore";
 import type {
   ChatAttachment,
   CodingAssistantNoteEvent,
+  CodingAutoContinueDoneEvent,
+  CodingAutoContinueStartEvent,
   CodingCommandBlockedEvent,
   CodingCommandConfirmRequestEvent,
   CodingFileChangeEvent,
@@ -25,6 +28,7 @@ import type {
   McpServerInput,
   PermissionRule,
   PermissionRuleInput,
+  SkillMeta,
 } from "../types/bindings";
 
 /** 附件在被真正发送之前，输入框上方"待发送"区域用的前端内部表示——图片额外带
@@ -112,6 +116,7 @@ interface CodingState {
   questionRequest: { requestId: string; question: string; options: string[] } | null;
   permissionRules: PermissionRule[];
   mcpServers: McpServer[];
+  skills: SkillMeta[];
   histories: CodingHistorySummary[];
   viewingHistoryId: string | null;
   /** 最近使用的工作区 id，最前面的最新；只用来判断 LRU 淘汰顺序。 */
@@ -174,6 +179,9 @@ interface CodingState {
   createMcpServer: (input: McpServerInput) => Promise<void>;
   updateMcpServer: (id: string, input: McpServerInput) => Promise<void>;
   deleteMcpServer: (id: string) => Promise<void>;
+  loadSkills: (workspaceId: string) => Promise<void>;
+  importSkill: (workspaceId: string, localPath: string) => Promise<SkillMeta>;
+  deleteSkill: (workspaceId: string, name: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -194,6 +202,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   questionRequest: null,
   permissionRules: [],
   mcpServers: [],
+  skills: [],
   histories: [],
   viewingHistoryId: null,
   residentOrder: [],
@@ -480,6 +489,21 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   deleteMcpServer: async (id) => {
     await mcpServerService.delete(id);
     set((s) => ({ mcpServers: s.mcpServers.filter((m) => m.id !== id) }));
+  },
+
+  loadSkills: async (workspaceId) => {
+    try { set({ skills: await skillService.list(workspaceId) }); } catch { /* best effort */ }
+  },
+
+  importSkill: async (workspaceId, localPath) => {
+    const skill = await skillService.import(workspaceId, localPath);
+    set((s) => ({ skills: [...s.skills.filter((sk) => sk.name !== skill.name), skill] }));
+    return skill;
+  },
+
+  deleteSkill: async (workspaceId, name) => {
+    await skillService.delete(workspaceId, name);
+    set((s) => ({ skills: s.skills.filter((sk) => sk.name !== name) }));
   },
 
   loadHistories: async (workspaceId) => {
@@ -874,6 +898,42 @@ export function registerCodingListeners(): Promise<() => void> {
       useCodingStore.setState((s) => ({
         timeline: [...s.timeline, { kind: "git", id: nextId(), path: event.payload.path, output: event.payload.output }],
       }));
+    }),
+    // 用户点"应用/拒绝"把这一轮提议的改动都处理完之后，后端自动发起的续跑轮次——
+    // 和手动 `sendMessage` 表现得一致：置 `sending`（禁用输入框/显示"停止"按钮），
+    // 时间线里插一条说明，不是静默在后台跑（2026-09 用户反馈：点了应用后 AI 像
+    // 没反应一样，必须再发一条消息才会继续）。
+    listen<CodingAutoContinueStartEvent>("coding:auto-continue-start", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      useCodingStore.setState((s) => ({
+        sending: true,
+        timeline: [...s.timeline, { kind: "note", id: nextId(), text: event.payload.note }],
+      }));
+    }),
+    listen<CodingAutoContinueDoneEvent>("coding:auto-continue-done", (event) => {
+      if (event.payload.sessionId !== currentSessionId()) return;
+      // 用户在自动续跑进行中点了"停止"——和手动发送里的取消处理走同一套展示
+      // （不算真正的错误，不弹红条；清掉还转圈的工具条目，否则永远等不到
+      // `coding:tool-call-end` 补上）。
+      if (event.payload.error?.includes("已停止：用户取消了当前对话轮次")) {
+        useCodingStore.setState((s) => ({
+          sending: false,
+          timeline: [
+            ...s.timeline.map((t) => (t.kind === "tool" && t.running ? { ...t, running: false } : t)),
+            { kind: "note", id: nextId(), text: "已停止" },
+          ],
+        }));
+        return;
+      }
+      useCodingStore.setState((s) => ({
+        sending: false,
+        timeline: event.payload.reply
+          ? [...s.timeline, { kind: "assistant", id: nextId(), text: event.payload.reply }]
+          : event.payload.error
+            ? [...s.timeline, { kind: "note", id: nextId(), text: `自动继续失败：${event.payload.error}` }]
+            : s.timeline,
+      }));
+      void useCodingStore.getState().saveCurrentHistory();
     }),
   ];
 

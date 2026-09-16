@@ -17,7 +17,19 @@ const emptyForm: AiProviderInput = {
   model: "",
   is_local: false,
   wire_api: "chat_completions",
+  reasoning_effort: "",
 };
+
+/** 对齐 Codex `config.toml` 的 `model_reasoning_effort` 取值——只对 gpt-5/o 系列
+ * 这类推理模型有意义，普通模型收到这个参数大概率直接忽略或报错，所以默认留空
+ * （"不设置"），不是随便选一个当默认值。 */
+const REASONING_EFFORT_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "不设置（交给服务端默认值）" },
+  { value: "minimal", label: "minimal" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+];
 interface ProviderDraft {
   form: AiProviderInput;
   editingId: string | null;
@@ -71,6 +83,7 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
       model: p.model,
       is_local: p.is_local,
       wire_api: p.wire_api || "chat_completions",
+      reasoning_effort: p.reasoning_effort ?? "",
     };
     setForm(next);
     providerDraft = { form: next, editingId: id };
@@ -185,6 +198,22 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
           <label className="form-label" style={{ margin: 0 }}>
             使用 Responses API（而不是 Chat Completions，官方 OpenAI/Azure/Bedrock 部分新模型需要）
           </label>
+        </div>
+        <div className="form-row">
+          <label className="form-label" title="对齐 Codex config.toml 的 model_reasoning_effort，只对 gpt-5/o 系列这类推理模型有意义">
+            推理力度
+          </label>
+          <select
+            className="form-select"
+            value={form.reasoning_effort ?? ""}
+            onChange={(e) => set("reasoning_effort", e.target.value)}
+          >
+            {REASONING_EFFORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="form-actions">
           {isFormDirty(form, editingId) && (

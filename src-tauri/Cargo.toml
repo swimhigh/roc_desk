@@ -105,7 +105,18 @@ goblin = "0.9"
 # 解析 JAR 包（本质是 ZIP + META-INF/MANIFEST.MF，2026-08-28 需求：查看 JAR 的
 # 基本信息/依赖库列表 + 内部条目）。只开 "deflate"——JAR 里绝大多数条目要么不压缩
 # （STORED）要么用标准 Deflate，不需要 bzip2/zstd/lzma 这些少见编解码器拖累编译时间。
+# 也是 Skills 导入支持 .zip 压缩包（`coding::skills` 模块）复用的同一个 crate。
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Skills 导入支持 .tar.gz/.tgz 压缩包——`tar` 解包 + `flate2` 解 gzip，都是纯 Rust
+# 实现，不依赖系统装没装 tar/gzip；`flate2` 本来就是 `zip` 的 deflate 后端会拉进来
+# 的传递依赖，这里提升成直接依赖只是为了能在代码里直接 `use`。RAR 格式故意不支持
+# （2026-09 用户决定）：没有靠谱的纯 Rust 解压库，要支持只能调用系统装的 WinRAR/
+# 7-Zip 或者打包一份 unrar 可执行文件进便携版——Skills 包从来不会用 RAR 分发
+# （GitHub/Claude Skills 市场只出 zip/tar.gz），为这个概率极低的场景增加外部依赖
+# 不划算。
+tar = "0.4"
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 # RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——依次踩了 rustls 套件受限、

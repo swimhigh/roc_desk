@@ -108,6 +108,11 @@ interface EditorState {
    * 天然就该对两种标签一视同仁。 */
   order: string[];
   activePath: string | null;
+  /** 每个标签最近一次被打开/激活的时间戳（`Date.now()`）——标签数量达到上限时
+   * 用它选出最久没被看过的那个自动关掉，不是 `order`（那是标签栏从左到右的
+   * 展示顺序，"关闭左侧/右侧标签"这类按位置的操作用它，语义和"最近是否用过"
+   * 完全不同）。 */
+  lastAccess: Record<string, number>;
   /** 没打开过工作区时，是否展示"只有 tab 栏 + 编辑区"的极简游离文件编辑器壳
    * （2026-09-03 需求）——独立于 `buffers`/`order`，这样"返回首页"只是盖一层
    * HomeShell 上去，已打开的游离标签不会跟着卸载（和 workspaceStore 的
@@ -219,6 +224,38 @@ const backendFor = (buf: EditorBuffer, workspaceId: string | null): FileBackend 
   return workspaceBackend(workspaceId);
 };
 
+/** 标签栏数量上限（2026-09 需求）：超过这个数再开新标签时，先按 `lastAccess`
+ * 淘汰最久没被看过的那一个腾位置，而不是无限累积——标签开多了标签栏本身就
+ * 挤得看不清文件名，早期这类反馈也出现过。 */
+const MAX_TABS = 20;
+
+/** 达到上限时选出要淘汰的标签：按 `lastAccess` 从旧到新排，跳过有未保存修改
+ * 的 buffer（`dirty`）——"开太多标签"是无害操作，不该附带把用户没保存的编辑
+ * 静默丢掉；diff 标签是只读快照，没有 dirty 语义，永远是候选。候选里全是
+ * dirty（理论上要 20 个文件同时都没保存）时不淘汰，宁可这次先超过上限。 */
+const pickEvictionVictim = (s: EditorState): string | undefined =>
+  s.order
+    .filter((p) => !s.buffers[p]?.dirty)
+    .sort((a, b) => (s.lastAccess[a] ?? 0) - (s.lastAccess[b] ?? 0))[0];
+
+/** 真正新开一个标签之前调用：数量已经顶到上限时先把淘汰对象从 buffers/diffs/
+ * order/lastAccess 里一起摘掉，调用方在同一个 `set` 回调里把新标签加进摘掉后的
+ * state，保证这一步和"加新标签"是同一次状态更新，不会有中间态被别处读到。 */
+const evictLruIfAtLimit = (s: EditorState) => {
+  if (s.order.length < MAX_TABS) return s;
+  const victim = pickEvictionVictim(s);
+  if (!victim) return s;
+  const buffers = { ...s.buffers };
+  const diffs = { ...s.diffs };
+  const lastAccess = { ...s.lastAccess };
+  delete buffers[victim];
+  delete diffs[victim];
+  delete lastAccess[victim];
+  const order = s.order.filter((p) => p !== victim);
+  const activePath = s.activePath === victim ? null : s.activePath;
+  return { ...s, buffers, diffs, order, lastAccess, activePath };
+};
+
 export const useEditorStore = create<EditorState>((set, get) => {
   // `openPreview`（工作区内文件）和 `openStandaloneFile`（游离文件）除了读文件走
   // 哪个 backend 之外，其余"按 kind 分流"的逻辑完全一致，抽成这一个共享实现。
@@ -235,9 +272,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
     // （真实反馈，2026-08-18）。多文件同时编辑是更基础的诉求，优先满足它。
     const addBuffer = (buf: EditorBuffer) =>
       set((s) => {
-        const buffers = { ...s.buffers, [path]: buf };
-        const order = s.order.includes(path) ? s.order : [...s.order, path];
-        return { buffers, order, activePath: path };
+        const base = evictLruIfAtLimit(s);
+        const buffers = { ...base.buffers, [path]: buf };
+        const order = base.order.includes(path) ? base.order : [...base.order, path];
+        const lastAccess = { ...base.lastAccess, [path]: Date.now() };
+        return { buffers, order, activePath: path, lastAccess };
       });
 
     const blankBuffer = (kind: PreviewKind, content: string, extra: Partial<EditorBuffer> = {}): EditorBuffer => ({
@@ -344,6 +383,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
   diffs: {},
   order: [],
   activePath: null,
+  lastAccess: {},
   standaloneShellVisible: false,
   conflict: null,
   pendingReveal: null,
@@ -356,7 +396,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
   openDiff: async (workspaceId, leftPath, rightPath) => {
     const already = Object.values(get().diffs).find((d) => d.leftPath === leftPath && d.rightPath === rightPath);
     if (already) {
-      set({ activePath: already.id });
+      set((s) => ({ activePath: already.id, lastAccess: { ...s.lastAccess, [already.id]: Date.now() } }));
       return;
     }
     const [left, right] = await Promise.all([
@@ -372,11 +412,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
       rightContent: right.text,
       language: detectLanguage(rightPath),
     };
-    set((s) => ({
-      diffs: { ...s.diffs, [id]: diff },
-      order: [...s.order, id],
-      activePath: id,
-    }));
+    set((s) => {
+      const base = evictLruIfAtLimit(s);
+      return {
+        diffs: { ...base.diffs, [id]: diff },
+        order: [...base.order, id],
+        activePath: id,
+        lastAccess: { ...base.lastAccess, [id]: Date.now() },
+      };
+    });
   },
 
   openDiffContent: (leftLabel, leftContent, rightLabel, rightContent, language) => {
@@ -384,16 +428,20 @@ export const useEditorStore = create<EditorState>((set, get) => {
       (d) => d.leftPath === leftLabel && d.rightPath === rightLabel && d.leftContent === leftContent && d.rightContent === rightContent,
     );
     if (already) {
-      set({ activePath: already.id });
+      set((s) => ({ activePath: already.id, lastAccess: { ...s.lastAccess, [already.id]: Date.now() } }));
       return;
     }
     const id = `${DIFF_ID_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const diff: DiffBuffer = { id, leftPath: leftLabel, rightPath: rightLabel, leftContent, rightContent, language };
-    set((s) => ({
-      diffs: { ...s.diffs, [id]: diff },
-      order: [...s.order, id],
-      activePath: id,
-    }));
+    set((s) => {
+      const base = evictLruIfAtLimit(s);
+      return {
+        diffs: { ...base.diffs, [id]: diff },
+        order: [...base.order, id],
+        activePath: id,
+        lastAccess: { ...base.lastAccess, [id]: Date.now() },
+      };
+    });
   },
 
   syncExternalWrite: (path, content, mtime) => {
@@ -412,7 +460,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     });
   },
 
-  setActive: (path) => set({ activePath: path }),
+  setActive: (path) => set((s) => ({ activePath: path, lastAccess: { ...s.lastAccess, [path]: Date.now() } })),
 
   updateContent: (path, content) => {
     set((s) => {

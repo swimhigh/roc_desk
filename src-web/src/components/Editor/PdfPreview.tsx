@@ -9,6 +9,12 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PdfPreviewProps {
   /** base64（不含 data: 前缀）。 */
   base64: string;
+  /** false 时只是 `display:none` 隐藏，组件继续挂载——`CodeEditor` 会给每个
+   * 当前打开的 PDF 标签常驻一个 `PdfPreview` 实例（不止 active 的那个），切
+   * 标签页时不销毁/重建，滚动位置、缩放、搜索、目录展开状态才不会被清零
+   * （2026-09 用户反馈：PDF 标签切走再切回来会重新加载、跳回顶部）。缺省 true，
+   * 兼容还没接入这套多开逻辑的调用方。 */
+  visible?: boolean;
 }
 
 interface OutlineEntry {
@@ -95,7 +101,7 @@ const OutlineNode: React.FC<{ item: OutlineEntry; depth: number; onNavigate: (de
  * 完全照抄 pdf.js 自带 viewer 的 find controller 需要引入一整套 web/ 层（事件总线、
  * LinkService 等），对这个轻量预览来说成本远大于收益，span 级高亮已经足够定位到目标。
  */
-export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64 }) => {
+export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pagesContainerRef = useRef<HTMLDivElement | null>(null);
   const pageWrapperRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -323,11 +329,15 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64 }) => {
   };
 
   if (error) {
-    return <div style={{ padding: 16, fontSize: 12, color: "var(--danger)" }}>PDF 解析失败：{error}</div>;
+    return (
+      <div style={{ display: visible ? "block" : "none", padding: 16, fontSize: 12, color: "var(--danger)" }}>
+        PDF 解析失败：{error}
+      </div>
+    );
   }
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, minHeight: 0, display: visible ? "flex" : "none", flexDirection: "column" }}>
       <div className="pdf-toolbar">
         <button
           className={`btn ghost sm ${outlineOpen ? "active" : ""}`}

@@ -304,8 +304,12 @@ export const AgentBrowser: React.FC<AgentBrowserProps> = ({
 
   const importToLogSearch = async (path: string) => {
     try {
-      const count = await logSearchService.importLocalFile(path, "unknown");
-      push("success", `已导入 ${count} 行到本地搜索引擎`);
+      const outcome = await logSearchService.importLocalPaths([path], false, "unknown", crypto.randomUUID());
+      if (outcome.failed.length > 0) {
+        push("error", `导入失败：${outcome.failed[0].error}`);
+      } else {
+        push("success", `已导入 ${outcome.lines_imported} 行到本地搜索引擎`);
+      }
     } catch (e) {
       push("error", `导入失败：${formatError(e)}`);
     }

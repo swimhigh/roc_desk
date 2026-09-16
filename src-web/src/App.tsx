@@ -125,7 +125,7 @@ function App() {
   const [aiToolsOpen, setAiToolsOpen] = useState(false);
   const [aiToolsWidth, setAiToolsWidth] = useState(() => {
     const stored = Number(localStorage.getItem("roc_desk-ai-tools-width"));
-    return stored >= 300 && stored <= 800 ? stored : 420;
+    return stored >= 300 && stored <= 4000 ? stored : 420;
   });
   const aiToolsDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
@@ -484,7 +484,11 @@ function App() {
     document.body.style.userSelect = "none";
     const onMove = (ev: MouseEvent) => {
       if (!aiToolsDragRef.current) return;
-      const maxWidth = Math.max(300, Math.min(800, window.innerWidth - sidebarWidth - 320));
+      // 原先限死在 800px、且给编辑器最少预留 320px，用户反馈想要的是"有时候
+      // AI 工具面板需要完全压过编辑器"——编辑器容器本来就是 flex:1+minWidth:0，
+      // 撑到 0 也不会破坏布局，所以这里不再设编辑器最小可用宽度的硬上限，只给
+      // 拖拽手柄本身留一点余量，允许一路拖到接近侧边栏边缘。
+      const maxWidth = Math.max(300, window.innerWidth - sidebarWidth - 24);
       latest = Math.max(300, Math.min(maxWidth, aiToolsDragRef.current.startWidth + aiToolsDragRef.current.startX - ev.clientX));
       setAiToolsWidth(latest);
     };

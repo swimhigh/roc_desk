@@ -251,8 +251,8 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   };
 
   /** 右键"导入到本地搜索引擎"（2026-08-18 需求，用户原话："右键选中.LOG等文本类型的
-   * 文件可以将他导入本地搜索引擎进行搜索"）——复用日志搜索模块已有的导入命令（`log_import_
-   * local_file`/`log_import_file`），之前只能从"日志搜索"面板里点"导入本地/远程文件"再
+   * 文件可以将他导入本地搜索引擎进行搜索"）——复用日志搜索模块已有的批量导入命令（`log_import_
+   * local_paths`/`log_import_remote_paths`，这里只传一项），之前只能从"日志搜索"面板里点"导入本地/远程文件"再
    * 弹文件选择框去找，这里是从 Explorer 直接对着已经在看的文件走这条路径，少绕一圈。
    * 不限制文件扩展名——导入命令本身就是按行读文本进 FTS5 索引，不是"专属 .log"的能力，
    * 限制成只对 .log 显示反而人为缩小了这个入口的适用范围。 */
@@ -260,11 +260,16 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     const current = useWorkspaceStore.getState().current;
     if (!current) return;
     try {
-      const count =
+      const requestId = crypto.randomUUID();
+      const outcome =
         current.kind === "remote" && current.connection_id
-          ? await logSearchService.importFile(current.connection_id, entry.path, current.display_name)
-          : await logSearchService.importLocalFile(entry.path, current.display_name);
-      push("success", `已导入 ${count} 行到本地搜索引擎`);
+          ? await logSearchService.importRemotePaths(current.connection_id, [entry.path], false, current.display_name, requestId)
+          : await logSearchService.importLocalPaths([entry.path], false, current.display_name, requestId);
+      if (outcome.failed.length > 0) {
+        push("error", `导入失败：${outcome.failed[0].error}`);
+      } else {
+        push("success", `已导入 ${outcome.lines_imported} 行到本地搜索引擎`);
+      }
     } catch (e) {
       push("error", `导入失败：${formatError(e)}`);
     }
@@ -291,8 +296,17 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   };
 
   const menuItems = (entry: FileEntry, depth: number): ContextMenuItem[] => {
-    const relativePath = entry.path.startsWith(rootPath)
-      ? entry.path.slice(rootPath.length).replace(/^[/\\]/, "")
+    // Windows 本地工作区下 `entry.path` 和 `rootPath` 分隔符不一致：后端 `list_dir`
+    // 统一把路径正规化成 `/`（见 fsops/local.rs），但 `rootPath`（原生目录选择器
+    // 选出来的）保留系统原样的 `\`——直接 `startsWith` 永远不命中，"复制相对路径"
+    // 拿到的其实是 `entry.path` 这个 fallback，也就是完整路径（2026-09 用户反馈）。
+    // 和上面 `roc:reveal-explorer` 处理器（116 行）同样的思路：两边都正规化成 `/`
+    // 再比较，顺带按小写比对——Windows 路径大小写不敏感，`rootPath` 和实际列出来的
+    // 盘符/目录名大小写不一定完全一致。
+    const normalizedRoot = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+    const normalizedEntryPath = entry.path.replace(/\\/g, "/");
+    const relativePath = normalizedEntryPath.toLowerCase().startsWith(normalizedRoot.toLowerCase())
+      ? normalizedEntryPath.slice(normalizedRoot.length).replace(/^\//, "")
       : entry.path;
     const items: ContextMenuItem[] = [];
     if (!entry.is_dir) {

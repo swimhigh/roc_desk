@@ -19,6 +19,7 @@ use crate::mcp::McpServerManager;
 use crate::pty::LocalPtyManager;
 use crate::rdp::RdpSessionManager;
 use crate::ssh::{SshConnectionPool, TrustPromptRegistry};
+use crate::symbols::SymbolIndex;
 use crate::workspace::{WorkspaceHandle, WorkspaceManager};
 
 /// 应用状态聚合（CODE_DESIGN.md §3.1）。
@@ -110,4 +111,8 @@ pub struct AppState {
     /// 精确打断这次 await，不需要轮询。
     pub coding_cancel_tokens:
         Arc<StdMutex<HashMap<Uuid, tokio_util::sync::CancellationToken>>>,
+    /// "转到定义/声明"用的符号索引（2026-09-16 需求），key 为 workspace id——和
+    /// `coding_sessions`/`coding_changes` 同一种"按工作区一份"的模式。轻量正则
+    /// 扫描器，不是真正的语言语义分析，见 `symbols` 模块文档。
+    pub symbol_indexes: Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
 }

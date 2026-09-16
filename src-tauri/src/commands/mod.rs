@@ -13,5 +13,6 @@ pub mod pty;
 pub mod rdp;
 pub mod sftp;
 pub mod ssh;
+pub mod symbols;
 pub mod transfer;
 pub mod workspace;

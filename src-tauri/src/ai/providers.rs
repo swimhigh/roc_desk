@@ -26,6 +26,15 @@ pub struct AiProvider {
     /// 保持一致（`is_local` 也是裸 `bool`），`session.rs` 用 `== "responses"`
     /// 判断即可。
     pub wire_api: String,
+    /// 对齐 Codex `config.toml` 的 `model_reasoning_effort`——gpt-5/o 系列这类
+    /// 推理模型可以从客户端调节内部推理力度。`None`/空字符串表示不传这个参数
+    /// （维持之前"交给服务端默认值"的行为，兼容不支持这个参数的 Provider）；
+    /// 非空时是 `"minimal"`/`"low"`/`"medium"`/`"high"` 之一，`session.rs` 按
+    /// `wire_api` 决定塞进 `reasoning.effort`（Responses API）还是顶层
+    /// `reasoning_effort`（chat/completions 兼容层，不是所有中转都认这个字段，
+    /// 用户自己判断要不要填）。裸 `Option<String>` 而不是枚举，跟 `wire_api`
+    /// 同样的理由——校验交给前端下拉框，不在这里重复定义一遍取值范围。
+    pub reasoning_effort: Option<String>,
     pub created_at: String,
 }
 
@@ -37,10 +46,18 @@ pub struct AiProviderInput {
     pub model: String,
     pub is_local: bool,
     pub wire_api: String,
+    pub reasoning_effort: Option<String>,
 }
 
 fn credential_key(id: Uuid) -> String {
     format!("ai:{id}:api_key")
+}
+
+/// 前端下拉框"不设置"选项传的是空字符串而不是 `null`（HTML `<select>` 的
+/// 惯常写法）——这里统一收敛成 `None`，避免数据库里存进一个空字符串、后续
+/// `session.rs` 还要另外判断"是 None 还是空串"两种"不生效"的写法。
+fn normalize_reasoning_effort(effort: Option<String>) -> Option<String> {
+    effort.filter(|e| !e.trim().is_empty())
 }
 
 pub struct AiProviderManager {
@@ -78,6 +95,7 @@ impl AiProviderManager {
             model: input.model,
             is_local: input.is_local,
             wire_api: input.wire_api,
+            reasoning_effort: normalize_reasoning_effort(input.reasoning_effort),
             created_at: Utc::now().to_rfc3339(),
         };
         self.repo.create(&provider)?;
@@ -113,6 +131,7 @@ impl AiProviderManager {
             model: input.model,
             is_local: input.is_local,
             wire_api: input.wire_api,
+            reasoning_effort: normalize_reasoning_effort(input.reasoning_effort),
             created_at: existing.created_at,
         };
         self.repo.update(&provider)?;

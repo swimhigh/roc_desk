@@ -145,6 +145,13 @@ pub struct CodingSession {
     /// 这一轮里 `stage_change` 产生的所有 `FileChange` 都打上同一个 `turn_id`，
     /// 供前端做"这一轮"的批量操作。
     current_turn_id: Uuid,
+    /// `send_message` 收尾（模型不再调用工具、给出最终回复）时，如果这一轮还有
+    /// `Pending` 状态的文件改动没被用户处理，就记下这一轮的 `turn_id`；
+    /// `commands::coding` 的 accept/reject 在"这一轮改动已经全部处理完"时会检查
+    /// 这个字段，命中就自动帮用户把对话续上（2026-09 用户反馈：AI 说"确认后我
+    /// 再执行 xxx"，用户点了应用却没有任何后续，必须自己再发一条消息才会继续）。
+    /// `None` 表示当前没有"卡在等确认"的轮次。
+    awaiting_confirmation_turn: Option<Uuid>,
 }
 
 // 2026-08-18 用户真实反馈：让编程助手"分析本项目源代码，对代码进行评审"这类
@@ -485,8 +492,11 @@ impl CodingSession {
         // 默认假设去猜命令语法（最常见的是无论目标是什么系统都先猜 Linux/bash），猜错了
         // 要么命令直接执行失败、要么在远程/受限 shell 下产生更隐蔽的语法错误，模型自己
         // 还得再花几轮工具调用才能反应过来。这里的平台/shell 映射跟
-        // `run_local_command_output_with_env`/`log::remote::shell_quote`/`cmd_quote`
-        // 现有的转义假设保持一致，不是新发明的映射关系。
+        // `run_local_ai_command_output`/`log::remote::shell_quote`/`cmd_quote`
+        // 现有的转义假设保持一致，不是新发明的映射关系——2026-09 曾经出现过
+        // 这里说是 PowerShell、`run_command` 实际默认却走 cmd.exe 的不一致
+        // （模型写 PowerShell 专属语法被 cmd.exe 拒收），已经把默认解释器改成
+        // 真的对应 PowerShell，见 `run_local_ai_command_output` 的文档。
         let target_desc = match &target {
             CodingTarget::Local => "本地工作区，Windows，命令行执行环境是 PowerShell".to_string(),
             CodingTarget::Remote { host_label, .. } => {
@@ -511,6 +521,10 @@ impl CodingSession {
              优先用 search_files/list_directory 快速定位最相关的一小批文件（不需要每个文件都读一遍），\
              读完这些就给出结论；不要为了追求\"看得更全\"而无休止地继续搜索/读取，觉得信息已经够回答用户的\
              问题时就直接总结，而不是再多看几个文件。\
+             \n\n读文件内容优先用 read_file 工具，不要用 run_command 里 sed/cat/head 这类命令去手动\
+             分段读——read_file 会自动按合理长度截断并在截断处提示，不需要你自己为了\"怕超长\"而每次\
+             只读几十行、切成一大堆零碎调用（这样反而更浪费工具调用次数）；单次工具结果本身有长度保护，\
+             可以放心一次性多读一些内容（比如几百行），不用过度保守。\
              \n\n用户的话如果有明显歧义、可能对应两种差别很大的意图（比如一句简短的\"继续\"\"报错了\"\
              \"确认\"，既可能是在接着上一个没答完的问题往下走，也可能是在描述一件跟上文完全无关的新情况），\
              不要凭猜测直接选一种理解就展开长篇回答——调用 question 工具，把你想到的几种理解列成\
@@ -532,6 +546,21 @@ impl CodingSession {
             messages: vec![json!({ "role": "system", "content": system_prompt })],
             file_ops,
             current_turn_id: Uuid::new_v4(),
+            awaiting_confirmation_turn: None,
+        }
+    }
+
+    /// `commands::coding` 的 accept/reject 在确认"这一轮改动已经没有 Pending 的了"
+    /// 之后调用：`turn_id` 匹配当前正卡着的那一轮才真正清掉标记、返回 `true`
+    /// （告诉调用方可以触发自动续跑了）；不匹配（比如这是更早一轮遗留、用户很久
+    /// 之后才处理的改动，此时会话可能已经在跑更新的一轮）就什么都不做、返回
+    /// `false`——避免过期的确认误触发一次不相关的自动续跑。
+    pub fn resolve_awaiting_confirmation(&mut self, turn_id: Uuid) -> bool {
+        if self.awaiting_confirmation_turn == Some(turn_id) {
+            self.awaiting_confirmation_turn = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -759,6 +788,19 @@ impl CodingSession {
                 }
                 body
             };
+            // 对齐 Codex `config.toml` 的 `model_reasoning_effort`——gpt-5/o 系列
+            // 这类推理模型从客户端调节内部推理力度，两种协议的传参位置不一样：
+            // Responses API 是嵌套的 `reasoning.effort`，chat/completions 兼容层
+            // 是顶层 `reasoning_effort`（不是所有 OpenAI 兼容中转都认，用户自己
+            // 决定要不要在 Provider 里配这个）。留空（`None`）就完全不带这个
+            // 字段，维持之前"交给服务端默认值"的行为。
+            if let Some(effort) = &provider.reasoning_effort {
+                if is_responses {
+                    body["reasoning"] = json!({ "effort": effort });
+                } else {
+                    body["reasoning_effort"] = json!(effort);
+                }
+            }
             // "停止"按钮：单次请求本身就是这个循环里最容易卡很久的一步（网络慢/
             // 服务端限流排队），所以在这一步单独包一层取消——`req.send()` 败给
             // 取消信号时直接丢弃即可，`reqwest` 的请求 future 被 drop 时会中止
@@ -894,6 +936,20 @@ impl CodingSession {
                 self.messages
                     .push(json!({ "role": "assistant", "content": text }));
                 emit_turn_usage_summary(turn_prompt_tokens, turn_completion_tokens, turn_total_tokens);
+                // 这一轮到此为止（模型不再调用工具）——如果这一轮里 `stage_change`
+                // 生成的改动还有没被用户处理的（`full_auto` 关闭时默认状态），记下
+                // 这一轮的 id，供之后 accept/reject 判断"是不是这一轮的改动都处理完
+                // 了、该自动帮用户把对话续上"（见 `awaiting_confirmation_turn` 字段
+                // 文档、`resolve_awaiting_confirmation`）。没有遗留 Pending 改动就
+                // 清空，避免残留上一次判断错误留下的标记。
+                let has_pending_this_turn = {
+                    let store = self.change_store.lock().await;
+                    store.changes().iter().any(|c| {
+                        c.turn_id == self.current_turn_id && c.status == ChangeStatus::Pending
+                    })
+                };
+                self.awaiting_confirmation_turn =
+                    has_pending_this_turn.then_some(self.current_turn_id);
                 return Ok(text);
             }
 
@@ -1592,7 +1648,7 @@ async fn run_target_command(
 ) -> Result<CommandExecutionResult, AppError> {
     match target {
         CodingTarget::Local => {
-            let output = run_local_command_output_with_env(command, cwd, env).await?;
+            let output = run_local_ai_command_output(command, cwd, env).await?;
             Ok(CommandExecutionResult {
                 output: String::from_utf8_lossy(&[output.stdout, output.stderr].concat())
                     .to_string(),
@@ -1983,55 +2039,85 @@ fn split_direct_shell_invocation(command: &str) -> Option<(&str, &str)> {
     }
 }
 
-pub(super) async fn run_local_command_output_with_env(
-    command: &str,
+/// `command` 的第一个空白分隔 token 如果是 `cmd`/`cmd.exe`，说明调用方显式要用
+/// cmd.exe 当解释器——和上面 `split_direct_shell_invocation` 识别
+/// `powershell.exe`/`pwsh.exe` 是同一个思路，供 `run_local_ai_command_output`
+/// 判断"要不要按默认的 PowerShell 兜底，还是尊重这条命令自己指定的解释器"。
+#[cfg(target_os = "windows")]
+fn is_explicit_cmd_invocation(command: &str) -> bool {
+    let trimmed = command.trim_start();
+    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let exe = trimmed[..end].trim_matches('"').to_ascii_lowercase();
+    exe == "cmd" || exe.ends_with("cmd.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_command_for(command: &str, default_to_powershell: bool) -> tokio::process::Command {
+    // 用 `raw_arg` 而不是 `arg`——`command` 这个字符串如果已经是调用方按目标
+    // shell 语法手动转义、拼好的完整命令行，走普通的 `.arg()` 的话 Rust 会把它
+    // 当成"一个不透明的参数值"再转义一遍——它自己已经加好的引号会被当成需要
+    // 保护的特殊字符处理，两层转义叠在一起，引号数量直接对不上。2026-09 用户
+    // 实测复现：模型报 PowerShell "字符数缺少终止符" 解析错误，根因就是这次双重
+    // 转义，不是编码问题（两个不同模型都被这条报错误导去查 GBK/UTF-8 编码，
+    // 两个都猜错了方向）。`raw_arg` 原样把字符串接到命令行末尾，不做任何额外
+    // 转义/加引号，`command` 已经是一条完整、转义好的命令行，正需要这种"照抄
+    // 不动"的语义。
+    //
+    // 2026-09 第二轮诊断：`cmd.exe /C` 修好双重转义之后，命令仍然"执行
+    // 成功（exit 0）但输出完全是空的"——用 PowerShell 直接复现
+    // `cmd /c 'powershell -Command "a`nb"'`（`` `n `` 是真实换行符）确认：
+    // cmd.exe 的 `/C` 解析器按物理行处理语句边界，双引号包不住内嵌的换行——
+    // 换行后面的内容直接被吞掉，不报错、不进 stderr，只是"消失"。CRLF 也一样
+    // 吞。改用 `ProcessStartInfo` 直接起 `powershell.exe`（不经 cmd.exe）复现，
+    // 同一个带换行的参数原样保留、输出正常拿到。如果 `command` 已经是"完整
+    // 可执行文件路径 + 自带参数"的形式（`split_direct_shell_invocation` 识别），
+    // 就直接起这个可执行文件，走 Windows 标准命令行解析（`CommandLineToArgvW`，
+    // PowerShell 自己也是这套），双引号内的换行能原样保留，不会被截断。
+    if let Some((exe, rest)) = split_direct_shell_invocation(command) {
+        let mut c = tokio::process::Command::new(exe);
+        if !rest.is_empty() {
+            c.raw_arg(rest);
+        }
+        c.creation_flags(CREATE_NO_WINDOW);
+        c
+    } else if default_to_powershell && !is_explicit_cmd_invocation(command) {
+        // `run_command` 工具专用分支（见 `run_local_ai_command_output` 的文档）：
+        // 命令没有显式指定解释器时，按系统提示词的承诺默认当 PowerShell 脚本
+        // 执行，而不是 cmd.exe。用普通 `.arg()`（不是 `raw_arg`）——这里的
+        // `command` 是模型写的一整段原始 PowerShell 脚本文本，不是已经按 shell
+        // 语法转义好的命令行片段，需要 Rust 标准库的自动转义把它安全地包成
+        // `-Command` 的单个参数值；`.arg()` 的转义算法和 Win32
+        // `CommandLineToArgvW` 配套设计，能保证 PowerShell 收到的内容和原始
+        // 文本一字不差，不会被重复转义（和上面 `raw_arg` 那段注释描述的"已经
+        // 转义好的命令行"是完全不同的场景，不冲突）。
+        let mut c = tokio::process::Command::new("powershell.exe");
+        c.arg("-NoProfile").arg("-Command").arg(command);
+        c.creation_flags(CREATE_NO_WINDOW);
+        c
+    } else {
+        // 任意 shell 命令字符串（比如 `git status`、显式 `cmd.exe /c dir`），
+        // 或者 `default_to_powershell` 为 false 的调用方（`git_ops.rs`，命令
+        // 按 POSIX 规则手动转义拼好，见 `run_local_command_output_with_env`
+        // 的文档），仍然用 cmd.exe 当解释器，保持原来的包法。
+        let mut c = tokio::process::Command::new("cmd");
+        c.raw_arg("/C").raw_arg(command);
+        c.creation_flags(CREATE_NO_WINDOW);
+        c
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_command_for(command: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
+async fn run_prepared_command(
+    mut cmd: tokio::process::Command,
     cwd: &str,
     env: &HashMap<String, String>,
 ) -> Result<std::process::Output, AppError> {
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        // 用 `raw_arg` 而不是 `arg`——`command` 这个字符串如果已经是调用方按目标
-        // shell 语法手动转义、拼好的完整命令行，走普通的 `.arg()` 的话 Rust 会把它
-        // 当成"一个不透明的参数值"再转义一遍——它自己已经加好的引号会被当成需要
-        // 保护的特殊字符处理，两层转义叠在一起，引号数量直接对不上。2026-09 用户
-        // 实测复现：模型报 PowerShell "字符数缺少终止符" 解析错误，根因就是这次双重
-        // 转义，不是编码问题（两个不同模型都被这条报错误导去查 GBK/UTF-8 编码，
-        // 两个都猜错了方向）。`raw_arg` 原样把字符串接到命令行末尾，不做任何额外
-        // 转义/加引号，`command` 已经是一条完整、转义好的命令行，正需要这种"照抄
-        // 不动"的语义。
-        //
-        // 2026-09 第二轮诊断：`cmd.exe /C` 修好双重转义之后，命令仍然"执行
-        // 成功（exit 0）但输出完全是空的"——用 PowerShell 直接复现
-        // `cmd /c 'powershell -Command "a`nb"'`（`` `n `` 是真实换行符）确认：
-        // cmd.exe 的 `/C` 解析器按物理行处理语句边界，双引号包不住内嵌的换行——
-        // 换行后面的内容直接被吞掉，不报错、不进 stderr，只是"消失"。CRLF 也一样
-        // 吞。改用 `ProcessStartInfo` 直接起 `powershell.exe`（不经 cmd.exe）复现，
-        // 同一个带换行的参数原样保留、输出正常拿到。如果 `command` 已经是"完整
-        // 可执行文件路径 + 自带参数"的形式（`split_direct_shell_invocation` 识别），
-        // 就直接起这个可执行文件，走 Windows 标准命令行解析（`CommandLineToArgvW`，
-        // PowerShell 自己也是这套），双引号内的换行能原样保留，不会被截断；否则
-        // （任意 shell 命令字符串，比如 `git status`、`dir | findstr foo` 这类，
-        // 不一定是可执行文件路径开头）仍然需要 cmd.exe 当解释器，保持原来的包法。
-        if let Some((exe, rest)) = split_direct_shell_invocation(command) {
-            let mut c = tokio::process::Command::new(exe);
-            if !rest.is_empty() {
-                c.raw_arg(rest);
-            }
-            c.creation_flags(CREATE_NO_WINDOW);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("cmd");
-            c.raw_arg("/C").raw_arg(command);
-            c.creation_flags(CREATE_NO_WINDOW);
-            c
-        }
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    };
     cmd.current_dir(cwd);
     cmd.envs(env);
     // `Command::output()` 只把 stdout/stderr 接成管道用来采集输出，stdin 默认
@@ -2044,4 +2130,41 @@ pub(super) async fn run_local_command_output_with_env(
     // 能把它卡住。
     cmd.stdin(std::process::Stdio::null());
     Ok(cmd.output().await?)
+}
+
+/// `git_ops.rs` 走的这条路径——命令是按 POSIX 规则手动转义拼好的
+/// （`crate::log::remote::shell_quote`），默认解释器保持 cmd.exe 不变，不跟
+/// `run_local_ai_command_output` 一起换成 PowerShell（那样会破坏这层转义假设）。
+pub(super) async fn run_local_command_output_with_env(
+    command: &str,
+    cwd: &str,
+    env: &HashMap<String, String>,
+) -> Result<std::process::Output, AppError> {
+    #[cfg(target_os = "windows")]
+    let cmd = windows_command_for(command, false);
+    #[cfg(not(target_os = "windows"))]
+    let cmd = unix_command_for(command);
+    run_prepared_command(cmd, cwd, env).await
+}
+
+/// `run_command` 工具专用入口——和上面 `run_local_command_output_with_env`
+/// 唯一的区别是：命令没有显式指定解释器时，默认按 PowerShell 执行，而不是
+/// cmd.exe。系统提示词（本文件 498/511-512 行）明确告诉模型"本地命令行执行
+/// 环境是 PowerShell"，但原来的实际默认解释器其实是 cmd.exe——提示词的承诺
+/// 和实际执行环境不一致（2026-09 真实复现：模型写 `Set-Location '...';
+/// python ...` 这类 PowerShell 专属语法，落进 cmd.exe 直接报"'Set-Location'
+/// 不是内部或外部命令"，连续失败两轮才靠自己加 `powershell -Command` 前缀
+/// 试出来，白白浪费好几轮工具调用/token）。这里改成默认真的按提示词说的走
+/// PowerShell，模型不再需要自己猜测/补前缀；命令显式点名 `powershell.exe`/
+/// `pwsh.exe`/`cmd`/`cmd.exe` 时仍然尊重模型自己的选择。
+pub(super) async fn run_local_ai_command_output(
+    command: &str,
+    cwd: &str,
+    env: &HashMap<String, String>,
+) -> Result<std::process::Output, AppError> {
+    #[cfg(target_os = "windows")]
+    let cmd = windows_command_for(command, true);
+    #[cfg(not(target_os = "windows"))]
+    let cmd = unix_command_for(command);
+    run_prepared_command(cmd, cwd, env).await
 }

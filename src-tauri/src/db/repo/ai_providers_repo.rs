@@ -17,8 +17,8 @@ impl AiProvidersRepo {
     pub fn create(&self, provider: &AiProvider) -> Result<(), AppError> {
         let conn = self.pool.get()?;
         conn.execute(
-            "INSERT INTO ai_providers (id, name, api_base, api_key_ref, model, is_local, wire_api, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO ai_providers (id, name, api_base, api_key_ref, model, is_local, wire_api, reasoning_effort, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 provider.id.to_string(),
                 provider.name,
@@ -27,6 +27,7 @@ impl AiProvidersRepo {
                 provider.model,
                 provider.is_local as i64,
                 provider.wire_api,
+                provider.reasoning_effort,
                 provider.created_at,
             ],
         )?;
@@ -36,7 +37,7 @@ impl AiProvidersRepo {
     pub fn update(&self, provider: &AiProvider) -> Result<(), AppError> {
         let conn = self.pool.get()?;
         conn.execute(
-            "UPDATE ai_providers SET name = ?2, api_base = ?3, api_key_ref = ?4, model = ?5, is_local = ?6, wire_api = ?7
+            "UPDATE ai_providers SET name = ?2, api_base = ?3, api_key_ref = ?4, model = ?5, is_local = ?6, wire_api = ?7, reasoning_effort = ?8
              WHERE id = ?1",
             params![
                 provider.id.to_string(),
@@ -46,6 +47,7 @@ impl AiProvidersRepo {
                 provider.model,
                 provider.is_local as i64,
                 provider.wire_api,
+                provider.reasoning_effort,
             ],
         )?;
         Ok(())
@@ -63,7 +65,7 @@ impl AiProvidersRepo {
     pub fn get(&self, id: Uuid) -> Result<Option<AiProvider>, AppError> {
         let conn = self.pool.get()?;
         conn.query_row(
-            "SELECT id, name, api_base, api_key_ref, model, is_local, wire_api, created_at
+            "SELECT id, name, api_base, api_key_ref, model, is_local, wire_api, reasoning_effort, created_at
              FROM ai_providers WHERE id = ?1",
             params![id.to_string()],
             Self::map_row,
@@ -75,7 +77,7 @@ impl AiProvidersRepo {
     pub fn list(&self) -> Result<Vec<AiProvider>, AppError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, api_base, api_key_ref, model, is_local, wire_api, created_at
+            "SELECT id, name, api_base, api_key_ref, model, is_local, wire_api, reasoning_effort, created_at
              FROM ai_providers ORDER BY created_at",
         )?;
         let rows = stmt
@@ -94,7 +96,8 @@ impl AiProvidersRepo {
             model: row.get(4)?,
             is_local: row.get::<_, i64>(5)? != 0,
             wire_api: row.get(6)?,
-            created_at: row.get(7)?,
+            reasoning_effort: row.get(7)?,
+            created_at: row.get(8)?,
         })
     }
 }

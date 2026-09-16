@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use serde_json::json;
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -11,7 +12,7 @@ use crate::coding::permission::{Decision, PermissionRule};
 use crate::coding::skills::SkillMeta;
 use crate::coding::tools::TodoItem;
 use crate::coding::{
-    ChangeStore, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
+    ChangeStatus, ChangeStore, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
 };
 use crate::db::repo::coding_history_repo::{
     CodingHistoryDetail, CodingHistoryInput, CodingHistoryRepo, CodingHistorySummary,
@@ -746,6 +747,166 @@ pub async fn mcp_server_delete(state: State<'_, AppState>, id: Uuid) -> Result<(
     state.mcp_manager.delete(id).await
 }
 
+// ---- Skills 查看 / 导入（`.rock_desk/skills/<name>/SKILL.md`，见
+// `coding::skills` 顶部文档；此前只有后端发现+运行时加载，没有图形化管理入口，
+// 2026-09 用户反馈"看不到导入技能的地方"补上）----
+
+#[tauri::command]
+pub async fn skill_list(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+) -> Result<Vec<SkillMeta>, AppError> {
+    let handle = state
+        .workspaces
+        .read()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(format!("workspace not opened: {workspace_id}")))?;
+    Ok(crate::coding::skills::discover_skills(handle.file_ops.as_ref(), &handle.profile.root_path).await)
+}
+
+#[tauri::command]
+pub async fn skill_delete(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    name: String,
+) -> Result<(), AppError> {
+    let handle = state
+        .workspaces
+        .read()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(format!("workspace not opened: {workspace_id}")))?;
+    let skills =
+        crate::coding::skills::discover_skills(handle.file_ops.as_ref(), &handle.profile.root_path).await;
+    let skill = skills
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| AppError::NotFound(format!("未找到技能：{name}")))?;
+    handle.file_ops.delete(&skill.dir, true).await?;
+    if let Ok(mut guard) = caches().lock() {
+        guard.probes.remove(&workspace_id);
+    }
+    Ok(())
+}
+
+/// `skill_import` 处理压缩包时用到的临时解压目录——不管导入成功还是中途报错都要
+/// 清掉，用 `Drop` 保证这一点，不用在每个 `?` 提前返回的分支各写一遍清理代码。
+struct TempDirGuard(std::path::PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// 把本地磁盘上一个技能目录（含 `SKILL.md`，可以是已解压的文件夹，也可以是
+/// `.zip`/`.tar.gz`/`.tgz` 压缩包——2026-09 用户需求：技能包大多是压缩包分发，
+/// 不该逼用户自己先手动解压）导入到当前工作区的 `.rock_desk/skills/<name>/`。
+/// `local_path` 是前端文件选择器选中的路径，始终指本地磁盘（UI 所在机器）；
+/// 目标工作区可能是远程 SSH/Agent，因此不能像 Explorer 的"复制"那样用
+/// `FileOps::copy`（只支持同一实现内部复制），要用 `copy_between` 跨两种
+/// `FileOps` 实现直接读字节写字节（和 `agent_upload_entry` 上传到远程是同一个
+/// 思路）。技能名从 `SKILL.md` frontmatter 的 `name` 字段取，缺失时退化为文件夹名，
+/// 和 `discover_skills` 解析已有技能时的规则一致。
+#[tauri::command]
+pub async fn skill_import(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    local_path: String,
+) -> Result<SkillMeta, AppError> {
+    let handle = state
+        .workspaces
+        .read()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(format!("workspace not opened: {workspace_id}")))?;
+
+    let raw_path = local_path.trim_end_matches(['/', '\\']).to_string();
+    let is_archive = crate::coding::skills::is_archive_path(&raw_path);
+    // 压缩包先解压到一个临时目录，剩下的逻辑（读 SKILL.md、拷进工作区）和"直接
+    // 选中已解压文件夹"完全一样，只是源路径换成了解压出来的技能根目录；
+    // `_temp_guard` 离开作用域时自动删掉这个临时目录（成功/失败都清）。
+    let (effective_path, _temp_guard) = if is_archive {
+        let extract_dir =
+            std::env::temp_dir().join(format!("roc_desk-skill-{}", Uuid::new_v4()));
+        let skill_root = crate::coding::skills::extract_skill_archive(
+            std::path::Path::new(&raw_path),
+            &extract_dir,
+        )?;
+        (
+            skill_root.to_string_lossy().into_owned(),
+            Some(TempDirGuard(extract_dir)),
+        )
+    } else {
+        (raw_path.clone(), None)
+    };
+
+    let local_ops = crate::fsops::local::LocalFileOps;
+    let skill_md_content = local_ops
+        .read_file(&format!("{effective_path}/SKILL.md"))
+        .await
+        .map_err(|_| AppError::Internal(format!("{effective_path} 下没有找到 SKILL.md，不是一个合法的技能目录")))?;
+    let (fields, _) = crate::coding::skills::parse_frontmatter(&skill_md_content.text);
+    // 压缩包场景下兜底名字取压缩包自己的文件名（去掉扩展名）而不是解压临时目录名——
+    // 后者要么是随机 uuid（压缩包根目录直接有 SKILL.md 时），要么是压缩包内部的
+    // 文件夹名（嵌套一层时），都不如"用户自己选的这个压缩包叫什么"更贴近意图。
+    let folder_name = if is_archive {
+        let base = raw_path.rsplit(['/', '\\']).next().unwrap_or(&raw_path);
+        base.trim_end_matches(".zip")
+            .trim_end_matches(".tar.gz")
+            .trim_end_matches(".tgz")
+            .to_string()
+    } else {
+        effective_path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&effective_path)
+            .to_string()
+    };
+    let name = fields.get("name").cloned().unwrap_or(folder_name);
+    let description = fields.get("description").cloned().unwrap_or_default();
+
+    let root = handle.profile.root_path.trim_end_matches(['/', '\\']);
+    let rock_desk_dir = format!("{root}/.rock_desk");
+    let skills_root = format!("{rock_desk_dir}/skills");
+    let dest = format!("{skills_root}/{name}");
+    // 中间目录第一次导入技能时未必存在，远程 `create_dir` 只建单层（见
+    // `FileOps::create_dir` 文档），要逐层建；已存在时报错直接忽略。
+    let _ = handle.file_ops.create_dir(&rock_desk_dir).await;
+    let _ = handle.file_ops.create_dir(&skills_root).await;
+    // 同名技能已存在时先删再拷贝，把"导入"当成"导入/更新"——用户改了本地
+    // SKILL.md 想重新导入覆盖是常见操作，不该逼着先手动删除旧版本。
+    if handle.file_ops.list_dir(&dest).await.is_ok() {
+        handle.file_ops.delete(&dest, true).await?;
+    }
+
+    let should_cancel = || false;
+    let file_count = std::sync::atomic::AtomicU64::new(0);
+    crate::fsops::copy_between(
+        &local_ops,
+        &effective_path,
+        handle.file_ops.as_ref(),
+        &dest,
+        true,
+        &None,
+        &should_cancel,
+        &file_count,
+    )
+    .await?;
+
+    if let Ok(mut guard) = caches().lock() {
+        guard.probes.remove(&workspace_id);
+    }
+    Ok(SkillMeta {
+        name,
+        description,
+        dir: dest,
+    })
+}
+
 // Accept/Reject/Undo/Redo/RevertTurn 都直接操作 `state.coding_changes` 里独立
 // 加锁的 `ChangeStore`，完全不碰 `state.coding_sessions`/`CodingSession` 的锁——
 // 这样即使 AI 还在同一个工作区里跑一轮可能长达一两分钟的对话（`session.lock()`
@@ -761,20 +922,167 @@ pub async fn coding_accept_change(
 ) -> Result<FileSyncInfo, AppError> {
     let store = get_change_store(&state, workspace_id).await?;
     let mut guard = store.lock().await;
-    guard
+    let result = guard
         .accept(change_id, &state.ssh_pool, &state.agent_pool, &app_handle)
-        .await
+        .await;
+    if result.is_ok() {
+        if let Some(turn_id) = guard.changes().iter().find(|c| c.id == change_id).map(|c| c.turn_id) {
+            let still_pending = guard
+                .changes()
+                .iter()
+                .any(|c| c.turn_id == turn_id && c.status == ChangeStatus::Pending);
+            drop(guard);
+            if !still_pending {
+                maybe_auto_continue(&state, &app_handle, workspace_id, turn_id);
+            }
+        }
+    }
+    result
 }
 
 #[tauri::command]
 pub async fn coding_reject_change(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     workspace_id: Uuid,
     change_id: Uuid,
 ) -> Result<(), AppError> {
     let store = get_change_store(&state, workspace_id).await?;
     let mut guard = store.lock().await;
-    guard.reject(change_id)
+    let result = guard.reject(change_id);
+    if result.is_ok() {
+        if let Some(turn_id) = guard.changes().iter().find(|c| c.id == change_id).map(|c| c.turn_id) {
+            let still_pending = guard
+                .changes()
+                .iter()
+                .any(|c| c.turn_id == turn_id && c.status == ChangeStatus::Pending);
+            drop(guard);
+            if !still_pending {
+                maybe_auto_continue(&state, &app_handle, workspace_id, turn_id);
+            }
+        }
+    }
+    result
+}
+
+/// Accept/Reject 把某个 `Pending` 改动结清、发现这一轮（`turn_id`）已经没有其它
+/// 待处理改动之后调用：后台异步检查 `CodingSession` 是不是正因为这一轮而"卡等
+/// 确认"，是的话自动帮用户把对话续上（2026-09 用户反馈：AI 说"确认后我再执行
+/// xxx"，用户点了应用却没有任何后续，必须自己再发一条消息才会继续）。
+///
+/// 整个过程放进 `tokio::spawn`、不 `await` 它——`coding_accept_change`/
+/// `coding_reject_change` 必须立刻把写盘结果返回给前端，不能因为这里可能触发
+/// 一次耗时的 AI 续跑请求就卡住"应用"按钮本身的响应（继续维持 `ChangeStore` 和
+/// `CodingSession` 两把锁互不阻塞的既有设计，见 `ChangeStore` 顶部文档）。
+fn maybe_auto_continue(
+    state: &State<'_, AppState>,
+    app_handle: &AppHandle,
+    workspace_id: Uuid,
+    turn_id: Uuid,
+) {
+    let coding_sessions = state.coding_sessions.clone();
+    let coding_changes = state.coding_changes.clone();
+    let ai_provider_manager = state.ai_provider_manager.clone();
+    let ssh_pool = state.ssh_pool.clone();
+    let agent_pool = state.agent_pool.clone();
+    let audit_log = state.audit_log.clone();
+    let command_confirms = state.command_confirms.clone();
+    let permission_rules = state.permission_rules.clone();
+    let question_confirms = state.question_confirms.clone();
+    let mcp_manager = state.mcp_manager.clone();
+    let coding_cancel_tokens = state.coding_cancel_tokens.clone();
+    let app_handle = app_handle.clone();
+
+    tokio::spawn(async move {
+        let Some(session) = coding_sessions.read().await.get(&workspace_id).cloned() else {
+            return;
+        };
+        let mut session_guard = session.lock().await;
+        if !session_guard.resolve_awaiting_confirmation(turn_id) {
+            // 不是当前正卡着的那一轮（比如这批改动很久之后才被处理，会话早就跑
+            // 到更新的一轮甚至已经结束了）——不触发，避免打断/误接一段不相关
+            // 的对话。
+            return;
+        }
+
+        let summary = match coding_changes.read().await.get(&workspace_id).cloned() {
+            Some(store) => {
+                let guard = store.lock().await;
+                summarize_turn_changes(guard.changes().iter().filter(|c| c.turn_id == turn_id))
+            }
+            None => "改动已处理".to_string(),
+        };
+        let continuation_text =
+            format!("[系统自动继续] 你上一轮提议的文件改动已经全部处理完：{summary}。请据此继续完成任务。");
+        let session_id = session_guard.id;
+
+        // 这整个续跑请求完全是后端自己发起的，不是前端调用 `coding_send_message`
+        // 触发的——前端的"发送中"状态（输入框禁用/停止按钮）纯靠那个 invoke 调用
+        // 前后手动置位，感知不到这里在后台默默跑一轮。用一对独立事件把"开始/
+        // 结束"通知过去，前端按和手动发送完全一致的方式处理（追加时间线气泡、
+        // 置 sending、存历史），用户不会误以为点了应用之后什么都没发生，也不会
+        // 在续跑进行中又手滑发一条容易和它打架的新消息。
+        let _ = app_handle.emit(
+            "coding:auto-continue-start",
+            json!({ "sessionId": session_id, "note": format!("变更已确认（{summary}），AI 正在自动继续任务…") }),
+        );
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        coding_cancel_tokens
+            .lock()
+            .unwrap()
+            .insert(workspace_id, cancel_token.clone());
+        let result = session_guard
+            .send_message(
+                &continuation_text,
+                &[],
+                &ai_provider_manager,
+                &ssh_pool,
+                &agent_pool,
+                &audit_log,
+                &command_confirms,
+                &permission_rules,
+                &question_confirms,
+                &mcp_manager,
+                &app_handle,
+                &cancel_token,
+            )
+            .await;
+        coding_cancel_tokens.lock().unwrap().remove(&workspace_id);
+
+        let payload = match &result {
+            Ok(reply) => json!({ "sessionId": session_id, "reply": reply, "error": Option::<String>::None }),
+            Err(e) => json!({ "sessionId": session_id, "reply": Option::<String>::None, "error": e.to_string() }),
+        };
+        let _ = app_handle.emit("coding:auto-continue-done", payload);
+    });
+}
+
+/// 拼一段"这一轮改动都怎么处理了"的人话摘要，喂给 `maybe_auto_continue` 触发的
+/// 续跑请求——模型需要知道具体哪些文件被应用、哪些被拒绝了才能正确决定下一步
+/// （不是随便一句"继续"就够，拒绝的文件可能意味着要换个方案）。
+fn summarize_turn_changes<'a>(changes: impl Iterator<Item = &'a FileChange>) -> String {
+    let mut applied = Vec::new();
+    let mut rejected = Vec::new();
+    for c in changes {
+        match c.status {
+            ChangeStatus::Applied => applied.push(c.path.as_str()),
+            ChangeStatus::Rejected => rejected.push(c.path.as_str()),
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if !applied.is_empty() {
+        parts.push(format!("已应用 {} 个（{}）", applied.len(), applied.join("、")));
+    }
+    if !rejected.is_empty() {
+        parts.push(format!("已拒绝 {} 个（{}）", rejected.len(), rejected.join("、")));
+    }
+    if parts.is_empty() {
+        "没有改动被处理".to_string()
+    } else {
+        parts.join("；")
+    }
 }
 
 #[tauri::command]

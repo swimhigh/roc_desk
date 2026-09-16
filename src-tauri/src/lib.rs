@@ -14,6 +14,7 @@ pub mod pty;
 pub mod rdp;
 pub mod ssh;
 pub mod state;
+pub mod symbols;
 pub mod windows_context_menu;
 pub mod workspace;
 
@@ -369,6 +370,7 @@ pub fn run() {
                 coding_cancel_tokens: Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
+                symbol_indexes: Arc::new(RwLock::new(HashMap::new())),
             });
 
             Ok(())
@@ -403,6 +405,9 @@ pub fn run() {
             commands::fs::fs_inspect_binary,
             commands::fs::fs_peek_is_binary,
             commands::fs::fs_inspect_jar,
+            commands::symbols::symbols_build_index,
+            commands::symbols::symbols_go_to_definition,
+            commands::symbols::symbols_reindex_file,
             commands::connection::connection_list,
             commands::connection::connection_create,
             commands::connection::connection_update,
@@ -485,8 +490,8 @@ pub fn run() {
             commands::transfer::transfer_log_clear,
             commands::log_search::log_search_index,
             commands::log_search::log_search_live,
-            commands::log_search::log_import_file,
-            commands::log_search::log_import_local_file,
+            commands::log_search::log_import_remote_paths,
+            commands::log_search::log_import_local_paths,
             commands::log_search::log_index_stats,
             commands::log_search::log_index_clear,
             commands::ai::ai_provider_list,
@@ -526,6 +531,9 @@ pub fn run() {
             commands::coding::mcp_server_create,
             commands::coding::mcp_server_update,
             commands::coding::mcp_server_delete,
+            commands::coding::skill_list,
+            commands::coding::skill_import,
+            commands::coding::skill_delete,
             commands::pty::pty_open,
             commands::pty::pty_write,
             commands::pty::pty_resize,

@@ -142,7 +142,7 @@ fn build_matcher(query: &str, options: &SearchOptions) -> Result<Regex, AppError
         .map_err(|e| AppError::Internal(format!("正则表达式无效：{e}")))
 }
 
-fn is_excluded_dir(name: &str) -> bool {
+pub(crate) fn is_excluded_dir(name: &str) -> bool {
     SEARCH_EXCLUDED_DIRS.contains(&name)
 }
 

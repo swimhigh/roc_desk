@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X, Square } from "lucide-react";
+import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, Blocks, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X, Square } from "lucide-react";
 import { useCodingStore } from "../../stores/codingStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { useEditorStore } from "../../stores/editorStore";
@@ -14,6 +14,7 @@ import { CommandConfirmDialog, BlockedCommandMessage } from "./CommandConfirmDia
 import { QuestionDialog } from "./QuestionDialog";
 import { PermissionRulesDialog } from "./PermissionRulesDialog";
 import { McpServerManagerDialog } from "./McpServerManagerDialog";
+import { SkillManagerDialog } from "./SkillManagerDialog";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { ProviderManagerDialog, hasProviderDraft } from "../AiChat/ProviderManagerDialog";
 import { CodingHistoryDialog } from "./CodingHistoryDialog";
@@ -112,6 +113,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showHistory, setShowHistory] = useState(false);
   const [showPermissionRules, setShowPermissionRules] = useState(false);
   const [showMcpServers, setShowMcpServers] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -340,6 +342,9 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         </button>
         <button className="btn ghost sm" onClick={() => setShowMcpServers(true)} title="MCP 服务器管理">
           <Plug style={{ width: 13, height: 13 }} /> MCP
+        </button>
+        <button className="btn ghost sm" onClick={() => setShowSkills(true)} title="项目 Skills 查看/导入">
+          <Blocks style={{ width: 13, height: 13 }} /> Skills
         </button>
         <button className={`btn ghost sm ${hasDraft ? "active" : ""}`} onClick={() => setShowProviders(true)}>
           <Settings style={{ width: 13, height: 13 }} /> {hasDraft ? "继续配置" : "模型管理"}
@@ -674,6 +679,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
       {showHistory && <CodingHistoryDialog histories={histories} onOpen={(id) => { openHistory(id); setShowHistory(false); }} onDelete={deleteHistory} onRename={renameHistory} onClose={() => setShowHistory(false)} />}
       {showPermissionRules && <PermissionRulesDialog onClose={() => setShowPermissionRules(false)} />}
       {showMcpServers && <McpServerManagerDialog onClose={() => setShowMcpServers(false)} />}
+      {showSkills && <SkillManagerDialog workspaceId={workspaceId} onClose={() => setShowSkills(false)} />}
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { logSearchService } from "../services/logSearchService";
 import { formatError } from "../utils/error";
-import type { IndexStats, LiveSearchResult, LogSearchResult } from "../types/bindings";
+import type { IndexStats, LiveSearchResult, LogImportOutcome, LogSearchResult } from "../types/bindings";
 
 export type LogSearchMode = "index" | "live";
 
@@ -25,8 +25,8 @@ interface LogSearchState {
   select: (index: number | null) => void;
   runSearch: (workspaceKind: "local" | "remote", profileId: string | null) => Promise<void>;
   loadStats: () => Promise<void>;
-  importLocalFile: (path: string, hostName: string) => Promise<number>;
-  importRemoteFile: (profileId: string, remotePath: string, hostName: string) => Promise<number>;
+  importLocalPaths: (paths: string[], recursive: boolean, hostName: string, requestId: string) => Promise<LogImportOutcome>;
+  importRemotePaths: (profileId: string, paths: string[], recursive: boolean, hostName: string, requestId: string) => Promise<LogImportOutcome>;
   clearOlderThan: (days: number) => Promise<number>;
   reset: () => void;
 }
@@ -80,12 +80,12 @@ export const useLogSearchStore = create<LogSearchState>((set, get) => ({
     }
   },
 
-  importLocalFile: async (path, hostName) => {
+  importLocalPaths: async (paths, recursive, hostName, requestId) => {
     set({ importing: true, error: null });
     try {
-      const count = await logSearchService.importLocalFile(path, hostName);
+      const outcome = await logSearchService.importLocalPaths(paths, recursive, hostName, requestId);
       await get().loadStats();
-      return count;
+      return outcome;
     } catch (e) {
       set({ error: formatError(e) });
       throw e;
@@ -94,12 +94,12 @@ export const useLogSearchStore = create<LogSearchState>((set, get) => ({
     }
   },
 
-  importRemoteFile: async (profileId, remotePath, hostName) => {
+  importRemotePaths: async (profileId, paths, recursive, hostName, requestId) => {
     set({ importing: true, error: null });
     try {
-      const count = await logSearchService.importFile(profileId, remotePath, hostName);
+      const outcome = await logSearchService.importRemotePaths(profileId, paths, recursive, hostName, requestId);
       await get().loadStats();
-      return count;
+      return outcome;
     } catch (e) {
       set({ error: formatError(e) });
       throw e;

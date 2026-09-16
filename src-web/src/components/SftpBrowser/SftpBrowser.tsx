@@ -331,8 +331,16 @@ export const SftpBrowser: React.FC<SftpBrowserProps> = ({
     const current = useWorkspaceStore.getState().current;
     const hostName = current?.display_name ?? "unknown";
     try {
-      const count = side === "remote" ? await logSearchService.importFile(profileId, path, hostName) : await logSearchService.importLocalFile(path, hostName);
-      push("success", `已导入 ${count} 行到本地搜索引擎`);
+      const requestId = crypto.randomUUID();
+      const outcome =
+        side === "remote"
+          ? await logSearchService.importRemotePaths(profileId, [path], false, hostName, requestId)
+          : await logSearchService.importLocalPaths([path], false, hostName, requestId);
+      if (outcome.failed.length > 0) {
+        push("error", `导入失败：${outcome.failed[0].error}`);
+      } else {
+        push("success", `已导入 ${outcome.lines_imported} 行到本地搜索引擎`);
+      }
     } catch (e) {
       push("error", `导入失败：${formatError(e)}`);
     }
