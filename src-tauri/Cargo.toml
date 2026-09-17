@@ -1,6 +1,6 @@
 [package]
 name = "roc_desk"
-version = "2.1.0"
+version = "3.0.0"
 description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
 authors = ["you"]
 edition = "2021"
@@ -32,6 +32,11 @@ tauri-plugin-single-instance = "2"
 trash = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md §4.4）：请求/集合/环境定义文件用 YAML。
+# 上游 `serde_yaml` 已被作者存档（不再接新功能），但没有已知安全问题、生态里
+# 仍被广泛依赖，用于读写本地/工作区内的配置文件足够稳；如果后续需要积极维护的
+# 替代品，可以平替成 `serde_yaml_ng`（同一套 API）。
+serde_yaml = "0.9"
 
 # 错误处理
 thiserror = "2"
@@ -39,7 +44,7 @@ anyhow = "1"
 
 # 异步
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "process"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["compat"] }
 async-trait = "0.1"
 
 # 数据库（工作区档案持久化，CODE_DESIGN.md §五）
@@ -87,7 +92,7 @@ regex = "1"
 encoding_rs = "0.8"
 
 # AI 对话（OpenAI 兼容 API，SSE 流式，DESIGN.md §3.6）
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
 futures-util = "0.3"
 
 # AI 编程助手：文件变更 Diff 生成（DESIGN.md §3.8.3）
@@ -117,6 +122,58 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # 不划算。
 tar = "0.4"
 flate2 = "1"
+
+# SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）驱动选型：
+#
+# 故意不用 `sqlx` 门面 crate——`sqlx` 无条件在 Cargo.toml 里声明一条
+# （即使不启用 "sqlite" feature 也存在的）`sqlx-sqlite`（optional）依赖边，
+# 而 `sqlx-sqlite` 又 `links = "sqlite3"`，和项目本来就在用的
+# `rusqlite`/`r2d2_sqlite`（同样 `links = "sqlite3"`，但版本号区间完全不重叠：
+# rusqlite 0.39 要 `libsqlite3-sys ^0.37`，sqlx-sqlite 0.8.6 要 `^0.30.1`）
+# 在 Cargo 的"一个 links 值全图只能有一个版本"规则下直接冲突、resolve 失败
+# （`cargo check` 实测报错，不是猜测）——即便业务代码完全不会触发 sqlite 分支，
+# Cargo.lock 仍然要为这条未激活的 optional 依赖边选定一个版本。改用各数据库
+# 各自独立的驱动 crate（都不含 sqlite 依赖，天然不会撞车），顺带也让每种数据库
+# 的 API 更贴合自己的协议特性，不用套 sqlx 的统一泛型 Row/Column 抽象。
+#
+# PostgreSQL：`tokio-postgres` 是 rust-postgres 项目的官方异步驱动；openGauss
+# 走同一个 crate（PG 线协议兼容，方言差异封装在 `sql::adapters::opengauss`，
+# 见方案 4.3），不需要单独的驱动。`deadpool-postgres` 提供连接池，池大小
+# 上限对齐 4.4 节参考 rainfrog 的建议（每数据源默认给个保守上限）。
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+# TLS 用 rustls + ring provider，和项目里 tokio-rustls/rustls 已经在用的 ring
+# 保持一致，避免同时存在 aws-lc-rs 和 ring 两套加密后端。
+tokio-postgres-rustls = "0.14"
+deadpool-postgres = "0.14"
+# TLS 根证书用系统证书库而不是 Mozilla 内置列表——内网自建 PostgreSQL/openGauss
+# 常见做法是把自签 CA 导入 Windows 证书存储，走系统证书库才认得到；不做
+# "跳过校验"（方案 §7 明确禁止默认关闭证书校验）。
+rustls-native-certs = "0.8"
+
+# MySQL：`mysql_async` 是社区维护最活跃的异步 MySQL 驱动，自带连接池
+# （`mysql_async::Pool`），TLS 同样选 ring provider（`default-rustls-ring`
+# feature 组合），不需要额外引入连接池 crate。
+mysql_async = { version = "0.37", default-features = false, features = [
+    "default-rustls-ring",
+    "chrono",
+] }
+
+# SQL Server：纯 Rust 实现的 TDS 协议客户端，不依赖系统装 ODBC/FreeTDS。
+# `tiberius::Client::connect` 吃裸 `tokio::net::TcpStream`，要用 `tokio_util::
+# compat` 把它适配成 tiberius 依赖的 futures-io 风格 AsyncRead/AsyncWrite——
+# 上面 `tokio-util` 已经加了 "compat" feature，不需要再单独引一份。
+tiberius = { version = "0.12", default-features = false, features = [
+    "rustls",
+    "chrono",
+    "tds73",
+] }
+# tiberius 本身不带连接池，`bb8-tiberius` 提供 `bb8::ManageConnection` 适配。
+bb8 = "0.9"
+bb8-tiberius = { version = "0.16", default-features = false, features = ["with-tokio"] }
+
+# 危险 SQL 判定走 AST 分类而不是正则（docs/SQL_DESKTOP_PLAN.md §7，参考
+# rainfrog 的实现思路）。
+sqlparser = "0.52"
 
 [target.'cfg(windows)'.dependencies]
 # RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——依次踩了 rustls 套件受限、

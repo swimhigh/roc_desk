@@ -1,22 +1,26 @@
 # roc_desk
 
-集成开发者客户端工具：SSH 终端 + SFTP + 日志搜索 + 统一 AI 工具（问答与编程），基于 Tauri 2.0（Rust 后端 + React/TS 前端）。
+集成 IT 工作者客户端工具：SSH 终端 + SFTP + 日志搜索 + SQL 工作桌面 + 统一 AI 工具（问答与编程），基于 Tauri 2.0（Rust 后端 + React/TS 前端）。
 
-完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)；首页/多工作模式（多进程架构：SSH 桌面 / 工作区 / 编辑器 / 资源管理器四个模块各自独立窗口）见 [docs/HOME_MODES_DESIGN.md](docs/HOME_MODES_DESIGN.md)。
+完整设计见 [DESIGN.md](DESIGN.md)、[docs/CODE_DESIGN.md](docs/CODE_DESIGN.md)、[docs/UI_DESIGN.md](docs/UI_DESIGN.md)；需求与实现状态见 [REQUIREMENTS.md](REQUIREMENTS.md)；首页/多工作模式（多进程架构：SSH 桌面 / 工作区 / 编辑器 / SQL 桌面 / 资源管理器等模块各自独立窗口）见 [docs/HOME_MODES_DESIGN.md](docs/HOME_MODES_DESIGN.md)。
 
 ## 截图
 
-| 工作区首页 | AI 工具（Plan） |
+| 工作区首页 | SQL 工作桌面 |
 |---|---|
-| ![工作区首页](docs/screenshots/home.png) | ![AI 工具 Plan 模式](docs/screenshots/editor-plan.png) |
+| ![工作区首页](docs/screenshots/home.png) | ![SQL 工作桌面](docs/screenshots/sql-desk.png) |
 
-| AI 工具（Build 执行过程） | SFTP 双栏浏览 |
+| AI 工具（Plan） | AI 工具（Build 执行过程） |
 |---|---|
-| ![AI 工具 Build 执行过程](docs/screenshots/editor-build.png) | ![SFTP 双栏浏览](docs/screenshots/sftp.png) |
+| ![AI 工具 Plan 模式](docs/screenshots/editor-plan.png) | ![AI 工具 Build 执行过程](docs/screenshots/editor-build.png) |
 
-| 终端多会话 | 多终端同步操作 |
+| SFTP 双栏浏览 | 终端多会话 |
 |---|---|
-| ![终端多会话](docs/screenshots/terminal.png) | ![多终端同步操作](docs/screenshots/multi-terminal.png) |
+| ![SFTP 双栏浏览](docs/screenshots/sftp.png) | ![终端多会话](docs/screenshots/terminal.png) |
+
+| 多终端同步操作 |
+|---|
+| ![多终端同步操作](docs/screenshots/multi-terminal.png) |
 
 ## 主要功能
 
@@ -25,8 +29,11 @@
 - **终端**：本地终端 + 远程 SSH 终端，停靠在编辑器下方，支持多 Tab，默认进入工作区目录。
 - **SSH/SFTP**：连接管理、TOFU 主机指纹校验、双栏（远程/本地）浏览与拖拽上传下载。
 - **日志搜索**：本地/远程日志关键词检索，结果可直接定位打开。
+- **SQL 工作桌面**：类似 DBeaver，管理多个数据库连接（openGauss/MySQL 等），对象树浏览、多标签 SQL 编辑与执行、查询历史、AI 辅助生成/解释/优化/修复 SQL。
 - **AI 工具**：统一问答与编程能力，Plan/Build 模式、工具执行过程展示、Diff 接受/拒绝/撤销、历史会话。
 - **网页浏览**：应用内嵌浏览器，支持多标签页。
+
+后续规划：HTTP 测试桌面（类似 Postman/Apifox 的接口调试工具）。
 
 ## 目录结构
 

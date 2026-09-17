@@ -34,4 +34,21 @@ export const workspaceService = {
   updateLastSftpPaths(id: string, localPath: string, remotePath: string): Promise<void> {
     return invoke("workspace_update_last_sftp_paths", { id, localPath, remotePath });
   },
+
+  /** 某个工作模块（"workspace"/"http"）首页卡片/选择页展示的"添加过的工作区"
+   * 列表——默认是空的，要显式 `addModuleLink` 才会出现（2026-09 需求：不同
+   * 模块不该共用同一份"最近工作区"，各自维护自己的子集）。 */
+  listForModule(module: string, limit = 100): Promise<WorkspaceProfile[]> {
+    return invoke("workspace_list_for_module", { module, limit });
+  },
+
+  addModuleLink(id: string, module: string): Promise<void> {
+    return invoke("workspace_add_module_link", { id, module });
+  },
+
+  /** 只解除这个工作区和该模块的关联，不删除工作区本身——同一个工作区可能还
+   * 关联着其它模块。彻底忘记一个工作区仍然用 `removeRecent`。 */
+  removeModuleLink(id: string, module: string): Promise<void> {
+    return invoke("workspace_remove_module_link", { id, module });
+  },
 };

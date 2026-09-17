@@ -617,3 +617,333 @@ export interface ReplaceSummary {
   files_changed: number;
   occurrences_replaced: number;
 }
+
+// ---------------------------------------------------------------------------
+// SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md，src-tauri/src/sql/model.rs）
+// ---------------------------------------------------------------------------
+
+export type DbKind = "mysql" | "postgres" | "opengauss" | "sql_server" | "oracle";
+
+export interface DataSourceProfile {
+  id: string;
+  name: string;
+  db_kind: DbKind;
+  host: string;
+  port: number | null;
+  database_name: string | null;
+  default_schema: string | null;
+  username: string | null;
+  credential_ref: string | null;
+  environment: string;
+  group_name: string | null;
+  readonly: boolean;
+  ssl_required: boolean;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+}
+
+/** `password` 传空字符串表示"不修改密码"（对齐 AiProviderInput 的既有约定）。*/
+export interface DataSourceInput {
+  name: string;
+  db_kind: DbKind;
+  host: string;
+  port: number | null;
+  database_name: string | null;
+  default_schema: string | null;
+  username: string | null;
+  password: string | null;
+  environment: string;
+  group_name: string | null;
+  readonly: boolean;
+  ssl_required: boolean;
+}
+
+export interface DbInfo {
+  version: string;
+  latency_ms: number;
+}
+
+export type ObjectKind = "table" | "view" | "materialized_view" | "function" | "procedure";
+
+export interface ObjectRef {
+  schema: string;
+  name: string;
+  kind: ObjectKind;
+}
+
+export interface ObjectPage {
+  objects: ObjectRef[];
+}
+
+export interface ColumnDef {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  default_value: string | null;
+  is_primary_key: boolean;
+  comment: string | null;
+}
+
+export interface IndexDef {
+  name: string;
+  definition: string;
+}
+
+export interface ObjectDefinition {
+  object: ObjectRef;
+  columns: ColumnDef[];
+  indexes: IndexDef[];
+  ddl: string | null;
+  comment: string | null;
+}
+
+/** 结果集单元格——统一转成字符串展示，`is_binary` 时 `text` 是十六进制串
+ * （参考 rainfrog 的展示方式，见方案 §4.2.1）。 */
+export interface Cell {
+  text: string;
+  is_null: boolean;
+  is_binary: boolean;
+}
+
+export interface ColumnInfo {
+  name: string;
+  type_name: string;
+}
+
+export interface ExecuteResult {
+  columns: ColumnInfo[];
+  rows: Cell[][];
+  rows_affected: number | null;
+  truncated: boolean;
+  duration_ms: number;
+}
+
+export interface PendingWrite {
+  pending_id: string;
+  rows_affected: number | null;
+  preview: ExecuteResult;
+}
+
+export type QueryStatus = "running" | "finished" | "error" | "cancelled";
+
+export interface QueryPoll {
+  status: QueryStatus;
+  result: ExecuteResult | null;
+  error: string | null;
+}
+
+/** `sql_execute` 的返回形状（src-tauri/src/commands/sql.rs::ExecuteOutcome）。*/
+export type ExecuteOutcome =
+  | { kind: "Started"; query_id: string }
+  | { kind: "NeedsConfirmation" }
+  | ({ kind: "PendingWrite" } & PendingWrite);
+
+export interface QueryHistoryEntry {
+  id: string;
+  data_source_id: string;
+  title: string | null;
+  sql_text: string;
+  status: string;
+  duration_ms: number | null;
+  row_count: number | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export type ResultViewMode = "table" | "text";
+
+/** 标签页内容的唯一真相是 `file_path` 指向的磁盘文件
+ * （docs/SQL_DESKTOP_PLAN.md §4.4），这里只是元数据。 */
+export interface WorkspaceTab {
+  id: string;
+  data_source_id: string;
+  title: string;
+  file_path: string;
+  result_view_mode: ResultViewMode;
+  cursor_json: string | null;
+  sort_order: number;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// 表数据编辑 / 导出导入（src-tauri/src/sql/data_editor.rs、sql/transfer.rs）
+// ---------------------------------------------------------------------------
+
+export interface CellInput {
+  is_null: boolean;
+  text: string;
+}
+
+export interface NamedCell {
+  name: string;
+  value: CellInput;
+}
+
+export type AlterOp =
+  | { op: "add_column"; name: string; data_type: string; nullable: boolean }
+  | { op: "drop_column"; name: string }
+  | { op: "rename_column"; old_name: string; new_name: string };
+
+export type TransferFormat = "csv" | "json";
+
+export interface TransferProgress {
+  rows_done: number;
+  done: boolean;
+  cancelled: boolean;
+  error: string | null;
+}
+
+// --- SQL Agent（2026-09：AI 工具要和"工作区"编程助手一样是真正的多轮 Agent，
+// 见 sql::agent 模块文档）。会话信息/历史类型结构上和 CodingSessionInfo/
+// CodingHistorySummary 对应，事件 payload 形状直接复用 Coding*Event 系列
+// （字段完全一样，只是从 "coding:" 换成 "sqlagent:" 事件前缀）。
+
+export interface SqlAgentSessionInfo {
+  id: string;
+  provider_id: string;
+  todos: TodoItem[];
+}
+
+export interface SqlAgentHistorySummary {
+  id: string;
+  title: string;
+  provider_id: string;
+  provider_label: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SqlAgentHistoryDetail {
+  id: string;
+  title: string;
+  provider_id: string;
+  provider_label: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+  data_source_id: string;
+  timeline: unknown;
+}
+
+export interface SqlAgentConfirmRequestEvent {
+  sessionId: string;
+  requestId: string;
+  sql: string;
+}
+
+// --- HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md）。没有独立的"集合"/"环境" SQLite
+// 表——这些类型描述的是落在工作区目录 `.rock_desk/http/` 下的 YAML 文件内容
+// （src-tauri/src/http_desk/model.rs），只有 HttpRequestHistory*/HttpWorkspaceTab
+// 这几个是真正的数据库行。
+
+export interface KeyValueItem {
+  key: string;
+  value: string;
+  enabled: boolean;
+}
+
+export type ApiKeyLocation = "header" | "query";
+
+export type AuthConfig =
+  | { type: "none" }
+  | { type: "bearer"; token: string }
+  | { type: "basic"; username: string; password: string }
+  | { type: "api_key"; key: string; value: string; add_to: ApiKeyLocation };
+
+export type RequestBody =
+  | { type: "none" }
+  | { type: "json"; content: string }
+  | { type: "raw"; content: string; content_type: string }
+  | { type: "form_url_encoded"; items: KeyValueItem[] }
+  | { type: "form_data"; items: KeyValueItem[] };
+
+export interface RequestDef {
+  id: string;
+  name: string;
+  method: string;
+  url: string;
+  params: KeyValueItem[];
+  headers: KeyValueItem[];
+  auth: AuthConfig;
+  body: RequestBody;
+}
+
+export interface RequestSummary {
+  id: string;
+  name: string;
+  method: string;
+  folder: string[];
+}
+
+export interface EnvVar {
+  key: string;
+  value: string;
+  secret: boolean;
+  enabled: boolean;
+}
+
+export interface EnvironmentDef {
+  id: string;
+  name: string;
+  variables: EnvVar[];
+}
+
+export interface HttpCollectionMeta {
+  name: string;
+  description: string | null;
+  auth: AuthConfig;
+  variables: EnvVar[];
+}
+
+export interface HttpCollectionSummary {
+  slug: string;
+  name: string;
+  description: string | null;
+  request_count: number;
+}
+
+export interface HttpExecuteResult {
+  status: number;
+  status_text: string;
+  headers: [string, string][];
+  body: string;
+  body_is_text: boolean;
+  body_base64: string | null;
+  duration_ms: number;
+  size_bytes: number;
+  resolved_url: string;
+  truncated: boolean;
+}
+
+export interface HttpRequestHistoryEntry {
+  id: string;
+  workspace_id: string;
+  collection_slug: string;
+  request_id: string | null;
+  environment_id: string | null;
+  method: string;
+  url: string;
+  status_code: number | null;
+  duration_ms: number | null;
+  response_size_bytes: number | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface HttpRequestHistoryDetail {
+  id: string;
+  request_snapshot: string;
+  response_snapshot: string | null;
+}
+
+export interface HttpWorkspaceTab {
+  id: string;
+  workspace_id: string;
+  collection_slug: string;
+  request_id: string;
+  title: string;
+  sort_order: number;
+  updated_at: string;
+}

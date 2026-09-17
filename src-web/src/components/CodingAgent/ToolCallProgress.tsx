@@ -27,6 +27,9 @@ export function toolLabel(tool: string): string {
     list_directory: "查看目录", search_files: "搜索代码", run_command: "执行命令",
     glob: "按文件名查找", webfetch: "抓取网页", todo_write: "更新任务清单",
     question: "向你提问", skill: "加载技能",
+    // sql::agent 的工具集（和 coding::tools 共用同一个标签映射/同一个组件，
+    // 见 SqlAgentPanel.tsx）。
+    run_query: "执行 SQL", describe_table: "查看表结构", list_objects: "列出表",
   };
   if (tool.startsWith("mcp__")) {
     const [, server, name] = tool.split("__");
@@ -50,7 +53,7 @@ export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({
   expanded,
   onToggleOutput,
 }) => {
-  const isCommand = tool === "run_command";
+  const isCommand = tool === "run_command" || tool === "run_query";
   const canExpand = Boolean(done && output && onToggleOutput);
   return (
     <div>

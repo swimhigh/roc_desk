@@ -53,7 +53,7 @@ function targetLabel(target: CodingTarget): string {
  * 属于本轮有意识的范围裁剪（REQUIREMENTS.md §3.7 有记录）。左栏复用的是
  * App.tsx 里已经常驻的全局 Explorer，不在这个组件里重复渲染。
  */
-const ThinkingBlock: React.FC<{ text: string; active: boolean; onOpenFile?: (path: string, line?: number) => void }> = ({ text, active, onOpenFile }) => {
+export const ThinkingBlock: React.FC<{ text: string; active: boolean; onOpenFile?: (path: string, line?: number) => void }> = ({ text, active, onOpenFile }) => {
   const detailsRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     if (detailsRef.current) detailsRef.current.open = active;
@@ -676,7 +676,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         />
       )}
       {showProviders && <ProviderManagerDialog onClose={(hasDraft) => { setShowProviders(false); setProviderDraftPending(hasDraft); }} />}
-      {showHistory && <CodingHistoryDialog histories={histories} onOpen={(id) => { openHistory(id); setShowHistory(false); }} onDelete={deleteHistory} onRename={renameHistory} onClose={() => setShowHistory(false)} />}
+      {showHistory && <CodingHistoryDialog title="编程会话历史" emptyText="还没有已保存的编程会话" histories={histories} onOpen={(id) => { openHistory(id); setShowHistory(false); }} onDelete={deleteHistory} onRename={renameHistory} onClose={() => setShowHistory(false)} />}
       {showPermissionRules && <PermissionRulesDialog onClose={() => setShowPermissionRules(false)} />}
       {showMcpServers && <McpServerManagerDialog onClose={() => setShowMcpServers(false)} />}
       {showSkills && <SkillManagerDialog workspaceId={workspaceId} onClose={() => setShowSkills(false)} />}

@@ -29,13 +29,18 @@ interface RemoteWorkspaceDialogProps {
    * （用户反馈：远程工作区目录配错了之前也只能删除重加）。连接本身不允许在编辑
    * 模式里更换——跨主机已经不是"改目录"的语义了，要换连接应该走"移除 + 重新添加"。 */
   editWorkspace?: { id: string; connectionId: string; initialPath: string };
+  /** 新建（非编辑）成功打开工作区之后调用，在 `onClose()` 之前——调用方
+   * （`WorkspacePicker`）用它把刚打开的工作区关联到当前模块（2026-09 需求）。
+   * 不传参数，调用方自己读 `useWorkspaceStore.getState().current` 拿到刚打开
+   * 的那份 profile，避免这里额外传一份可能不同步的副本。 */
+  onOpened?: () => void;
 }
 
 /**
  * "连接远程主机并选择目录"入口的三步流程（DESIGN.md §3.1.1）：
  * 选/建连接档案 → 轻量远程目录浏览器（只做单选目录，不含上传下载） → 确认打开工作区。
  */
-export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ onClose, editWorkspace }) => {
+export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ onClose, editWorkspace, onOpened }) => {
   const [step, setStep] = useState<Step>(editWorkspace ? "browse" : "pick");
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [groups, setGroups] = useState<ConnectionGroup[]>([]);
@@ -176,6 +181,7 @@ export const RemoteWorkspaceDialog: React.FC<RemoteWorkspaceDialogProps> = ({ on
         push("success", "工作区目录已更新");
       } else {
         await openRemoteWorkspace(activeConnectionId, cwd);
+        onOpened?.();
       }
       onClose();
     } catch (e) {

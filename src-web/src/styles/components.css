@@ -11,6 +11,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .btn.sm { height: 24px; padding: 0 var(--space-3); font-size: var(--text-xs); }
 .btn.primary { background: var(--accent); color: #fff; }
@@ -1023,8 +1025,20 @@
 .home-dashboard-logo { display: flex; align-items: center; gap: var(--space-2); font-size: 26px; font-weight: 700; color: var(--text-primary); }
 .home-dashboard-logo svg { width: 32px; height: 32px; color: var(--accent); }
 .home-dashboard-tagline { margin-top: calc(-1 * var(--space-6)); font-size: var(--text-sm); color: var(--text-secondary); text-align: center; max-width: 640px; }
-.home-dashboard-grid { display: grid; grid-template-columns: repeat(2, 400px); gap: var(--space-6); }
+/* 三列而不是两列（2026-09 用户反馈"还不如有个九宫格，可以在任何一个格子里
+   拖来拖去"）——默认 6 个模块 + 0 个空白格正好两行三列，用户按需加空白格，
+   加到 3 个就凑成真正的 3×3 九宫格。 */
+.home-dashboard-grid { display: grid; grid-template-columns: repeat(3, 320px); gap: var(--space-5); }
+.home-dashboard-grid-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
 .home-dashboard-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-default);
@@ -1032,6 +1046,46 @@
   background: var(--bg-surface);
   overflow: hidden;
 }
+.home-dashboard-card.dragging { opacity: 0.4; }
+/* 拖拽悬停时高亮当前会换到这个位置（2026-09 用户反馈："拖到其他工作区位置
+   时应该要有交换位置的效果"）——和下面 `previewOrder` 算出来的实时换位预览
+   配合：卡片顺序已经跟着预览挪动了，这里再给悬停到的那一格一个醒目的边框，
+   两个反馈叠加，拖拽手感更明确。 */
+.home-dashboard-card.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
+/* 拖拽调整模块顺序的把手——整条横幅而不是一个小图标，之前只在右上角放
+   22x22 的图标太难点中（2026-09 用户反馈"拖不动，很不方便"），改成贯穿卡片
+   顶部的一条，好抓得多；只有这一条本身可拖，不影响卡片其余区域原有的点击
+   进入行为。 */
+.home-dashboard-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  font-size: var(--text-xs);
+  color: var(--text-disabled);
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: grab;
+  user-select: none;
+}
+.home-dashboard-drag-handle:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.home-dashboard-drag-handle:active { cursor: grabbing; }
+/* 常驻的空白格"背板"——数量由用户用网格下方的 +/− 自己调（2026-09 用户
+   反馈："格子数量也可以自己加"），拖模块过去代表"挪到最后"，拖拽悬停时高亮
+   （"拖到空白地方应该有背板显示效果"）。 */
+.home-dashboard-empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-disabled);
+  font-size: var(--text-sm);
+  min-height: 120px;
+  user-select: none;
+}
+.home-dashboard-empty-slot.drag-over { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 
 /* 每个模块的"大入口"——图标+标题+一句话说明+箭头，整块可点，视觉上比下面的
    最近列表明显更重（用户反馈："每个大模块的入口要大气"），第一眼就能看懂

@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 
-/** 四种工作模块（`docs/HOME_MODES_DESIGN.md` §3.2）；`explorer` 尚未实现，
- * 首页只给占位卡片，不会真的作为 `--mode` 传给 `spawn_module_window`。 */
-export type WorkMode = "ssh" | "workspace" | "editor" | "explorer";
+/** 工作模块（`docs/HOME_MODES_DESIGN.md` §3.2 + `docs/HTTP_DESKTOP_PLAN.md`）；
+ * `explorer` 尚未实现，首页只给占位卡片，不会真的作为 `--mode` 传给
+ * `spawn_module_window`。`http` 复用"工作区"模块同一份 `WorkspaceProfile`
+ * 目录/连接机制，不是独立的连接管理体系。 */
+export type WorkMode = "ssh" | "workspace" | "editor" | "explorer" | "sql" | "http";
 
 interface LaunchContext {
   mode: string | null;

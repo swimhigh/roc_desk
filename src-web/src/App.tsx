@@ -28,8 +28,10 @@ import { useTerminalStore } from "./stores/terminalStore";
 import { registerAgentCertPromptListener, registerHostKeyPromptListener } from "./stores/connectionStore";
 import { registerAiChatListeners } from "./stores/aiChatStore";
 import { registerCodingListeners } from "./stores/codingStore";
+import { registerSqlAgentListeners } from "./stores/sqlAgentStore";
 import { registerSearchListeners, useSearchStore } from "./stores/searchStore";
 import { sshService } from "./services/sshService";
+import { workspaceService } from "./services/workspaceService";
 import { connectionService } from "./services/connectionService";
 import { localFsService } from "./services/localFsService";
 import { ExplorerTree } from "./components/Explorer/ExplorerTree";
@@ -52,6 +54,8 @@ import { HomeShell } from "./components/RemoteTool/HomeShell";
 import { HomeDashboard } from "./components/Home/HomeDashboard";
 import { StandaloneFileTree } from "./components/Editor/StandaloneFileTree";
 import { LocalExplorerScreen } from "./components/LocalExplorer/LocalExplorerScreen";
+import { SqlDeskShell } from "./components/SqlDesk/SqlDeskShell";
+import { HttpDeskShell } from "./components/HttpDesk/HttpDeskShell";
 import { WorkspacePicker } from "./components/Workspace/WorkspacePicker";
 import { formatError } from "./utils/error";
 import type { WorkspaceProfile } from "./types/bindings";
@@ -246,6 +250,13 @@ function App() {
 
   useEffect(() => {
     const unlistenPromise = registerCodingListeners();
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromise = registerSqlAgentListeners();
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
@@ -532,6 +543,24 @@ function App() {
     );
   }
 
+  if (mode === "sql") {
+    return (
+      <>
+        <SqlDeskShell />
+        <ToastStack />
+      </>
+    );
+  }
+
+  if (mode === "http") {
+    return (
+      <>
+        <HttpDeskShell />
+        <ToastStack />
+      </>
+    );
+  }
+
   if (mode === null) {
     return (
       <>
@@ -616,7 +645,7 @@ function App() {
     return (
       <>
         <div style={{ display: standaloneShellVisible ? "none" : "block", height: "100vh" }}>
-          <WorkspacePicker />
+          <WorkspacePicker module="workspace" />
         </div>
         <div style={{ display: standaloneShellVisible ? "flex" : "none", flexDirection: "column", height: "100vh" }}>
           <div className="tab-bar">
@@ -638,6 +667,13 @@ function App() {
                   void useWorkspaceStore
                     .getState()
                     .openLocalFolder()
+                    .then(() => {
+                      // 独立编辑器"升级"成工作区（2026-09-03 需求）也要走"添加到
+                      // 工作区模块"这一步，否则新打开的目录不会出现在工作区卡片/
+                      // 选择页里（2026-09 需求，见 WorkspacePicker 文档）。
+                      const id = useWorkspaceStore.getState().current?.id;
+                      if (id) return workspaceService.addModuleLink(id, "workspace");
+                    })
                     .catch((e) => pushToast("error", `打开文件夹失败：${formatError(e)}`))
                 }
               >

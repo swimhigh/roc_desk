@@ -16,6 +16,7 @@ use super::tools::{self, TodoItem, ToolCall};
 use super::webfetch;
 use super::{CommandConfirmRegistry, QuestionRegistry};
 use crate::agent::AgentConnectionPool;
+use crate::agent_llm;
 use crate::ai::{search_web_results, AiProvider, AiProviderManager};
 use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
@@ -164,33 +165,6 @@ const MAX_TOOL_ITERATIONS: usize = 30;
 /// 最后这么多轮强制不再提供工具，逼模型收尾给结论（见 send_message 里的用法和注释）。
 const FORCE_CONCLUDE_LAST_N: usize = 5;
 
-/// 2026-09 用户反馈："GPT 模型经常报错（Selected model is at capacity / 503），
-/// 希望有重试机制"——这几个状态码/关键词基本都是"服务端临时顶不住"，不是请求本身
-/// 有问题，重试大概率能成。3 次（不算首次请求，总共最多打 4 次）配合指数退避，
-/// 既给瞬时过载留出恢复时间，又不会让用户等太久。
-const MAX_HTTP_RETRIES: u32 = 3;
-/// 重试间隔的基数（秒），第 N 次重试等 `RETRY_BASE_DELAY_SECS * 2^(N-1)`——
-/// 1s/2s/4s，指数退避，不是每次固定等一样久。
-const RETRY_BASE_DELAY_SECS: u64 = 1;
-
-/// HTTP 状态码层面判断"值得重试"：429（限流）、5xx（服务端错误/网关/过载）——
-/// 4xx 里其余的（401 认证失败、400 参数错误）重试没有意义，问题不会自己消失。
-fn is_retryable_http_status(status: reqwest::StatusCode) -> bool {
-    status.as_u16() == 429 || status.is_server_error()
-}
-
-/// 有些 Provider 即使返回的 HTTP 状态码看着正常（甚至 200），也会在响应体文本里
-/// 说"当前过载/请换个模型"这类话（2026-09 用户真实复现的原文就是"Selected model
-/// is at capacity. Please try a different model."）——纯看状态码会漏掉这种情况，
-/// 所以额外兜底扫一遍响应体文本里的关键词。只做英文关键词匹配，不做多语言穷举，
-/// 覆盖不到的极端情况就走"重试次数用完/不可重试"这条路径，不是本质缺陷。
-fn is_retryable_error_text(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    ["overloaded", "at capacity", "rate limit", "try again", "temporarily unavailable"]
-        .iter()
-        .any(|keyword| lower.contains(keyword))
-}
-
 /// 单条工具结果塞进 `self.messages` 前的字符数上限——`run_command`（截 4000 字符）
 /// 和 `webfetch`（截 8000 字符）从一开始就有这层保护，`read_file`/`list_directory`
 /// 之前完全没有：`self.messages` 不会随对话推进而裁剪，每一轮都整份重新序列化进
@@ -201,8 +175,8 @@ fn is_retryable_error_text(body: &str) -> bool {
 /// 直接 `abort` 整个进程，不会走 panic hook，所以连一条崩溃日志都留不下，表现就是
 /// 整个窗口悄无声息地消失。2 万字符足以覆盖绝大多数源文件的关键部分，
 /// 真需要看更多内容时模型应该用 `search_files`/`glob` 定位更精确的范围，
-/// 而不是指望一次 `read_file` 吃下整个大文件。
-const MAX_TOOL_RESULT_CHARS: usize = 20_000;
+/// 而不是指望一次 `read_file` 吃下整个大文件。这个上限本身（连同 `cap_tool_result`）
+/// 已经挪到 `crate::agent_llm`，跟 `sql::agent` 共用一份实现。
 /// 整个会话发给模型的上下文上限，按 token 估算（见 `estimate_tokens`）而不是原始字符数——
 /// 2026-09 复盘：原来直接拿字符数当预算单位，对不同模型的真实上下文窗口没有代表性
 /// （尤其中文场景：一个汉字在 UTF-8 里是 3 字节，用字符数算预算会系统性低估实际 token
@@ -222,17 +196,6 @@ const CONTEXT_SUMMARY_PREFIX: &str = "【早前对话摘要】";
 const MAX_CONTEXT_SUMMARY_CHARS: usize = 4_000;
 /// 摘要请求本身的超时——摘要是锦上添花，不能变成新的卡死点，超时/失败就直接退回硬删。
 const CONTEXT_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// 把字节数换算成一个粗略的 token 估算——3 字节 ≈ 1 token，向上取整。codex-core 自己
-/// （`vendor/codex/codex-rs/core/src/context_manager/history.rs`）在没有接入真实分词器
-/// 时用的是 4 字节/token，但那是面向英文场景的经验值；roc_desk 的对话大量是中文（系统
-/// 提示词、用户输入、模型回复都是），一个汉字在 UTF-8 里是 3 字节，真实分词器通常给它
-/// 1-2 个 token，用 4 字节/token 会系统性低估。这里的预算判断"宁可估多、不要估少"——
-/// 估计偏高只会让压缩触发得早一点（多花一次摘要请求），估计偏低才会让真正超限的请求
-/// 放过去被 Provider 拒绝（2026-09 真实复现过）。
-fn estimate_tokens(byte_len: usize) -> usize {
-    byte_len.div_ceil(3)
-}
 
 /// 把即将从 `self.messages` 里删掉的一批轮次压成一段 2-4 句的摘要——发一次不带
 /// `tools` 字段的轻量请求，不走 `MAX_TOOL_ITERATIONS` 预算（这是 `limit_context`
@@ -307,17 +270,6 @@ async fn summarize_dropped_turns(
     }
 }
 
-fn cap_tool_result(text: String) -> String {
-    if text.chars().count() <= MAX_TOOL_RESULT_CHARS {
-        return text;
-    }
-    let truncated: String = text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
-    format!(
-        "{truncated}\n\n[内容过长，已截断到前 {MAX_TOOL_RESULT_CHARS} 字符——如果需要看后续部分，\
-         用 search_files/glob 定位更精确的范围，而不是整份读取]"
-    )
-}
-
 impl CodingSession {
     /// 把上下文限制在一个可预期的内存/token 预算内。优先删历史时以"用户消息"为
     /// 边界整轮删（一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，
@@ -341,7 +293,7 @@ impl CodingSession {
             .filter(|message| message["role"].as_str() == Some("user"))
             .count();
         loop {
-            let size_tokens = estimate_tokens(
+            let size_tokens = agent_llm::estimate_tokens(
                 self.messages
                     .iter()
                     .map(|message| message.to_string().len())
@@ -706,27 +658,8 @@ impl CodingSession {
         // 这一整轮（一条用户消息到最终给出结论）可能要跑好几次工具循环迭代，
         // 每次迭代都是一次独立的 API 请求——累加起来才是用户真正关心的"这轮
         // 对话一共花了多少 token"，单次请求的消耗只在过程中当进度参考。
-        let mut turn_prompt_tokens: i64 = 0;
-        let mut turn_completion_tokens: i64 = 0;
-        let mut turn_total_tokens: i64 = 0;
+        let mut turn_usage = agent_llm::TurnUsage::default();
         let session_id = self.id;
-        // 每个"这一轮结束"的出口（正常给出结论 / 工具调用次数耗尽）都要发一次
-        // 汇总，闭包只是为了不在好几个 return 点前重复写同一段 emit 代码；
-        // `total == 0` 时不发（provider 没回传 usage，或者这一轮压根没请求成功
-        // 过），避免时间线里堆一堆没有信息量的"0 tokens"提示。
-        let emit_turn_usage_summary = |prompt: i64, completion: i64, total: i64| {
-            if total > 0 {
-                let _ = app_handle.emit(
-                    "coding:token-usage-summary",
-                    json!({
-                        "sessionId": session_id,
-                        "promptTokens": prompt,
-                        "completionTokens": completion,
-                        "totalTokens": total,
-                    }),
-                );
-            }
-        };
 
         for i in 0..MAX_TOOL_ITERATIONS {
             if cancel_token.is_cancelled() {
@@ -735,12 +668,6 @@ impl CodingSession {
                 ));
             }
             self.limit_context(&client, &provider, &api_key).await;
-            let is_responses = provider.wire_api == "responses";
-            let url = if is_responses {
-                format!("{}/responses", provider.api_base.trim_end_matches('/'))
-            } else {
-                format!("{}/chat/completions", provider.api_base.trim_end_matches('/'))
-            };
 
             // 2026-08-18 真实复现：让模型做"分析整个项目并评审"这类开放式大任务时，
             // 它会没完没了地交替 search_files/read_file，一直不给结论，直到把
@@ -761,181 +688,47 @@ impl CodingSession {
             if let Some(arr) = tools.as_array_mut() {
                 arr.extend(mcp_tool_defs.iter().cloned());
             }
-            // Responses API 的 `input`/`instructions` 跟 chat/completions 的
-            // `messages` 是完全不同的请求形状（见 `messages_to_responses_input` 的
-            // 文档注释），但 `self.messages` 内部存储/`limit_context`/摘要机制/
-            // 历史持久化全都只认 chat/completions 这一种形状——转换只发生在这里，
-            // 发完请求之后响应也会被归一化回同一种形状（见下面 `message` 的构造），
-            // 其余代码完全不需要关心当前 provider 是哪种协议。
-            let mut body = if is_responses {
-                let (instructions, input) = messages_to_responses_input(&self.messages);
-                let mut body = json!({
-                    "model": provider.model,
-                    "instructions": instructions,
-                    "input": input,
-                    "stream": false,
-                });
-                if !force_conclude {
-                    body["tools"] = chat_tools_to_responses_tools(&tools);
-                    body["tool_choice"] = json!("auto");
+
+            // 一次带工具调用的 LLM 请求（两种 wire 协议归一化、429/5xx 重试、
+            // usage 抽取）跟`coding` 场景完全无关的部分都挪到了 `agent_llm`，
+            // 跟 `sql::agent` 共用同一份实现——见该模块文档。
+            let round = match agent_llm::call_llm_once(
+                &client,
+                &provider,
+                &api_key,
+                &self.messages,
+                (!force_conclude).then_some(&tools),
+                app_handle,
+                session_id,
+                "coding",
+                cancel_token,
+            )
+            .await
+            {
+                Ok(round) => round,
+                Err(agent_llm::LlmCallError::Cancelled) => {
+                    return Err(AppError::Internal(
+                        "已停止：用户取消了当前对话轮次".to_string(),
+                    ));
                 }
-                body
-            } else {
-                let mut body = json!({ "model": provider.model, "messages": self.messages });
-                if !force_conclude {
-                    body["tools"] = tools;
-                    body["tool_choice"] = json!("auto");
+                Err(agent_llm::LlmCallError::RequestFailed(detail)) => {
+                    self.messages.push(agent_llm::request_failed_message(&detail));
+                    return Err(AppError::Connection(detail));
                 }
-                body
-            };
-            // 对齐 Codex `config.toml` 的 `model_reasoning_effort`——gpt-5/o 系列
-            // 这类推理模型从客户端调节内部推理力度，两种协议的传参位置不一样：
-            // Responses API 是嵌套的 `reasoning.effort`，chat/completions 兼容层
-            // 是顶层 `reasoning_effort`（不是所有 OpenAI 兼容中转都认，用户自己
-            // 决定要不要在 Provider 里配这个）。留空（`None`）就完全不带这个
-            // 字段，维持之前"交给服务端默认值"的行为。
-            if let Some(effort) = &provider.reasoning_effort {
-                if is_responses {
-                    body["reasoning"] = json!({ "effort": effort });
-                } else {
-                    body["reasoning_effort"] = json!(effort);
-                }
-            }
-            // "停止"按钮：单次请求本身就是这个循环里最容易卡很久的一步（网络慢/
-            // 服务端限流排队），所以在这一步单独包一层取消——`req.send()` 败给
-            // 取消信号时直接丢弃即可，`reqwest` 的请求 future 被 drop 时会中止
-            // 底层连接，不会有资源泄漏。
-            // 2026-09 真实复现：请求失败（HTTP 错误/网络错误/响应解析失败）之前
-            // 直接 `return Err(...)`，`self.messages` 里什么痕迹都不留——用户看到
-            // 报错后回一句"报错了，请继续回答上个问题"，下一轮模型看到的对话历史
-            // 是"提了问题→查了一堆东西→用户突然说报错了"，完全没有信号能判断
-            // "报错"指的是"你上次没答完"还是"我自己的程序运行出错了"，往往会理解
-            // 成后者，答非所问。这里在每个失败分支返回之前，先往历史里补一条
-            // system 消息把"刚才这次请求失败了"这件事讲清楚，下一轮就有明确依据。
-            //
-            // 2026-09 用户反馈："GPT 模型经常报错（Selected model is at capacity /
-            // 503），希望有重试机制"——之前是完全不重试的，一次瞬时过载就直接判
-            // 这一轮失败。503/502/504/429 这几个状态码、以及响应体里带
-            // "overloaded"/"at capacity"/"rate limit" 这类字样，基本都是"服务端
-            // 临时顶不住，过会儿再试大概率能成"，不是请求本身有问题，值得自动重试；
-            // 其余 4xx（比如 401 认证失败、400 参数错误）重试没有意义，直接失败。
-            // 重试之间用指数退避（1s/2s/4s）等一下，不是立刻重打，给服务端一点喘息
-            // 空间；等待过程中同样响应取消。
-            let mut retry_count = 0u32;
-            let (resp, body_text) = loop {
-                let mut req = client.post(&url).json(&body);
-                if let Some(key) = &api_key {
-                    req = req.bearer_auth(key);
-                }
-                let send_result = tokio::select! {
-                    biased;
-                    result = req.send() => result,
-                    _ = cancel_token.cancelled() => {
-                        return Err(AppError::Internal(
-                            "已停止：用户取消了当前对话轮次".to_string(),
-                        ));
-                    }
-                };
-                let (status, body_text) = match send_result {
-                    Ok(resp) if resp.status().is_success() => break (Some(resp), String::new()),
-                    Ok(resp) => {
-                        let status = resp.status();
-                        (Some(status), resp.text().await.unwrap_or_default())
-                    }
-                    Err(e) => (None, e.to_string()),
-                };
-                let retryable = match status {
-                    Some(status) => is_retryable_http_status(status),
-                    None => true, // 网络层面的错误（连不上/超时）也值得重试
-                } || is_retryable_error_text(&body_text);
-                if retryable && retry_count < MAX_HTTP_RETRIES {
-                    retry_count += 1;
-                    let _ = app_handle.emit(
-                        "coding:assistant-note",
-                        json!({
-                            "sessionId": self.id,
-                            "text": format!(
-                                "接口响应异常（{}），{} 秒后自动重试第 {}/{} 次……",
-                                status.map(|s| s.to_string()).unwrap_or_else(|| body_text.clone()),
-                                RETRY_BASE_DELAY_SECS * (1u64 << (retry_count - 1)),
-                                retry_count,
-                                MAX_HTTP_RETRIES
-                            ),
-                            "kind": "status"
-                        }),
-                    );
-                    let delay = std::time::Duration::from_secs(
-                        RETRY_BASE_DELAY_SECS * (1u64 << (retry_count - 1)),
-                    );
-                    tokio::select! {
-                        _ = tokio::time::sleep(delay) => {}
-                        _ = cancel_token.cancelled() => {
-                            return Err(AppError::Internal(
-                                "已停止：用户取消了当前对话轮次".to_string(),
-                            ));
-                        }
-                    }
-                    continue;
-                }
-                break (None, format!("{}: {body_text}", status.map(|s| s.to_string()).unwrap_or_else(|| "连接失败".to_string())));
-            };
-            let Some(resp) = resp else {
-                self.messages.push(json!({
-                    "role": "system",
-                    "content": format!(
-                        "[系统提示] 上一次请求失败（{body_text}），重试 {retry_count} 次后仍未成功，\
-                         没有得到正常回复，上面那个问题还没有被回答。如果用户接下来说\"继续\"\
-                         \"报错了请继续回答\"之类的话，是指继续回答上面被打断的那个问题，不是\
-                         在描述一个新的、跟这次请求无关的错误。"
-                    )
-                }));
-                return Err(AppError::Connection(body_text));
-            };
-            body = match resp.json().await {
-                Ok(b) => b,
-                Err(e) => {
-                    self.messages.push(json!({
-                        "role": "system",
-                        "content": format!(
-                            "[系统提示] 上一次请求返回的内容解析失败（{e}），没有得到正常回复，\
-                             上面那个问题还没有被回答。如果用户接下来说\"继续\"之类的话，是指\
-                             继续回答上面被打断的那个问题。"
-                        )
-                    }));
+                Err(agent_llm::LlmCallError::ParseFailed(e)) => {
+                    self.messages.push(agent_llm::parse_failed_message(&e));
                     return Err(AppError::Internal(format!("解析响应失败: {e}")));
                 }
             };
-            if let Some((prompt, completion, total)) = extract_token_usage(&body, &provider.wire_api)
-            {
-                turn_prompt_tokens += prompt;
-                turn_completion_tokens += completion;
-                turn_total_tokens += total;
-                let _ = app_handle.emit(
-                    "coding:token-usage",
-                    json!({
-                        "sessionId": self.id,
-                        "promptTokens": prompt,
-                        "completionTokens": completion,
-                        "totalTokens": total,
-                    }),
-                );
-            }
-            let message = if is_responses {
-                let (text, tool_calls) = parse_responses_output(&body);
-                json!({ "role": "assistant", "content": text, "tool_calls": tool_calls })
-            } else {
-                body["choices"][0]["message"].clone()
-            };
-            let tool_calls = message["tool_calls"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            turn_usage.add(round.usage);
+            let message = round.message;
+            let tool_calls = round.tool_calls;
 
             if tool_calls.is_empty() {
                 let text = message["content"].as_str().unwrap_or("").to_string();
                 self.messages
                     .push(json!({ "role": "assistant", "content": text }));
-                emit_turn_usage_summary(turn_prompt_tokens, turn_completion_tokens, turn_total_tokens);
+                turn_usage.emit_summary(app_handle, session_id, "coding");
                 // 这一轮到此为止（模型不再调用工具）——如果这一轮里 `stage_change`
                 // 生成的改动还有没被用户处理的（`full_auto` 关闭时默认状态），记下
                 // 这一轮的 id，供之后 accept/reject 判断"是不是这一轮的改动都处理完
@@ -1025,7 +818,7 @@ impl CodingSession {
                 // 不是每个工具分支都记得套。这里挪到 `execute_tool` 唯一的结果
                 // 汇聚点统一兜底，不管以后新增哪个工具、哪个分支忘记自己限制长度，
                 // 单条工具结果都不可能超过 `MAX_TOOL_RESULT_CHARS`。
-                let result_text = cap_tool_result(match call_result {
+                let result_text = agent_llm::cap_tool_result(match call_result {
                     Ok(call) => self
                         .execute_tool(
                             call,
@@ -1060,7 +853,7 @@ impl CodingSession {
             }
         }
 
-        emit_turn_usage_summary(turn_prompt_tokens, turn_completion_tokens, turn_total_tokens);
+        turn_usage.emit_summary(app_handle, session_id, "coding");
         Err(AppError::Internal(format!(
             "这一轮已经调用了 {MAX_TOOL_ITERATIONS} 次工具还没给出最终结论，先停下来避免无限跑下去。\
              之前的进度都还在（对话上下文没丢），直接发\"继续\"就会接着刚才的内容往下做，不需要重新描述任务。"
@@ -1083,7 +876,7 @@ impl CodingSession {
         match call {
             ToolCall::ReadFile { path } => {
                 if let Some(content) = self.change_store.lock().await.pending_content_for(&path) {
-                    return Ok(cap_tool_result(content));
+                    return Ok(agent_llm::cap_tool_result(content));
                 }
                 // `read_file_for_editor`（不是不设上限的 `read_file`）：超过
                 // `EDITOR_PREVIEW_MAX_BYTES` 只读前面一部分字节，不会像默认实现那样
@@ -1091,11 +884,11 @@ impl CodingSession {
                 // `cap_tool_result` 的注释，这是同一个内存失控问题的另一半修复
                 // （字节层面 vs. 字符层面）。
                 let content = self.file_ops.read_file_for_editor(&path).await?;
-                Ok(cap_tool_result(content.text))
+                Ok(agent_llm::cap_tool_result(content.text))
             }
             ToolCall::ListDirectory { path } => {
                 let entries = self.file_ops.list_dir(&path).await?;
-                Ok(cap_tool_result(
+                Ok(agent_llm::cap_tool_result(
                     serde_json::to_string(&entries).unwrap_or_default(),
                 ))
             }
@@ -1779,179 +1572,6 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
             )
         }
     }
-}
-
-/// 把 chat/completions 的工具定义 `[{type:"function",function:{name,description,
-/// parameters}}]` 拍平成 Responses API 要求的形状
-/// `[{type:"function",name,description,parameters,strict:false}]`——两边字段名
-/// 一样，区别只是 `function` 这层嵌套被拆掉，多一个 `strict` 字段（本次实现固定
-/// 传 `false`，不做严格 JSON Schema 校验）。
-fn chat_tools_to_responses_tools(tools: &serde_json::Value) -> serde_json::Value {
-    let Some(arr) = tools.as_array() else {
-        return json!([]);
-    };
-    json!(
-        arr.iter()
-            .map(|tool| {
-                let f = &tool["function"];
-                json!({
-                    "type": "function",
-                    "name": f["name"],
-                    "description": f["description"],
-                    "parameters": f["parameters"],
-                    "strict": false,
-                })
-            })
-            .collect::<Vec<_>>()
-    )
-}
-
-/// 把内部统一存储的 `self.messages`（chat/completions 形状）转换成 Responses API
-/// 的 `(instructions, input)`——`system` 角色的内容抽出来拼成 `instructions`；
-/// `user`/`assistant` 文本消息转成 `message` item；`assistant` 消息里的
-/// `tool_calls` 数组每个转成一个独立的 `function_call` item（Responses API 把它
-/// 们当平级 item，不像 chat/completions 嵌在一条 assistant 消息里）；`tool` 消息
-/// 转成 `function_call_output` item，`call_id` 复用已有的 `tool_call_id`。
-fn messages_to_responses_input(
-    messages: &[serde_json::Value],
-) -> (String, Vec<serde_json::Value>) {
-    let mut instructions = String::new();
-    let mut input = Vec::new();
-    for message in messages {
-        match message["role"].as_str() {
-            Some("system") => {
-                if let Some(text) = message["content"].as_str() {
-                    if !instructions.is_empty() {
-                        instructions.push_str("\n\n");
-                    }
-                    instructions.push_str(text);
-                }
-            }
-            Some("user") => {
-                input.push(json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": content_to_responses_input_parts(&message["content"]),
-                }));
-            }
-            Some("assistant") => {
-                if let Some(text) = message["content"].as_str() {
-                    if !text.trim().is_empty() {
-                        input.push(json!({
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{ "type": "output_text", "text": text }],
-                        }));
-                    }
-                }
-                if let Some(calls) = message["tool_calls"].as_array() {
-                    for call in calls {
-                        input.push(json!({
-                            "type": "function_call",
-                            "call_id": call["id"].as_str().unwrap_or_default(),
-                            "name": call["function"]["name"].as_str().unwrap_or_default(),
-                            "arguments": call["function"]["arguments"].as_str().unwrap_or("{}"),
-                        }));
-                    }
-                }
-            }
-            Some("tool") => {
-                input.push(json!({
-                    "type": "function_call_output",
-                    "call_id": message["tool_call_id"].as_str().unwrap_or_default(),
-                    "output": message["content"].as_str().unwrap_or_default(),
-                }));
-            }
-            _ => {}
-        }
-    }
-    (instructions, input)
-}
-
-/// `user_message_content` 生成的要么是纯字符串、要么是 OpenAI 风格的多模态 parts
-/// 数组（`{type:"text",text}`/`{type:"image_url",image_url:{url}}`）——转成
-/// Responses API 对应的 `input_text`/`input_image` item。
-fn content_to_responses_input_parts(content: &serde_json::Value) -> Vec<serde_json::Value> {
-    match content {
-        serde_json::Value::String(text) => vec![json!({ "type": "input_text", "text": text })],
-        serde_json::Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| match part["type"].as_str() {
-                Some("text") => part["text"]
-                    .as_str()
-                    .map(|text| json!({ "type": "input_text", "text": text })),
-                Some("image_url") => part["image_url"]["url"]
-                    .as_str()
-                    .map(|url| json!({ "type": "input_image", "image_url": url })),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// 解析 Responses API 的非流式响应体（`{"output":[...], "usage":{...}}`），把
-/// `output` 数组归一化成跟 chat/completions 原生 `message` 完全一样的形状——
-/// `type=="message"` 的 item 里 `content[].type=="output_text"` 的文本拼起来当
-/// 助手回复；`type=="function_call"` 的 item 转成 chat/completions 风格的
-/// `tool_calls[i]`（`{id,type:"function",function:{name,arguments}}`）。转换后
-/// `self.messages`/`limit_context`/摘要机制完全不需要关心是哪种 wire 协议。
-fn parse_responses_output(body: &serde_json::Value) -> (String, Vec<serde_json::Value>) {
-    let mut text = String::new();
-    let mut tool_calls = Vec::new();
-    if let Some(items) = body["output"].as_array() {
-        for item in items {
-            match item["type"].as_str() {
-                Some("message") => {
-                    if let Some(parts) = item["content"].as_array() {
-                        for part in parts {
-                            if part["type"].as_str() == Some("output_text") {
-                                if let Some(t) = part["text"].as_str() {
-                                    text.push_str(t);
-                                }
-                            }
-                        }
-                    }
-                }
-                Some("function_call") => {
-                    tool_calls.push(json!({
-                        "id": item["call_id"].as_str().unwrap_or_default(),
-                        "type": "function",
-                        "function": {
-                            "name": item["name"].as_str().unwrap_or_default(),
-                            "arguments": item["arguments"].as_str().unwrap_or("{}"),
-                        }
-                    }));
-                }
-                _ => {}
-            }
-        }
-    }
-    (text, tool_calls)
-}
-
-/// 两种协议的 `usage` 字段名不一样（chat/completions 是
-/// `prompt_tokens`/`completion_tokens`，Responses API 是
-/// `input_tokens`/`output_tokens`），统一抽成同一个形状供前端展示。拿不到就返回
-/// `None`——有些 provider 压根不回传 usage，静默跳过，不影响主流程。
-fn extract_token_usage(body: &serde_json::Value, wire_api: &str) -> Option<(i64, i64, i64)> {
-    let usage = &body["usage"];
-    if usage.is_null() {
-        return None;
-    }
-    let (prompt, completion) = if wire_api == "responses" {
-        (
-            usage["input_tokens"].as_i64()?,
-            usage["output_tokens"].as_i64()?,
-        )
-    } else {
-        (
-            usage["prompt_tokens"].as_i64()?,
-            usage["completion_tokens"].as_i64()?,
-        )
-    };
-    let total = usage["total_tokens"].as_i64().unwrap_or(prompt + completion);
-    Some((prompt, completion, total))
 }
 
 /// 把用户输入和附件拼成一条 user 消息的 `content`：没有附件时保持纯字符串

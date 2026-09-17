@@ -80,3 +80,40 @@ pub async fn workspace_update_last_sftp_paths(
         .workspace_manager
         .update_last_sftp_paths(id, &local_path, &remote_path)
 }
+
+/// 工作模块首页/选择页展示的"这个模块添加过的工作区"列表（2026-09 需求，见
+/// `db::repo::workspace_module_links_repo` 文档）——和 `workspace_list_recent`
+/// 不是一回事：后者是"系统里所有打开过的工作区"，供"从已有工作区中选择"这类
+/// 挑选场景使用；这个是"当前模块卡片该显示哪些"，默认是空的，要显式
+/// `workspace_add_module_link` 才会出现。
+#[tauri::command]
+pub async fn workspace_list_for_module(
+    state: State<'_, AppState>,
+    module: String,
+    limit: Option<usize>,
+) -> Result<Vec<WorkspaceProfile>, AppError> {
+    state
+        .workspace_module_links
+        .list_for_module(&module, limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub async fn workspace_add_module_link(
+    state: State<'_, AppState>,
+    id: Uuid,
+    module: String,
+) -> Result<(), AppError> {
+    state.workspace_module_links.add(id, &module)
+}
+
+/// 从某个模块的列表里移除——只解除关联，不删除工作区本身（同一个工作区可能还
+/// 关联着其它模块，也可能用户只是想让这张卡片清净一点）。彻底忘记一个工作区
+/// 仍然走 `workspace_remove_recent`。
+#[tauri::command]
+pub async fn workspace_remove_module_link(
+    state: State<'_, AppState>,
+    id: Uuid,
+    module: String,
+) -> Result<(), AppError> {
+    state.workspace_module_links.remove(id, &module)
+}

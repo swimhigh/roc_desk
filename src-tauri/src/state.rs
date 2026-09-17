@@ -13,12 +13,19 @@ use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
 use crate::db::repo::coding_history_repo::CodingHistoryRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
+use crate::db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
 use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
 use crate::mcp::McpServerManager;
 use crate::pty::LocalPtyManager;
 use crate::rdp::RdpSessionManager;
 use crate::ssh::{SshConnectionPool, TrustPromptRegistry};
+use crate::sql::agent::SqlAgentSession;
+use crate::sql::ai_assistant::SqlAiAssistant;
+use crate::sql::executor::QueryExecutor;
+use crate::sql::service::{SqlDataSourceService, SqlSessionManager};
+use crate::sql::transfer::TransferManager;
+use crate::sql::workspace_cache::SqlWorkspaceCache;
 use crate::symbols::SymbolIndex;
 use crate::workspace::{WorkspaceHandle, WorkspaceManager};
 
@@ -44,6 +51,9 @@ pub struct AppState {
     pub workspace_manager: Arc<WorkspaceManager>,
     /// 当前窗口内已打开的工作区句柄，key 为 WorkspaceProfile.id
     pub workspaces: Arc<RwLock<HashMap<Uuid, WorkspaceHandle>>>,
+    /// 工作模块首页卡片"添加过哪些工作区"关联表（2026-09 需求，见
+    /// `db::repo::workspace_module_links_repo` 文档）。
+    pub workspace_module_links: Arc<crate::db::repo::workspace_module_links_repo::WorkspaceModuleLinksRepo>,
     pub log_engine: Arc<LogSearchEngine>,
     pub log_importer: Arc<LogImporter>,
     pub ai_provider_manager: Arc<AiProviderManager>,
@@ -115,4 +125,53 @@ pub struct AppState {
     /// `coding_sessions`/`coding_changes` 同一种"按工作区一份"的模式。轻量正则
     /// 扫描器，不是真正的语言语义分析，见 `symbols` 模块文档。
     pub symbol_indexes: Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
+
+    /// SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。数据源 CRUD + 凭据编排。
+    pub sql_data_source_service: Arc<SqlDataSourceService>,
+    /// 每个数据源一份共享连接会话，跨标签页/窗口复用（方案 §2.5）。
+    pub sql_session_manager: Arc<SqlSessionManager>,
+    pub sql_query_history: Arc<crate::db::repo::sql_query_history_repo::SqlQueryHistoryRepo>,
+    pub sql_workspace_tabs: Arc<crate::db::repo::sql_workspace_tabs_repo::SqlWorkspaceTabsRepo>,
+    /// 标签页文件化的本地目录缓存，AI 编程助手的 `ChangeStore` 直接对着这里的
+    /// 文件读写（方案 §4.4）。
+    pub sql_workspace_cache: Arc<SqlWorkspaceCache>,
+    /// 查询执行任务的 spawn/poll/cancel registry，所有 adapter 共用（方案
+    /// §4.2.1，参考 rainfrog 的任务状态机思路，见 `sql::executor`）。
+    pub sql_executor: Arc<QueryExecutor>,
+    /// AI 对 SQL 标签页的文件改动状态，和 `coding_changes` 同样的
+    /// "按 id 一份、独立加锁"模式，但 key 是 data_source_id 而不是
+    /// workspace_id——两套状态机除了都复用 `ChangeStore` 类型外互不相干。
+    pub sql_changes: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChangeStore>>>>>,
+    pub sql_ai_assistant: Arc<SqlAiAssistant>,
+    /// 导出/导入任务的 spawn/poll/cancel registry（2026-09 用户需求：右键表
+    /// 导出/导入数据，大数据量要能断点续传），见 `sql::transfer`。
+    pub sql_transfer_manager: Arc<TransferManager>,
+
+    // --- SQL Agent（2026-09 用户要求：AI 工具要和"工作区"编程助手一样是真正
+    // 的多轮 Agent，而不是单次生成/解释/优化那种一次性请求，见 `sql::agent`）。
+    // 字段命名/结构和上面 `coding_*` 系列一一对应，key 从 workspace_id 换成
+    // data_source_id，复用同一批基础设施类型（`CommandConfirmRegistry`/
+    // `QuestionRegistry`）而不是另建一套。
+    /// SQL Agent 会话，key 为 data_source_id——一个数据源最多一个活跃会话，
+    /// 和 `coding_sessions` 按 workspace_id 一份是同一种模式。
+    pub sql_agent_sessions: Arc<RwLock<HashMap<Uuid, Arc<Mutex<SqlAgentSession>>>>>,
+    /// `run_query` 遇到需要确认的语句（UPDATE/DELETE/DDL）时用来等前端弹窗
+    /// 结果，和 `command_confirms` 是同一个类型、但故意是独立的一份注册表——
+    /// 两边的 session_id 空间（workspace_id vs data_source_id 生成的会话 id）
+    /// 不重叠，分开存避免出现"以为是同一个请求"的误用。
+    pub sql_agent_confirms: CommandConfirmRegistry,
+    /// `question` 工具的等待注册表，同上，和 `question_confirms` 类型相同、
+    /// 实例独立。
+    pub sql_agent_questions: QuestionRegistry,
+    pub sql_agent_history: Arc<SqlAgentHistoryRepo>,
+    /// "停止"按钮用的取消信号，key 为 data_source_id，和 `coding_cancel_tokens`
+    /// 同样的独立锁模式（不能卡在等 `sql_agent_sessions` 那把锁）。
+    pub sql_agent_cancel_tokens: Arc<StdMutex<HashMap<Uuid, tokio_util::sync::CancellationToken>>>,
+
+    // --- HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md）。没有单独的 session/handle 概念——
+    // 集合/环境/请求直接借用 `workspace_manager`/`workspaces` 已经打开的
+    // `WorkspaceHandle`（同一个工作区目录，见 `commands::http_desk::get_handle`），
+    // 这里只需要两张纯 UI/审计状态表的仓库，不需要额外的连接池/会话注册表。
+    pub http_workspace_tabs: Arc<crate::db::repo::http_workspace_tabs_repo::HttpWorkspaceTabsRepo>,
+    pub http_request_history: Arc<crate::db::repo::http_request_history_repo::HttpRequestHistoryRepo>,
 }

@@ -59,6 +59,14 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0019_ai_providers_reasoning_effort",
         include_str!("../../migrations/0019_ai_providers_reasoning_effort.sql"),
     ),
+    (
+        "0020_sql_desktop",
+        include_str!("../../migrations/0020_sql_desktop.sql"),
+    ),
+    (
+        "0021_sql_agent_history",
+        include_str!("../../migrations/0021_sql_agent_history.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[
@@ -84,6 +92,18 @@ const WORKSPACES_MIGRATIONS: &[(&str, &str)] = &[
     (
         "0015_workspace_last_sftp_paths",
         include_str!("../../migrations/0015_workspace_last_sftp_paths.sql"),
+    ),
+    // HTTP 桌面的 `http_workspace_tabs`/`http_request_history` 挂在这里而不是
+    // MAIN_MIGRATIONS——它们 FK 引用 `workspaces(id)`，必须和 workspaces 表同库
+    // （docs/HTTP_DESKTOP_PLAN.md §5）。
+    (
+        "0022_http_desktop",
+        include_str!("../../migrations/0022_http_desktop.sql"),
+    ),
+    // 工作模块"首页卡片显示哪些工作区"关联表，同理必须和 workspaces 表同库。
+    (
+        "0023_workspace_module_links",
+        include_str!("../../migrations/0023_workspace_module_links.sql"),
     ),
 ];
 

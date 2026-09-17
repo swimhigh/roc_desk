@@ -1,6 +1,7 @@
 import { useWorkspaceStore } from "../stores/workspaceStore";
 import { useEditorStore } from "../stores/editorStore";
 import { localFsService } from "../services/localFsService";
+import { workspaceService } from "../services/workspaceService";
 import { useToastStore } from "../components/shared/Toast";
 import { formatError } from "./error";
 
@@ -23,6 +24,10 @@ export async function openExternalPaths(paths: string[]): Promise<void> {
     if (paths.length > 1) push("info", `检测到文件夹 ${dirPath}，将作为工作区打开，其余项已忽略`);
     try {
       await useWorkspaceStore.getState().openLocalPath(dirPath);
+      // 拖拽/Ctrl+O/文件关联打开的文件夹默认算"工作区"模块（2026-09 需求：
+      // 不同模块各自维护自己的工作区列表，见 WorkspacePicker.tsx 文档）。
+      const id = useWorkspaceStore.getState().current?.id;
+      if (id) await workspaceService.addModuleLink(id, "workspace");
     } catch (e) {
       push("error", `打开文件夹失败：${formatError(e)}`);
     }

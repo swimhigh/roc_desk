@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_llm;
 pub mod ai;
 pub mod browser;
 pub mod coding;
@@ -8,10 +9,12 @@ pub mod credential;
 pub mod db;
 pub mod error;
 pub mod fsops;
+pub mod http_desk;
 pub mod log;
 pub mod mcp;
 pub mod pty;
 pub mod rdp;
+pub mod sql;
 pub mod ssh;
 pub mod state;
 pub mod symbols;
@@ -36,15 +39,26 @@ use db::repo::browser_history_repo::BrowserHistoryRepo;
 use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
+use db::repo::http_request_history_repo::HttpRequestHistoryRepo;
+use db::repo::http_workspace_tabs_repo::HttpWorkspaceTabsRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
+use db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
+use db::repo::sql_data_sources_repo::SqlDataSourcesRepo;
+use db::repo::sql_query_history_repo::SqlQueryHistoryRepo;
+use db::repo::sql_workspace_tabs_repo::SqlWorkspaceTabsRepo;
 use db::repo::transfer_log_repo::TransferLogRepo;
+use db::repo::workspace_module_links_repo::WorkspaceModuleLinksRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
 use mcp::McpServerManager;
 use pty::LocalPtyManager;
 use rdp::RdpSessionManager;
+use sql::ai_assistant::SqlAiAssistant;
+use sql::executor::QueryExecutor;
+use sql::service::{SqlDataSourceService, SqlSessionManager};
+use sql::workspace_cache::SqlWorkspaceCache;
 use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
 use state::AppState;
 use workspace::WorkspaceManager;
@@ -305,6 +319,13 @@ pub fn run() {
                 workspaces_dir,
             ));
 
+            // HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md §5）：两张表都 FK 引用
+            // `workspaces(id)`，必须和 `workspace_repo` 用同一个 `workspaces_pool`
+            // 数据库文件，不能挂到主库 `pool` 上。
+            let http_workspace_tabs = Arc::new(HttpWorkspaceTabsRepo::new(workspaces_pool.clone()));
+            let http_request_history = Arc::new(HttpRequestHistoryRepo::new(workspaces_pool.clone()));
+            let workspace_module_links = Arc::new(WorkspaceModuleLinksRepo::new(workspaces_pool.clone()));
+
             let log_engine = Arc::new(LogSearchEngine::new(pool.clone()));
             let log_importer = Arc::new(LogImporter::new(
                 log_engine.clone(),
@@ -330,6 +351,29 @@ pub fn run() {
             ));
             let transfer_log = Arc::new(TransferLogRepo::new(pool.clone()));
 
+            // SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。复用主库 `pool`（数据源
+            // 档案/查询历史/标签页元数据体量都很小，不需要像 sessions/workspaces
+            // 那样单独拆库）；本地目录缓存放在 `.rock_desk/sql/`，和 `sessions/`/
+            // `workspaces/`/`log_cache/` 同一惯例（方案 §4.4）。
+            let sql_data_sources_repo = Arc::new(SqlDataSourcesRepo::new(pool.clone()));
+            let sql_data_source_service = Arc::new(SqlDataSourceService::new(
+                sql_data_sources_repo,
+                credential_store.clone(),
+            ));
+            let sql_session_manager =
+                Arc::new(SqlSessionManager::new(sql_data_source_service.clone()));
+            let sql_query_history = Arc::new(SqlQueryHistoryRepo::new(pool.clone()));
+            let sql_workspace_tabs = Arc::new(SqlWorkspaceTabsRepo::new(pool.clone()));
+            let sql_workspace_cache =
+                Arc::new(SqlWorkspaceCache::new(app_data_dir.clone()));
+            let sql_executor = Arc::new(QueryExecutor::new());
+            let sql_ai_assistant = Arc::new(SqlAiAssistant::new(
+                ai_chat_client.clone(),
+                ai_provider_manager.clone(),
+            ));
+            let sql_transfer_manager = Arc::new(sql::transfer::TransferManager::new());
+            let sql_agent_history = Arc::new(SqlAgentHistoryRepo::new(pool.clone()));
+
             app.manage(AppState {
                 db: pool,
                 credential_store,
@@ -342,6 +386,7 @@ pub fn run() {
                 agent_trust_prompts,
                 workspace_manager,
                 workspaces: Arc::new(RwLock::new(HashMap::new())),
+                workspace_module_links,
                 log_engine,
                 log_importer,
                 ai_provider_manager,
@@ -371,6 +416,24 @@ pub fn run() {
                     std::collections::HashMap::new(),
                 )),
                 symbol_indexes: Arc::new(RwLock::new(HashMap::new())),
+                sql_data_source_service,
+                sql_session_manager,
+                sql_query_history,
+                sql_workspace_tabs,
+                sql_workspace_cache,
+                sql_executor,
+                sql_changes: Arc::new(RwLock::new(HashMap::new())),
+                sql_ai_assistant,
+                sql_transfer_manager,
+                sql_agent_sessions: Arc::new(RwLock::new(HashMap::new())),
+                sql_agent_confirms: CommandConfirmRegistry::default(),
+                sql_agent_questions: coding::QuestionRegistry::default(),
+                sql_agent_history,
+                sql_agent_cancel_tokens: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                http_workspace_tabs,
+                http_request_history,
             });
 
             Ok(())
@@ -386,6 +449,9 @@ pub fn run() {
             commands::workspace::workspace_update_path,
             commands::workspace::workspace_close,
             commands::workspace::workspace_update_last_sftp_paths,
+            commands::workspace::workspace_list_for_module,
+            commands::workspace::workspace_add_module_link,
+            commands::workspace::workspace_remove_module_link,
             commands::fs::fs_list_dir,
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
@@ -548,6 +614,91 @@ pub fn run() {
             commands::browser::browser_history_remove,
             commands::browser::browser_history_clear,
             commands::diagnostics::log_frontend_error,
+            commands::sql::sql_list_data_sources,
+            commands::sql::sql_save_data_source,
+            commands::sql::sql_delete_data_source,
+            commands::sql::sql_test_connection,
+            commands::sql::sql_open_session,
+            commands::sql::sql_close_session,
+            commands::sql::sql_list_databases,
+            commands::sql::sql_current_database,
+            commands::sql::sql_switch_database,
+            commands::sql::sql_list_objects,
+            commands::sql::sql_preview_template,
+            commands::sql::sql_describe_object,
+            commands::sql::sql_table_page,
+            commands::sql::sql_table_row_count,
+            commands::sql::sql_table_update_cell,
+            commands::sql::sql_table_delete_row,
+            commands::sql::sql_table_insert_row,
+            commands::sql::sql_generate_alter_table,
+            commands::sql::sql_export_start,
+            commands::sql::sql_export_poll,
+            commands::sql::sql_export_cancel,
+            commands::sql::sql_import_start,
+            commands::sql::sql_import_poll,
+            commands::sql::sql_import_cancel,
+            commands::sql::sql_write_text_file,
+            commands::sql_agent::sql_agent_start,
+            commands::sql_agent::sql_agent_new_session,
+            commands::sql_agent::sql_agent_close,
+            commands::sql_agent::sql_agent_set_provider,
+            commands::sql_agent::sql_agent_send_message,
+            commands::sql_agent::sql_agent_cancel_turn,
+            commands::sql_agent::sql_agent_resolve_confirm,
+            commands::sql_agent::sql_agent_answer_question,
+            commands::sql_agent::sql_agent_history_list,
+            commands::sql_agent::sql_agent_history_get,
+            commands::sql_agent::sql_agent_history_save,
+            commands::sql_agent::sql_agent_history_resume,
+            commands::sql_agent::sql_agent_history_rename,
+            commands::sql_agent::sql_agent_history_delete,
+            commands::sql::sql_execute,
+            commands::sql::sql_poll_query,
+            commands::sql::sql_cancel,
+            commands::sql::sql_confirm_write,
+            commands::sql::sql_rollback_write,
+            commands::sql::sql_explain,
+            commands::sql::sql_query_history,
+            commands::sql::sql_workspace_tabs_list,
+            commands::sql::sql_workspace_tab_create,
+            commands::sql::sql_workspace_tab_delete,
+            commands::sql::sql_workspace_tab_update_meta,
+            commands::sql::sql_tab_read_content,
+            commands::sql::sql_tab_write_content,
+            commands::sql::sql_ai_generate,
+            commands::sql::sql_ai_explain,
+            commands::sql::sql_ai_optimize,
+            commands::sql::sql_ai_fix_error,
+            commands::sql::sql_accept_change,
+            commands::sql::sql_reject_change,
+            commands::sql::sql_undo_change,
+            commands::sql::sql_revert_turn,
+            commands::http_desk::http_list_collections,
+            commands::http_desk::http_create_collection,
+            commands::http_desk::http_rename_collection,
+            commands::http_desk::http_delete_collection,
+            commands::http_desk::http_list_requests,
+            commands::http_desk::http_get_request,
+            commands::http_desk::http_create_request,
+            commands::http_desk::http_save_request,
+            commands::http_desk::http_delete_request,
+            commands::http_desk::http_list_environments,
+            commands::http_desk::http_save_environment,
+            commands::http_desk::http_delete_environment,
+            commands::http_desk::http_get_global_variables,
+            commands::http_desk::http_save_global_variables,
+            commands::http_desk::http_get_collection_meta,
+            commands::http_desk::http_save_collection_meta,
+            commands::http_desk::http_send_request,
+            commands::http_desk::http_import_curl,
+            commands::http_desk::http_list_history,
+            commands::http_desk::http_get_history_detail,
+            commands::http_desk::http_delete_history,
+            commands::http_desk::http_clear_history,
+            commands::http_desk::http_list_tabs,
+            commands::http_desk::http_open_tab,
+            commands::http_desk::http_close_tab,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

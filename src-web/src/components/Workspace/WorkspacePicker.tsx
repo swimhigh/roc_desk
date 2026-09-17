@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Code2, FolderOpen, Home, Server, Laptop, Pencil, FilePlus2 } from "lucide-react";
+import { Code2, FolderOpen, Home, ListPlus, Server, Laptop, Pencil, FilePlus2 } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useTerminalStore } from "../../stores/terminalStore";
-import { useModeStore } from "../../stores/modeStore";
+import { useModeStore, type WorkMode } from "../../stores/modeStore";
 import { openExternalPaths } from "../../utils/openExternalPaths";
+import { workspaceService } from "../../services/workspaceService";
 import { RemoteWorkspaceDialog } from "./RemoteWorkspaceDialog";
 import { PasswordPromptDialog } from "../ConnectionManager/PasswordPromptDialog";
 import { connectionService } from "../../services/connectionService";
@@ -14,32 +15,126 @@ import { ThemeToggle } from "../shared/ThemeToggle";
 import { isAppError } from "../../types/bindings";
 import type { ConnectionProfile, WorkspaceProfile } from "../../types/bindings";
 
-/** 应用入口（DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）：打开本地文件夹 / 连接远程主机 / 最近工作区。*/
-export const WorkspacePicker: React.FC = () => {
-  const {
-    recent,
-    loading,
-    error,
-    loadRecent,
-    openLocalFolder,
-    openLocalPath,
-    openRemoteWorkspace,
-    removeFromRecent,
-    updatePath,
-  } = useWorkspaceStore();
+const MODULE_LABEL: Partial<Record<WorkMode, string>> = {
+  workspace: "工作区",
+  http: "HTTP 测试工作台",
+};
+
+/** "从已有工作区中选择"子弹窗——列出系统里所有打开过的工作区（不管之前是哪个
+ * 模块打开的），选一个就关联到当前模块并打开（2026-09 需求：模块之间不再共用
+ * 同一份"最近工作区"，但同一个目录可以被多个模块各自"添加"）。 */
+const SelectExistingWorkspaceDialog: React.FC<{
+  module: WorkMode;
+  excludeIds: string[];
+  onClose: () => void;
+  onSelected: (w: WorkspaceProfile) => void;
+}> = ({ module, excludeIds, onClose, onSelected }) => {
+  const [all, setAll] = useState<WorkspaceProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const push = useToastStore((s) => s.push);
+
+  useEffect(() => {
+    workspaceService
+      .listRecent()
+      .then(setAll)
+      .catch((e) => push("error", `加载工作区列表失败：${formatError(e)}`))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const candidates = all.filter((w) => !excludeIds.includes(w.id));
+
+  return (
+    <div className="dialog-overlay" role="dialog" aria-modal="true">
+      <div className="dialog" style={{ minWidth: 480, maxWidth: 560 }}>
+        <div className="dialog-title-bar info">
+          <ListPlus size={16} />
+          <span>从已有工作区中选择</span>
+        </div>
+        <div className="dialog-body">
+          {loading ? (
+            <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>加载中…</div>
+          ) : candidates.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+              没有可选的工作区了——所有已打开过的工作区都已经在{MODULE_LABEL[module] ?? module}里。
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 360, overflowY: "auto" }}>
+              {candidates.map((w) => (
+                <div key={w.id} className="file-row" style={{ gridTemplateColumns: "auto 1fr auto", cursor: "pointer" }} onClick={() => onSelected(w)}>
+                  {w.kind === "local" ? <Laptop size={14} /> : <Server size={14} />}
+                  <span>
+                    {w.display_name} <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>{w.root_path}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="dialog-actions">
+          <button className="btn ghost sm" onClick={onClose}>
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** 应用入口（DESIGN.md §3.1.1 / UI_DESIGN.md §3.1）：打开本地文件夹 / 连接远程主机 /
+ * 从已有工作区中选择 / 最近添加的工作区。
+ *
+ * 2026-09 需求：不再是"系统里所有打开过的工作区都会出现在这里"——每个模块
+ * （`module` prop：`"workspace"` 工作区桌面 / `"http"` HTTP 测试工作台）各自
+ * 维护一份显式"添加"过的子集（`workspace_module_links`，见后端仓库文档），新建/
+ * 选择都要经过这个组件走一遍关联流程，不会因为在另一个模块打开过就自动出现。 */
+export const WorkspacePicker: React.FC<{ module: WorkMode }> = ({ module }) => {
+  const { loading, openLocalPath, openRemoteWorkspace, updatePath } = useWorkspaceStore();
   /** 有界保活的 LRU 常驻工作区集合（terminalStore.ts）——和 App.tsx 顶部"切换
    * 工作区"下拉菜单同一个用途，这里标在首页的"最近打开的工作区"列表上（2026-09-01
    * 用户需求：首页也要能看到在线状态）：在集合里说明这个工作区的终端 Channel/
    * xterm 实例还活着，切过去是原样恢复；不在集合里则是全新终端。 */
   const residentWorkspaceIds = useTerminalStore((s) => s.residentOrder);
+  const [moduleWorkspaces, setModuleWorkspaces] = useState<WorkspaceProfile[]>([]);
+  const [moduleLoading, setModuleLoading] = useState(true);
   const [showRemoteDialog, setShowRemoteDialog] = useState(false);
   const [editRemote, setEditRemote] = useState<WorkspaceProfile | null>(null);
+  const [showSelectExisting, setShowSelectExisting] = useState(false);
   const [passwordPrompt, setPasswordPrompt] = useState<{ profile: ConnectionProfile; remotePath: string } | null>(
     null,
   );
   const [savingPassword, setSavingPassword] = useState(false);
   const push = useToastStore((s) => s.push);
   const goHome = useModeStore((s) => s.goHome);
+
+  const refreshModuleList = async () => {
+    setModuleLoading(true);
+    try {
+      setModuleWorkspaces(await workspaceService.listForModule(module));
+    } catch (e) {
+      push("error", `加载工作区列表失败：${formatError(e)}`);
+    } finally {
+      setModuleLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshModuleList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [module]);
+
+  /** 新建/选择成功打开一个工作区之后，把它关联到当前模块——统一走这里，读
+   * `useWorkspaceStore.getState().current` 而不是要求调用方各自传一份 profile，
+   * 避免不同入口（本地文件夹/远程对话框/选择已有）传出不一致的数据。 */
+  const linkCurrentToModule = async () => {
+    const id = useWorkspaceStore.getState().current?.id;
+    if (!id) return;
+    try {
+      await workspaceService.addModuleLink(id, module);
+    } finally {
+      await refreshModuleList();
+    }
+  };
 
   /** 目录配错了不用"移除再重新打开"——本地直接弹原生目录选择器改路径；远程复用
    * "连接远程主机并选择目录"里的目录浏览步骤，只是确认时改路径而不是新建工作区
@@ -60,11 +155,7 @@ export const WorkspacePicker: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    loadRecent();
-  }, [loadRecent]);
-
-  const reopenRecent = async (w: (typeof recent)[number]) => {
+  const reopenRecent = async (w: WorkspaceProfile) => {
     if (w.kind === "local") {
       try {
         await openLocalPath(w.root_path);
@@ -96,6 +187,23 @@ export const WorkspacePicker: React.FC = () => {
     }
   };
 
+  const handleOpenLocalFolder = async () => {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    try {
+      await openLocalPath(selected);
+      await linkCurrentToModule();
+    } catch (e) {
+      push("error", `打开文件夹失败：${formatError(e)}`);
+    }
+  };
+
+  const handleSelectExisting = async (w: WorkspaceProfile) => {
+    setShowSelectExisting(false);
+    await reopenRecent(w);
+    await linkCurrentToModule();
+  };
+
   const handleSavePassword = async (password: string) => {
     if (!passwordPrompt) return;
     setSavingPassword(true);
@@ -116,6 +224,7 @@ export const WorkspacePicker: React.FC = () => {
       });
       setPasswordPrompt(null);
       await openRemoteWorkspace(profile.id, remotePath);
+      await linkCurrentToModule();
     } catch (e) {
       push("error", `保存密码失败：${formatError(e)}`);
     } finally {
@@ -140,7 +249,7 @@ export const WorkspacePicker: React.FC = () => {
       </div>
 
       <div className="wp-entries">
-        <button className="wp-entry-btn" onClick={() => openLocalFolder()} disabled={loading}>
+        <button className="wp-entry-btn" onClick={() => void handleOpenLocalFolder()} disabled={loading}>
           <FolderOpen />
           打开本地文件夹
         </button>
@@ -148,30 +257,36 @@ export const WorkspacePicker: React.FC = () => {
           <Server />
           连接远程主机并选择目录
         </button>
-        {/* 不建工作区，直接打开单个文件看/改（2026-09-03 需求，像 VSCode/Notepad 一样）——
-            和拖拽文件到窗口、Ctrl+O、Windows"打开方式"是同一套逻辑，见 utils/openExternalPaths.ts。 */}
-        <button
-          className="wp-entry-btn"
-          onClick={async () => {
-            const selected = await open({ directory: false, multiple: true });
-            if (!selected) return;
-            await openExternalPaths(Array.isArray(selected) ? selected : [selected]);
-          }}
-        >
-          <FilePlus2 />
-          打开文件
+        <button className="wp-entry-btn" onClick={() => setShowSelectExisting(true)}>
+          <ListPlus />
+          从已有工作区中选择
         </button>
+        {/* 不建工作区，直接打开单个文件看/改（2026-09-03 需求，像 VSCode/Notepad 一样）——
+            只对"工作区"模块有意义，HTTP 测试工作台不需要这个入口。 */}
+        {module === "workspace" && (
+          <button
+            className="wp-entry-btn"
+            onClick={async () => {
+              const selected = await open({ directory: false, multiple: true });
+              if (!selected) return;
+              await openExternalPaths(Array.isArray(selected) ? selected : [selected]);
+            }}
+          >
+            <FilePlus2 />
+            打开文件
+          </button>
+        )}
       </div>
 
-      {error && <div className="toast error">{error}</div>}
-
       <div className="wp-recent">
-        <div className="wp-recent-title">最近打开的工作区</div>
-        {recent.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--text-secondary)", textAlign: "center" }}>暂无最近工作区</div>
+        <div className="wp-recent-title">{module === "http" ? "已添加的工作区" : "最近打开的工作区"}</div>
+        {moduleLoading ? null : moduleWorkspaces.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-secondary)", textAlign: "center" }}>
+            {module === "http" ? "还没有工作区，先新建或从已有工作区中选择一个" : "暂无最近工作区"}
+          </div>
         ) : (
           <div className="wp-recent-list">
-            {recent.map((w) => (
+            {moduleWorkspaces.map((w) => (
               <div key={w.id} className="wp-recent-item" onClick={() => reopenRecent(w)}>
                 <span
                   className={`status-dot ${residentWorkspaceIds.includes(w.id) ? "connected" : "disconnected"}`}
@@ -194,9 +309,13 @@ export const WorkspacePicker: React.FC = () => {
                 </button>
                 <button
                   className="btn ghost sm"
+                  title={`从${MODULE_LABEL[module] ?? module}移除（不会删除工作区本身）`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    removeFromRecent(w.id);
+                    void workspaceService
+                      .removeModuleLink(w.id, module)
+                      .then(refreshModuleList)
+                      .catch((err) => push("error", `移除失败：${formatError(err)}`));
                   }}
                 >
                   移除
@@ -207,11 +326,21 @@ export const WorkspacePicker: React.FC = () => {
         )}
       </div>
 
-      {showRemoteDialog && <RemoteWorkspaceDialog onClose={() => setShowRemoteDialog(false)} />}
+      {showRemoteDialog && (
+        <RemoteWorkspaceDialog onClose={() => setShowRemoteDialog(false)} onOpened={() => void linkCurrentToModule()} />
+      )}
       {editRemote && editRemote.connection_id && (
         <RemoteWorkspaceDialog
           onClose={() => setEditRemote(null)}
           editWorkspace={{ id: editRemote.id, connectionId: editRemote.connection_id, initialPath: editRemote.root_path }}
+        />
+      )}
+      {showSelectExisting && (
+        <SelectExistingWorkspaceDialog
+          module={module}
+          excludeIds={moduleWorkspaces.map((w) => w.id)}
+          onClose={() => setShowSelectExisting(false)}
+          onSelected={(w) => void handleSelectExisting(w)}
         />
       )}
       {passwordPrompt && (
