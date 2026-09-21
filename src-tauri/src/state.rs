@@ -6,12 +6,13 @@ use uuid::Uuid;
 
 use crate::agent::{AgentConnectionPool, AgentTrustPromptRegistry};
 use crate::ai::{AiChatClient, AiProviderManager, AiRuntime};
-use crate::coding::{ChangeStore, CodingSession, CommandConfirmRegistry, QuestionRegistry};
+use crate::coding::{ChangeStore, CodingSession, CommandConfirmRegistry, PendingInjection, QuestionRegistry};
 use crate::connection::{ConnectionGroupManager, ConnectionManager};
 use crate::credential::CredentialStore;
 use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
 use crate::db::repo::coding_history_repo::CodingHistoryRepo;
+use crate::db::repo::ai_evidence_repo::AiEvidenceRepo;
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
 use crate::db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
 use crate::db::DbPool;
@@ -70,6 +71,7 @@ pub struct AppState {
     pub command_confirms: CommandConfirmRegistry,
     pub audit_log: Arc<AuditLogRepo>,
     pub coding_history: Arc<CodingHistoryRepo>,
+    pub ai_evidence: Arc<AiEvidenceRepo>,
     pub local_pty: Arc<LocalPtyManager>,
     pub browser_history: Arc<BrowserHistoryRepo>,
     /// 当前正在跑的 Explorer 全文搜索请求 id（`fs_search_stream`）——新搜索开始时
@@ -121,6 +123,16 @@ pub struct AppState {
     /// 精确打断这次 await，不需要轮询。
     pub coding_cancel_tokens:
         Arc<StdMutex<HashMap<Uuid, tokio_util::sync::CancellationToken>>>,
+    /// AI 处理期间用户又发了一条新消息——不等当前这一轮工具循环彻底跑完，key 为
+    /// workspace id，和 `coding_cancel_tokens` 同一种"不跟长任务抢同一把锁"模式：
+    /// `coding_send_message` 从进入到返回一直独占持有 `coding_sessions` 那把锁，
+    /// 插话命令如果也去抢那把锁只能等整轮结束才能把消息塞进去，跟直接不让插话
+    /// 没区别。`CodingSession::send_message` 内部工具循环每轮迭代开头（和检查
+    /// `cancel_token` 同一个位置）会读这张表、把攒到的消息追加进对话上下文，供
+    /// 下一次模型请求看到——不是打断当前这次请求，是"下一轮工具调用前生效"
+    /// （2026-09 用户反馈：AI 处理期间按 Enter，输入框内容被清空但消息没真正
+    /// 发出去）。
+    pub coding_pending_injections: Arc<StdMutex<HashMap<Uuid, Vec<PendingInjection>>>>,
     /// "转到定义/声明"用的符号索引（2026-09-16 需求），key 为 workspace id——和
     /// `coding_sessions`/`coding_changes` 同一种"按工作区一份"的模式。轻量正则
     /// 扫描器，不是真正的语言语义分析，见 `symbols` 模块文档。

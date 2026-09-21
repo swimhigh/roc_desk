@@ -12,6 +12,7 @@ import type {
   SqlAgentConfirmRequestEvent,
   SqlAgentHistorySummary,
   SqlAgentSessionInfo,
+  ChatAttachment,
 } from "../types/bindings";
 
 /** `sql::agent` 的前端状态——结构上是 `codingStore.ts` 的简化版：SQL Desktop
@@ -53,7 +54,7 @@ interface SqlAgentState {
   restoreOrStart: (dataSourceId: string, providerId: string) => Promise<void>;
   leaveDataSource: () => void;
   setProvider: (providerId: string) => Promise<void>;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, attachments?: ChatAttachment[]) => Promise<void>;
   cancelTurn: () => Promise<void>;
   toggleToolOutput: (id: string) => void;
   resolveConfirm: (allow: boolean) => Promise<void>;
@@ -111,7 +112,7 @@ export const useSqlAgentStore = create<SqlAgentState>((set, get) => ({
     await get().saveCurrentHistory();
   },
 
-  sendMessage: async (text) => {
+  sendMessage: async (text, attachments = []) => {
     const { dataSourceId, sending, viewingHistoryId } = get();
     if (!dataSourceId || !text.trim() || sending || viewingHistoryId) return;
     set((s) => ({
@@ -120,7 +121,7 @@ export const useSqlAgentStore = create<SqlAgentState>((set, get) => ({
       error: null,
     }));
     try {
-      const reply = await sqlAgentService.sendMessage(dataSourceId, text);
+      const reply = await sqlAgentService.sendMessage(dataSourceId, text, attachments);
       set((s) => ({ timeline: [...s.timeline, { kind: "assistant", id: nextId(), text: reply }], sending: false }));
       await get().saveCurrentHistory();
     } catch (e) {

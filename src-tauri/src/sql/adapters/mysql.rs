@@ -14,7 +14,12 @@ use crate::sql::model::*;
 pub struct MySqlAdapter;
 
 fn to_app_err(e: mysql_async::Error) -> AppError {
-    AppError::Database(e.to_string())
+    // Preserve the driver error verbatim.  TDSQL exposes a MySQL-compatible
+    // proxy, and failures can happen before authentication (TCP/handshake),
+    // during authentication, or while selecting the schema.  Keeping the
+    // original text is essential because the command layer has a timeout
+    // fallback and otherwise all three cases look identical in the UI.
+    AppError::Connection(e.to_string())
 }
 
 fn build_opts(profile: &ResolvedProfile) -> Result<Opts, AppError> {
@@ -46,13 +51,20 @@ impl DatabaseAdapter for MySqlAdapter {
         let opts = build_opts(profile)?;
         let start = Instant::now();
         let pool = Pool::new(opts);
-        let mut conn = pool.get_conn().await.map_err(to_app_err)?;
+        let mut conn = pool
+            .get_conn()
+            .await
+            .map_err(|e| AppError::Connection(format!("MySQL TCP/握手阶段失败：{e}")))?;
         let version: String = conn
             .query_first("SELECT VERSION()")
             .await
-            .map_err(to_app_err)?
+            .map_err(|e| AppError::Database(format!("MySQL 握手后查询失败：{e}")))?
             .unwrap_or_default();
         let latency_ms = start.elapsed().as_millis() as u64;
+        // `Pool::disconnect` waits for checked-out connections to be returned.
+        // Keep the test connection scoped separately and drop it first, or a
+        // successful probe is reported as the command's 20s timeout.
+        drop(conn);
         let _ = pool.disconnect().await;
         Ok(DbInfo {
             version,

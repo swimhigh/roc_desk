@@ -1,5 +1,6 @@
 pub mod agent_known_hosts_repo;
 pub mod ai_providers_repo;
+pub mod ai_evidence_repo;
 pub mod audit_log_repo;
 pub mod browser_history_repo;
 pub mod coding_history_repo;

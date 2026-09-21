@@ -20,6 +20,10 @@ export interface DisplayMessage extends ChatMessage {
 interface AiChatState {
   providers: AiProvider[];
   activeProviderId: string | null;
+  /** 每个 Provider 拉取到的模型列表，key 是 provider id——不持久化，只在当前进程
+   * 内存里，每次调 `fetchModels` 都会覆盖旧值（2026-09 需求："模型列表需要下次
+   * AI 工作启动时再重新刷新拉取一遍"，不长期缓存陈旧列表）。 */
+  modelsByProvider: Record<string, string[]>;
   messages: DisplayMessage[];
   redactEnabled: boolean;
   webSearchEnabled: boolean;
@@ -31,6 +35,12 @@ interface AiChatState {
   createProvider: (input: AiProviderInput) => Promise<void>;
   updateProvider: (id: string, input: AiProviderInput) => Promise<void>;
   deleteProvider: (id: string) => Promise<void>;
+  /** 拉取某个 Provider 的模型列表，拉到后如果它当前配置的默认模型不在列表里
+   * （或者从没配置过），自动选列表第一个当默认模型并持久化保存（2026-09 需求：
+   * "配置好一个模型提供商后自动拉取模型列表、选一个默认模型"）。拉取失败（不
+   * 支持 /models、网络问题）静默失败，退回只用 Provider 配置里那个默认模型，
+   * 不弹错误打扰用户——这是锦上添花的辅助功能，不是关键路径。 */
+  fetchModels: (providerId: string) => Promise<void>;
   setActiveProvider: (id: string) => void;
   setRedactEnabled: (v: boolean) => void;
   setWebSearchEnabled: (v: boolean) => void;
@@ -43,6 +53,7 @@ let listenersRegistered = false;
 export const useAiChatStore = create<AiChatState>((set, get) => ({
   providers: [],
   activeProviderId: null,
+  modelsByProvider: {},
   messages: [],
   redactEnabled: true,
   webSearchEnabled: true,
@@ -72,6 +83,28 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
   updateProvider: async (id, input) => {
     const updated = await aiChatService.updateProvider(id, input);
     set((s) => ({ providers: s.providers.map((p) => (p.id === id ? updated : p)) }));
+  },
+
+  fetchModels: async (providerId) => {
+    try {
+      const models = await aiChatService.listModels(providerId);
+      set((s) => ({ modelsByProvider: { ...s.modelsByProvider, [providerId]: models } }));
+      const provider = get().providers.find((p) => p.id === providerId);
+      if (provider && models.length > 0 && !models.includes(provider.model)) {
+        await get().updateProvider(providerId, {
+          name: provider.name,
+          api_base: provider.api_base,
+          api_key: null,
+          model: models[0],
+          is_local: provider.is_local,
+          wire_api: provider.wire_api,
+          reasoning_effort: provider.reasoning_effort,
+          context_window_tokens: provider.context_window_tokens,
+        });
+      }
+    } catch {
+      // 静默失败，见字段文档。
+    }
   },
 
   deleteProvider: async (id) => {

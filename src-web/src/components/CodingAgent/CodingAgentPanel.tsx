@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, Blocks, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X, Square } from "lucide-react";
 import { useCodingStore } from "../../stores/codingStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
@@ -18,7 +18,17 @@ import { SkillManagerDialog } from "./SkillManagerDialog";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { ProviderManagerDialog, hasProviderDraft } from "../AiChat/ProviderManagerDialog";
 import { CodingHistoryDialog } from "./CodingHistoryDialog";
+import { useToastStore } from "../shared/Toast";
+import { formatError } from "../../utils/error";
 import type { CodingTarget, FileChange, TodoStatus } from "../../types/bindings";
+
+/** 过去轮次里"可以折叠"的条目种类——工具调用/思考过程/进度提示/token 用量都是
+ * 过程细节，不是用户问题或 AI 最终答复本身，见 `expandedRounds` 的文档。
+ * 2026-09 用户反馈：第一版漏了 "usage"（"本次请求消耗 tokens"/"本轮对话共消耗
+ * tokens" 这两行）——长会话里每一轮至少留一两行 usage，几十轮下来所有工具调用
+ * 明细都折叠没了、就剩一长串连续的 token 用量数字，看起来像是画面卡死/重复
+ * 渲染的 bug，其实是这一类条目当时没被计入"可折叠"范围。 */
+const COLLAPSIBLE_KINDS = new Set(["tool", "note", "progress", "usage"]);
 
 function todoIcon(status: TodoStatus) {
   if (status === "completed") return <CircleCheck style={{ width: 13, height: 13, color: "var(--accent)" }} />;
@@ -72,6 +82,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     timeline,
     changesById,
     sending,
+    liveTokenUsage,
     error,
     confirmRequest,
     questionRequest,
@@ -81,6 +92,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     setAutoAllowReadonly,
     setAutoGitCommit,
     setFullAuto,
+    setAutoApplyChanges,
     sendMessage,
     cancelTurn,
     attachments,
@@ -106,7 +118,17 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   } = useCodingStore();
   const providers = useAiChatStore((s) => s.providers);
   const loadProviders = useAiChatStore((s) => s.loadProviders);
+  const modelsByProvider = useAiChatStore((s) => s.modelsByProvider);
+  const fetchModels = useAiChatStore((s) => s.fetchModels);
+  const updateProvider = useAiChatStore((s) => s.updateProvider);
+  const push = useToastStore((s) => s.push);
+  // Keep keystrokes out of the large timeline render tree.  The composer is a
+  // native uncontrolled textarea; React only receives a debounced snapshot for
+  // button state/optimization, while send always reads the latest ref value.
   const [input, setInput] = useState("");
+  const inputValueRef = useRef("");
+  const inputElementRef = useRef<HTMLTextAreaElement>(null);
+  const inputSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
   const [showProviders, setShowProviders] = useState(false);
   const [providerDraftPending, setProviderDraftPending] = useState(() => hasProviderDraft());
@@ -114,7 +136,16 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showPermissionRules, setShowPermissionRules] = useState(false);
   const [showMcpServers, setShowMcpServers] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
+  // 2026-09 用户反馈："多轮后拉得太长了"——过去每一轮的工具调用/思考过程明细
+  // 永远铺开显示，会话轮次一多，时间线变成一堵墙。默认只有"当前/最新这一轮"
+  // 展开明细，更早的轮次自动折叠成一行摘要，只保留用户问题和 AI 最终答复这些
+  // "关键结果"；这个集合记的是用户手动点开过的、要保持展开的历史轮次序号。
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
+  const shouldFollowBottomRef = useRef(true);
+  const stableScrollTopRef = useRef(0);
+  const suppressScrollEventRef = useRef(false);
+  const [showJumpBottom, setShowJumpBottom] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 用户反馈"看不出来 AI 还有没有在运行"——工具调用之间（模型正在琢磨下一步、
@@ -160,20 +191,80 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     void useCodingStore.getState().setProvider(fallback.id);
   }, [active, providers, selectedProviderId, sessionInfo]);
 
+  // 2026-09 需求：每次 AI 会话启动、或者切换到另一个 Provider 时，重新拉取一遍
+  // 这个 Provider 的模型列表——不长期缓存陈旧列表，Provider 侧新上线的模型下次
+  // 打开就能选到。`fetchModels` 内部还负责"当前默认模型不在新拉到的列表里就自动
+  // 选第一个"（比如第一次配置好一个 Provider、还没手动选过模型的场景）。
+  useEffect(() => {
+    if (!active || !sessionInfo?.provider_id) return;
+    void fetchModels(sessionInfo.provider_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, sessionInfo?.provider_id]);
+
   useEffect(() => {
     if (providers.length > 0 && !providers.some((provider) => provider.id === selectedProviderId)) {
       setSelectedProviderId(providers[0].id);
     }
   }, [providers, selectedProviderId]);
 
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    if (shouldFollowBottomRef.current) {
+      suppressScrollEventRef.current = true;
+      list.scrollTop = list.scrollHeight;
+      stableScrollTopRef.current = list.scrollTop;
+      requestAnimationFrame(() => { suppressScrollEventRef.current = false; });
+    } else {
+      // 时间线只会在底部追加，但 flex/markdown 重排可能让浏览器自动修正
+      // scrollTop。恢复用户最近一次明确看到的位置，避免旧消息阅读点漂移。
+      list.scrollTop = stableScrollTopRef.current;
+    }
   }, [timeline]);
+
+  const handleTimelineScroll = () => {
+    const list = listRef.current;
+    if (!list) return;
+    if (suppressScrollEventRef.current) return;
+    const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
+    // 只有已经在底部附近才跟随流式输出。用户向上滚动超过阈值后，
+    // 新的工具事件不会再改变当前阅读位置。
+    const follow = distance <= 48;
+    shouldFollowBottomRef.current = follow;
+    stableScrollTopRef.current = list.scrollTop;
+    setShowJumpBottom(!follow);
+  };
+
+  const scrollTimelineToBottom = () => {
+    const list = listRef.current;
+    if (!list) return;
+    shouldFollowBottomRef.current = true;
+    setShowJumpBottom(false);
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+  };
 
   // 按 `turn_id`（同一条用户消息触发的一轮工具调用）给 FileChangeCard 分组——
   // 记下每一轮最后一张卡片在时间线里的 id，只在那张卡片后面挂一次"全部应用/
   // 全部拒绝/撤销本轮"的批量操作条，而不是每张卡片都重复一份（参考 Cursor/
   // Windsurf 按对话轮次做批量操作，但这里不依赖 git，见项目内部设计讨论）。
+  // 每个时间线条目属于第几轮对话——以 "user" 条目为轮次边界，和后端
+  // `current_turn_id`/`turn_id` 是同一个"一条用户消息 = 一轮"的概念，只是这里
+  // 不需要真的按 turn_id 关联，纯按顺序数第几个 "user" 条目就够用。
+  const roundOfIndex = React.useMemo(() => {
+    const rounds: number[] = [];
+    let round = -1;
+    for (const entry of timeline) {
+      if (entry.kind === "user") round += 1;
+      rounds.push(round);
+    }
+    return rounds;
+  }, [timeline]);
+  const currentRound = roundOfIndex.length > 0 ? roundOfIndex[roundOfIndex.length - 1] : -1;
+
+  // 新一轮开始后，历史轮次默认保持收起；用户手动展开的轮次仍保留。
+  // 提供一个显式入口，长会话中可以迅速恢复“只看最近一轮”的紧凑视图。
+  const collapseHistoryRounds = () => setExpandedRounds(new Set());
+
   const turnStats = React.useMemo(() => {
     const stats = new Map<string, { changeIds: string[]; lastEntryId: string }>();
     for (const entry of timeline) {
@@ -197,14 +288,20 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   };
 
   const handleSend = () => {
-    if (!input.trim() && attachments.length === 0) return;
-    sendMessage(input);
+    const value = inputValueRef.current;
+    if (!value.trim() && attachments.length === 0) return;
+    sendMessage(value);
+    inputValueRef.current = "";
+    if (inputElementRef.current) inputElementRef.current.value = "";
     setInput("");
   };
 
   const handleOptimize = async () => {
-    if (!input.trim() || optimizing) return;
-    const optimized = await optimizePrompt(input);
+    const value = inputValueRef.current;
+    if (!value.trim() || optimizing) return;
+    const optimized = await optimizePrompt(value);
+    inputValueRef.current = optimized;
+    if (inputElementRef.current) inputElementRef.current.value = optimized;
     setInput(optimized);
   };
 
@@ -266,6 +363,30 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     );
   }
 
+  // "全部应用/全部拒绝"批量操作——2026-09 用户反馈"改了 3 个文件，点全部应用要
+  // 点 3 次，每点一次数量减少一个"：根因是原来的 `for...of` 循环里
+  // `await acceptChange(c.id)` 没有任何错误处理，其中一个改动应用失败（比如
+  // 两个改动碰巧动了同一个文件、后一个的 diff 基于的旧内容已经因为前一个改动
+  // 生效而过期）就会让整个循环直接中断在那一项，剩下的改动完全没被尝试，
+  // 也没有任何错误提示——用户只看到"数量少了一个"，只能又点一次重试剩下的。
+  // 现在改成每一项单独 try/catch，一个失败不影响继续处理其它项，处理完之后
+  // 用 toast 汇总报告失败的数量和原因，不会再静默吞掉错误。
+  const runBatch = async (items: FileChange[], action: (id: string) => Promise<void>, verb: string) => {
+    let failed = 0;
+    let lastError: unknown = null;
+    for (const item of items) {
+      try {
+        await action(item.id);
+      } catch (e) {
+        failed += 1;
+        lastError = e;
+      }
+    }
+    if (failed > 0) {
+      push("error", `${items.length} 个改动中有 ${failed} 个${verb}失败：${formatError(lastError)}`);
+    }
+  };
+
   const isRemote = sessionInfo.target.kind === "Remote";
   const activeProvider = providers.find((provider) => provider.id === sessionInfo.provider_id);
   const activeThinkingId = [...timeline].reverse().find((entry) => entry.kind === "note")?.id;
@@ -283,6 +404,9 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     : lastEntry?.kind === "note"
     ? "AI 正在思考…"
     : "AI 正在处理…";
+  // 本轮进行中的 token 用量——原地跟着这条状态一起展示，不再各自插一条时间线
+  // 消息（见 `liveTokenUsage` 字段文档，2026-09 用户反馈）。
+  const liveTokenText = sending && liveTokenUsage ? `已用 ${liveTokenUsage.totalTokens} tokens` : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -298,7 +422,11 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           顶部工具栏按钮多、面板窄时会换行到 2~3 行；工具栏和消息列表包在下面同一个
           flex:1 + overflow-y:auto 的滚动区里，换行再多也只是这个区域自己滚动，
           不会挤占 .agent-composer 的空间，输入框固定在底部、永远完整可见。 */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      <div
+        ref={listRef}
+        onScroll={handleTimelineScroll}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", position: "relative" }}
+      >
       <div className="editor-toolbar" style={{ gap: 12, flexWrap: "wrap", height: "auto", minHeight: 32 }}>
         <SegmentedControl
           value={sessionInfo.mode}
@@ -308,16 +436,20 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             { value: "build", label: "Build" },
           ]}
         />
+        {/* 2026-09 需求：Provider（连接配置）和模型拆成两级——这里只选 Provider，
+            具体用哪个模型挪到下面 `.agent-composer-footer` 里选（跟输入框放
+            一起，对齐 ChatGPT/Claude 桌面版 composer 的惯例），切了 Provider 之后
+            那边会自动拉取这个 Provider 的模型列表（见下面 `fetchModels` 的 effect）。 */}
         <select
           className="form-select agent-model-select"
           value={sessionInfo.provider_id}
           onChange={(event) => setProvider(event.target.value)}
           disabled={sending || Boolean(viewingHistoryId)}
-          title="切换后续消息使用的 Provider / 模型"
+          title="切换后续消息使用的 Provider"
         >
           {providers.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {provider.name} · {provider.model}
+              {provider.name}
             </option>
           ))}
         </select>
@@ -357,6 +489,13 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             </label>
             <label
               style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}
+              title={"默认开启：AI 的文件改动直接写入磁盘，界面上只需要点\"撤销\"；关闭后退回每条改动手动点\"应用\"。不影响命令确认。"}
+            >
+              <ToggleSwitch checked={sessionInfo.auto_apply_changes} onChange={setAutoApplyChanges} label="自动应用文件改动" />
+              自动应用文件改动
+            </label>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}
               title={sessionInfo.git_repo ? "每次点击\"应用\"就自动 git add + commit 这个文件" : "工作区根目录不是 Git 仓库，无法使用"}
             >
               <ToggleSwitch
@@ -377,6 +516,12 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
           </>
         )}
       </div>
+
+      {showJumpBottom && (
+        <button className="agent-jump-bottom" onClick={scrollTimelineToBottom} title="跳到最新消息">
+          ↓ 最新消息
+        </button>
+      )}
 
       {sessionInfo.todos.length > 0 && (
         <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", gap: 3 }}>
@@ -401,13 +546,43 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         <button className="btn primary sm" onClick={() => newSession(activeProvider?.id ?? selectedProviderId ?? sessionInfo.provider_id)}>返回新会话</button>
       </div>}
 
-      <div ref={listRef} style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {timeline.length > 0 && currentRound > 0 && (
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -4 }}>
+            <button className="btn ghost sm" onClick={collapseHistoryRounds} title="收起历史轮次的工具和思考过程">
+              收起历史过程
+            </button>
+          </div>
+        )}
         {timeline.length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 13, marginTop: 24 }}>
             {sessionInfo.mode === "plan" ? "直接提问或描述任务；Plan 模式不会修改文件" : "提问，或描述你想做的改动"}
           </div>
         ) : (
-          timeline.map((entry) => {
+          timeline.map((entry, index) => {
+            // 早于当前轮次、且属于"过程细节"种类的条目，默认折叠成每轮一行摘要——
+            // 只在这个轮次里第一个可折叠条目的位置渲染一次摘要，同一轮后续的可
+            // 折叠条目直接跳过（返回 null），不影响下面 user/assistant/change/
+            // git/usage/blocked 各分支的渲染逻辑和它们依赖的 turnStats。
+            if (COLLAPSIBLE_KINDS.has(entry.kind)) {
+              const round = roundOfIndex[index];
+              if (round !== currentRound && !expandedRounds.has(round)) {
+                const isFirstInRound = !timeline
+                  .slice(0, index)
+                  .some((e, i) => roundOfIndex[i] === round && COLLAPSIBLE_KINDS.has(e.kind));
+                if (!isFirstInRound) return null;
+                const count = timeline.filter((e, i) => roundOfIndex[i] === round && COLLAPSIBLE_KINDS.has(e.kind)).length;
+                return (
+                  <button
+                    key={`round-collapse-${round}`}
+                    className="agent-round-collapse-toggle"
+                    onClick={() => setExpandedRounds((s) => new Set(s).add(round))}
+                  >
+                    <ChevronRight style={{ width: 12, height: 12 }} /> 已折叠 {count} 个过程步骤，点击展开
+                  </button>
+                );
+              }
+            }
             if (entry.kind === "user" || entry.kind === "assistant") {
               return (
                 <div key={entry.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
@@ -447,7 +622,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
               );
             }
             if (entry.kind === "tool") {
-              const hasFileTarget = ["read_file", "write_file", "edit_file", "list_directory"].includes(entry.tool);
+              const hasFileTarget = ["read_file", "write_file", "edit_file", "list_directory", "multi_edit"].includes(entry.tool);
               return (
                 <ToolCallProgress
                   key={entry.id}
@@ -533,13 +708,13 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
                       <>
                         <button
                           className="btn ghost sm"
-                          onClick={() => { void (async () => { for (const c of pendingInTurn) await acceptChange(c.id); })(); }}
+                          onClick={() => void runBatch(pendingInTurn, acceptChange, "应用")}
                         >
                           全部应用（{pendingInTurn.length}）
                         </button>
                         <button
                           className="btn ghost sm"
-                          onClick={() => { void (async () => { for (const c of pendingInTurn) await rejectChange(c.id); })(); }}
+                          onClick={() => void runBatch(pendingInTurn, rejectChange, "拒绝")}
                         >
                           全部拒绝（{pendingInTurn.length}）
                         </button>
@@ -563,6 +738,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         <div className="agent-live-status" key={liveTick}>
           <span className="agent-live-dot" />
           {liveStatusText}
+          {liveTokenText && <span className="agent-live-tokens">· {liveTokenText}</span>}
         </div>
       )}
 
@@ -589,11 +765,23 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         )}
         <textarea
           className="agent-composer-input"
+          ref={inputElementRef}
           rows={3}
           disabled={Boolean(viewingHistoryId)}
-          placeholder="提问或描述任务，Enter 发送，Shift+Enter 换行，可直接粘贴图片"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
+          placeholder={
+            sending
+              ? "AI 正在处理，这时候按 Enter 会直接插进当前对话，不用等它说完"
+              : "提问或描述任务，Enter 发送，Shift+Enter 换行，可直接粘贴图片"
+          }
+          defaultValue=""
+          onChange={(e) => {
+            inputValueRef.current = e.target.value;
+            if (inputSyncTimerRef.current) clearTimeout(inputSyncTimerRef.current);
+            inputSyncTimerRef.current = setTimeout(() => {
+              setInput(inputValueRef.current);
+              inputSyncTimerRef.current = null;
+            }, 120);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -605,11 +793,45 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         <div className="agent-composer-footer">
           <div className="agent-model-meta" title={activeProvider?.api_base}>
             <Sparkles />
-            <strong>{activeProvider?.model ?? "未选择模型"}</strong>
+            {/* 这里选的是"当前 Provider 用哪个模型"，不是切 Provider（那个在上面
+                工具栏里）——选项来自 `fetchModels` 拉到的列表，拉取失败/还没拉到
+                时退回只显示 Provider 当前配置的那一个，保证选择器不会是空的。
+                切换直接持久化写回这个 Provider 的 `model` 字段（复用现成的
+                `updateProvider`，`api_key: null` 表示不改已保存的密钥）。 */}
+            <select
+              className="agent-model-select-inline"
+              value={activeProvider?.model ?? ""}
+              onChange={(event) => {
+                if (!activeProvider) return;
+                void updateProvider(activeProvider.id, {
+                  name: activeProvider.name,
+                  api_base: activeProvider.api_base,
+                  api_key: null,
+                  model: event.target.value,
+                  is_local: activeProvider.is_local,
+                  wire_api: activeProvider.wire_api,
+                  reasoning_effort: activeProvider.reasoning_effort,
+                  context_window_tokens: activeProvider.context_window_tokens,
+                });
+              }}
+              disabled={sending || Boolean(viewingHistoryId) || !activeProvider}
+              title="切换这个 Provider 使用的模型"
+            >
+              {(modelsByProvider[sessionInfo.provider_id]?.length
+                ? modelsByProvider[sessionInfo.provider_id]
+                : activeProvider
+                ? [activeProvider.model]
+                : []
+              ).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
             {activeProvider && <span>{activeProvider.name} · {activeProvider.is_local ? "本地" : "云端"}</span>}
             <span>· {sessionInfo.mode === "plan" ? "Plan" : "Build"}</span>
           </div>
-          <span className="agent-input-hint">Enter 发送 · Shift+Enter 换行</span>
+          <span className="agent-input-hint">{sending ? "Enter 插话 · Shift+Enter 换行" : "Enter 发送 · Shift+Enter 换行"}</span>
           <input
             ref={fileInputRef}
             type="file"

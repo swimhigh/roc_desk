@@ -25,12 +25,22 @@ export const codingService = {
   setAutoGitCommit(workspaceId: string, enabled: boolean): Promise<void> {
     return invoke("coding_set_auto_git_commit", { workspaceId, enabled });
   },
-  /** "完全授权模式"：开启后 AI 提出的文件改动直接落盘，不再逐个 Accept。 */
+  /** "完全授权模式"：开启后 AI 提出的文件改动直接落盘，且跳过命令确认。 */
   setFullAuto(workspaceId: string, enabled: boolean): Promise<void> {
     return invoke("coding_set_full_auto", { workspaceId, enabled });
   },
+  /** 文件改动自动应用（默认开启，关掉退回"每条手动点应用"），不影响命令确认。 */
+  setAutoApplyChanges(workspaceId: string, enabled: boolean): Promise<void> {
+    return invoke("coding_set_auto_apply_changes", { workspaceId, enabled });
+  },
   sendMessage(workspaceId: string, text: string, attachments?: ChatAttachment[]): Promise<string> {
     return invoke("coding_send_message", { workspaceId, text, attachments: attachments?.length ? attachments : null });
+  },
+  /** AI 正在处理上一条消息时用户又发了一条——不等当前这一轮工具循环结束，直接
+   * 攒进后端一张独立的待注入队列，下一次模型请求前生效（不是打断正在跑的这
+   * 次请求）。返回很快（不等 AI 给出新回复），前端负责乐观地把消息插进时间线。 */
+  injectMessage(workspaceId: string, text: string, attachments?: ChatAttachment[]): Promise<void> {
+    return invoke("coding_inject_message", { workspaceId, text, attachments: attachments?.length ? attachments : null });
   },
   /** "停止"按钮：中断当前正在跑的对话轮次（2026-09 用户反馈：中转过载时一轮
    * 对话能卡一两分钟，之前没有办法主动打断）。不依赖 `sendMessage` 是否已经

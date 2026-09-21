@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Trash2, X } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 import { useHttpDeskStore } from "../../stores/httpDeskStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
@@ -14,49 +14,36 @@ function EnvVarTable({ vars, onChange }: { vars: EnvVar[]; onChange: (v: EnvVar[
   const remove = (i: number) => onChange(rows.filter((_, idx) => idx !== i).filter((r) => r.key !== "" || r.value !== ""));
 
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-      <thead>
-        <tr style={{ textAlign: "left", opacity: 0.6, fontSize: 11 }}>
-          <th style={{ width: 24 }} />
-          <th>变量名</th>
-          <th>值</th>
-          <th style={{ width: 50 }}>敏感</th>
-          <th style={{ width: 28 }} />
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i}>
-            <td>
-              <input type="checkbox" checked={row.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} disabled={row.key === ""} />
-            </td>
-            <td style={{ padding: "2px 4px" }}>
-              <input className="form-input" style={{ width: "100%" }} value={row.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="base_url" />
-            </td>
-            <td style={{ padding: "2px 4px" }}>
-              <input
-                className="form-input"
-                style={{ width: "100%" }}
-                type={row.secret ? "password" : "text"}
-                value={row.value}
-                onChange={(e) => update(i, { value: e.target.value })}
-                placeholder="https://dev.example.com"
-              />
-            </td>
-            <td style={{ textAlign: "center" }}>
+    <div className="kv-table">
+      <div className="kv-row-header kv-row-secret">
+        <span />
+        <span>变量名</span>
+        <span>值</span>
+        <span style={{ textAlign: "center" }}>敏感</span>
+        <span />
+      </div>
+      {rows.map((row, i) => {
+        const empty = row.key === "" && row.value === "";
+        return (
+          <div className="kv-row kv-row-secret" key={i}>
+            <input type="checkbox" checked={row.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} disabled={row.key === ""} />
+            <input value={row.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="base_url" />
+            <input
+              type={row.secret ? "password" : "text"}
+              value={row.value}
+              onChange={(e) => update(i, { value: e.target.value })}
+              placeholder="https://dev.example.com"
+            />
+            <span style={{ textAlign: "center" }}>
               <input type="checkbox" checked={row.secret} onChange={(e) => update(i, { secret: e.target.checked })} disabled={row.key === ""} />
-            </td>
-            <td>
-              {row.key !== "" && (
-                <button className="btn ghost sm" onClick={() => remove(i)} title="删除">
-                  <Trash2 size={12} />
-                </button>
-              )}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+            </span>
+            <button className="kv-row-delete" onClick={() => remove(i)} title="删除" style={{ visibility: empty ? "hidden" : "visible" }}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -86,31 +73,33 @@ export const EnvironmentDialog: React.FC<{ onClose: () => void }> = ({ onClose }
           </button>
         </div>
         <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-          <div style={{ width: 160, borderRight: "1px solid var(--border-default)", overflowY: "auto" }}>
-            <div
-              className={`home-dashboard-card-item ${selectedId === "__global__" ? "active" : ""}`}
-              style={{ cursor: "pointer" }}
-              onClick={() => setSelectedId("__global__")}
-            >
-              全局变量
-            </div>
-            {environments.map((env) => (
-              <div
-                key={env.id}
-                className={`home-dashboard-card-item ${selectedId === env.id ? "active" : ""}`}
-                style={{ cursor: "pointer" }}
-                onClick={() => setSelectedId(env.id)}
-              >
-                {env.name}
+          <div style={{ width: 170, borderRight: "1px solid var(--border-default)", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <div className={`tree-item ${selectedId === "__global__" ? "active" : ""}`} onClick={() => setSelectedId("__global__")}>
+                <span className="tree-name">全局变量</span>
               </div>
-            ))}
-            <div style={{ padding: 8, display: "flex", gap: 4 }}>
-              <input className="form-input" style={{ width: "100%" }} placeholder="新环境名" value={newName} onChange={(e) => setNewName(e.target.value)} />
+              {environments.map((env) => (
+                <div key={env.id} className={`tree-item ${selectedId === env.id ? "active" : ""}`} onClick={() => setSelectedId(env.id)}>
+                  <span className="tree-name">{env.name}</span>
+                </div>
+              ))}
             </div>
-            <div style={{ padding: "0 8px 8px" }}>
+            <div style={{ padding: 8, display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--border-default)" }}>
+              <input
+                className="form-input"
+                placeholder="新环境名"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newName.trim()) {
+                    void saveEnvironment({ id: "", name: newName.trim(), variables: [] })
+                      .then(() => setNewName(""))
+                      .catch((err) => push("error", `新建环境失败：${formatError(err)}`));
+                  }
+                }}
+              />
               <button
                 className="btn ghost sm"
-                style={{ width: "100%" }}
                 disabled={!newName.trim()}
                 onClick={() => {
                   void saveEnvironment({ id: "", name: newName.trim(), variables: [] })
@@ -118,7 +107,7 @@ export const EnvironmentDialog: React.FC<{ onClose: () => void }> = ({ onClose }
                     .catch((e) => push("error", `新建环境失败：${formatError(e)}`));
                 }}
               >
-                新建环境
+                <Plus size={12} /> 新建环境
               </button>
             </div>
           </div>

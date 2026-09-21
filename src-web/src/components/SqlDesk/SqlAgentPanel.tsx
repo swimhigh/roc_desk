@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bot, History, Plus, Send, Settings, Sparkles, Square, User } from "lucide-react";
+import { Bot, History, Paperclip, Plus, Send, Settings, Sparkles, Square, User } from "lucide-react";
 import { useSqlAgentStore } from "../../stores/sqlAgentStore";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { AgentMarkdown } from "../CodingAgent/AgentMarkdown";
@@ -9,6 +9,7 @@ import { CodingHistoryDialog } from "../CodingAgent/CodingHistoryDialog";
 import { QuestionDialog } from "../CodingAgent/QuestionDialog";
 import { SqlAgentConfirmDialog } from "./SqlAgentConfirmDialog";
 import { ProviderManagerDialog, hasProviderDraft } from "../AiChat/ProviderManagerDialog";
+import type { ChatAttachment } from "../../types/bindings";
 
 interface SqlAgentPanelProps {
   dataSourceId: string;
@@ -45,6 +46,8 @@ export const SqlAgentPanel: React.FC<SqlAgentPanelProps> = ({ dataSourceId }) =>
   const providers = useAiChatStore((s) => s.providers);
   const loadProviders = useAiChatStore((s) => s.loadProviders);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Array<ChatAttachment & { id: string; previewUrl?: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [showProviders, setShowProviders] = useState(false);
   const [providerDraftPending, setProviderDraftPending] = useState(() => hasProviderDraft());
@@ -89,9 +92,40 @@ export const SqlAgentPanel: React.FC<SqlAgentPanelProps> = ({ dataSourceId }) =>
   };
 
   const handleSend = () => {
-    if (!input.trim()) return;
-    void sendMessage(input);
+    if (!input.trim() && attachments.length === 0) return;
+    const outgoing = attachments.map(({ id: _id, previewUrl: _preview, ...item }) => item);
+    void sendMessage(input, outgoing);
     setInput("");
+    setAttachments([]);
+  };
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files) return;
+    for (const file of Array.from(files).slice(0, 5 - attachments.length)) {
+      const id = crypto.randomUUID();
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (file.type.startsWith("image/")) {
+          const dataUrl = String(reader.result ?? "");
+          const comma = dataUrl.indexOf(",");
+          if (comma < 0) return;
+          setAttachments((items) => [...items, { id, kind: "image", name: file.name, mime: file.type || "image/png", data_base64: dataUrl.slice(comma + 1), previewUrl: dataUrl }]);
+        } else {
+          setAttachments((items) => [...items, { id, kind: "file", name: file.name, content: String(reader.result ?? "") }]);
+        }
+      };
+      reader.readAsText(file.type.startsWith("image/") ? file : file);
+      if (file.type.startsWith("image/")) {
+        reader.abort();
+        const imageReader = new FileReader();
+        imageReader.onload = () => {
+          const dataUrl = String(imageReader.result ?? "");
+          const comma = dataUrl.indexOf(",");
+          if (comma >= 0) setAttachments((items) => [...items, { id, kind: "image", name: file.name, mime: file.type || "image/png", data_base64: dataUrl.slice(comma + 1), previewUrl: dataUrl }]);
+        };
+        imageReader.readAsDataURL(file);
+      }
+    }
   };
 
   if (!sessionInfo) {
@@ -247,6 +281,7 @@ export const SqlAgentPanel: React.FC<SqlAgentPanelProps> = ({ dataSourceId }) =>
       {error && <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}
 
       <div className="agent-composer">
+        {attachments.length > 0 && <div className="agent-attachment-list">{attachments.map((file) => <span className="agent-attachment-chip" key={file.id}>{file.kind === "image" ? "图片" : "文件"}：{file.name}<button className="icon-btn" onClick={() => setAttachments((items) => items.filter((item) => item.id !== file.id))}>×</button></span>)}</div>}
         <textarea
           className="agent-composer-input"
           rows={3}
@@ -261,6 +296,8 @@ export const SqlAgentPanel: React.FC<SqlAgentPanelProps> = ({ dataSourceId }) =>
           }}
         />
         <div className="agent-composer-footer">
+          <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+          <button className="agent-composer-icon-btn" onClick={() => fileInputRef.current?.click()} title="添加文件或图片"><Paperclip /></button>
           <div className="agent-model-meta" title={activeProvider?.api_base}>
             <Sparkles />
             <strong>{activeProvider?.model ?? "未选择模型"}</strong>

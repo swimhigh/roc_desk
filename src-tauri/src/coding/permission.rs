@@ -65,9 +65,11 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 一次 `send_message` 生命周期内有效的规则快照——每条消息处理前从数据库现取一份
-/// （见 `CodingSession::send_message`），规则改动（增删）后下一条消息立即生效，
-/// 不需要额外的缓存失效通知机制。
+/// 一次工具调用决策用的规则快照——`CodingSession::send_message` 在每个工具调用
+/// 执行前都会现取一份（不是整轮对话共用一份缓存在循环外的旧快照），规则改动
+/// （增删）能在同一轮还没跑完的对话里立刻生效，不需要等到下一条用户消息，也
+/// 不需要额外的缓存失效通知机制（2026-09 用户反馈：确认弹窗还开着的时候去
+/// 权限规则管理里加了条规则，后面的工具调用应该立刻按新规则走，不该继续弹）。
 pub struct PermissionEngine {
     rules: Vec<PermissionRule>,
 }

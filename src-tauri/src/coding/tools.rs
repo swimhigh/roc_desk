@@ -25,6 +25,18 @@ pub fn tool_schema() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "read_evidence",
+                "description": "按 evidence_id 读取之前搜索/读取过的证据片段，适合上下文压缩后恢复已定位内容",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "evidence_id": { "type": "string" }, "start_line": { "type": "integer" }, "end_line": { "type": "integer" } },
+                    "required": ["evidence_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "list_directory",
                 "description": "列出某个目录下的文件和子目录",
                 "parameters": {
@@ -183,6 +195,133 @@ pub fn tool_schema() -> serde_json::Value {
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "multi_edit",
+                "description": "对同一个文件一次性做多处精确替换，按顺序依次应用（后一处 old_text 是在前面已经替换过的内容基础上匹配的），只有全部替换都成功才会生成一份 Diff——比连续多次调用 edit_file 更省工具调用次数，也避免中途失败留下部分修改。只在 Build 模式下可用",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "old_text": { "type": "string" },
+                                    "new_text": { "type": "string" }
+                                },
+                                "required": ["old_text", "new_text"]
+                            }
+                        }
+                    },
+                    "required": ["path", "edits"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_status",
+                "description": "查看工作区当前的 Git 状态（相当于 git status --porcelain），只读、不需要确认。工作区根目录不是 Git 仓库时会明确告知",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string", "description": "只看某个子目录/文件，不传则看整个仓库" } },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_diff",
+                "description": "查看尚未暂存的改动内容（相当于 git diff），只读、不需要确认；改动范围大时建议先传 path 缩小到相关文件，避免一次性看到大量无关 diff",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string", "description": "只看某个子目录/文件的 diff，不传则看整个仓库" } },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_commit",
+                "description": "把指定路径的改动 add 后提交一次 commit（相当于 git add -- <paths> && git commit -m <message>）；不确定具体动了哪些文件时先调用 git_status 确认。只在 Build 模式下可用，和 run_command 走同一套黑名单/权限规则/用户确认",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "paths": { "type": "array", "items": { "type": "string" }, "description": "要提交的文件/目录路径，不能为空——不支持一次性提交整个仓库的隐式写法，避免误提交不相关的文件" }
+                    },
+                    "required": ["message", "paths"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_command_background",
+                "description": "在本地工作区后台启动一个不等待其退出的进程（比如开发服务器、长期挂着的 watch 进程），立即返回一个 job_id；用 read_background_output 查看它目前的输出，用 stop_background_process 结束它。只支持本地工作区（远程/Agent 目标不可用），只在 Build 模式下可用，和 run_command 走同一套黑名单/权限规则/用户确认。普通的一次性命令仍然应该用 run_command，不要为了图快而滥用这个",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "command": { "type": "string" } },
+                    "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_background_output",
+                "description": "查看 run_command_background 启动的某个后台进程目前的运行状态和已输出内容（累计输出，不是增量）。只在 Build 模式下可用",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "job_id": { "type": "string" } },
+                    "required": ["job_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "stop_background_process",
+                "description": "结束 run_command_background 启动的某个后台进程。只在 Build 模式下可用",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "job_id": { "type": "string" } },
+                    "required": ["job_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_definition",
+                "description": "按符号名（函数/类型/宏名）在工作区代码里查找定义位置——基于正则的轻量索引（不是真正的语言语义分析），第一次调用时会自动扫描整个工作区建索引，之后复用。多行签名、宏生成的定义、重载可能漏掉或者返回多个候选；没找到或者结果看起来不对时改用 search_files 按关键词搜索",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "symbol": { "type": "string" } },
+                    "required": ["symbol"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "task",
+                "description": "把一个具体的子任务委派给一个临时的、独立上下文的子代理去完成——子代理能用和你一样的工具（文件读写/搜索/命令等，取决于当前模式），完成后只把一段文字总结交还给你，你看不到它的中间探索过程。适合\"在这一大堆文件里找到某个具体实现/结论\"这类会消耗大量探索性工具调用、但你只需要一个结论的子任务，能避免这些过程细节占满你自己的上下文。子代理不能再往下委派子任务、也不能向用户提问，遇到需要用户决策的岔路口会自己做一个合理假设并在总结里说明，你需要在这个总结的基础上判断要不要追问用户",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "description": { "type": "string", "description": "3-6 个字的子任务简称，用于界面展示" },
+                        "prompt": { "type": "string", "description": "交给子代理的完整任务说明，要包含足够的背景信息——子代理看不到你和用户之间的对话历史" }
+                    },
+                    "required": ["description", "prompt"]
+                }
+            }
+        },
     ])
 }
 
@@ -206,6 +345,7 @@ pub enum ToolCall {
     ReadFile {
         path: String,
     },
+    ReadEvidence { id: uuid::Uuid, start_line: Option<usize>, end_line: Option<usize> },
     ListDirectory {
         path: String,
     },
@@ -245,6 +385,36 @@ pub enum ToolCall {
     Skill {
         name: String,
     },
+    MultiEdit {
+        path: String,
+        edits: Vec<MultiEditItem>,
+    },
+    GitStatus {
+        path: Option<String>,
+    },
+    GitDiff {
+        path: Option<String>,
+    },
+    GitCommit {
+        message: String,
+        paths: Vec<String>,
+    },
+    RunCommandBackground {
+        command: String,
+    },
+    ReadBackgroundOutput {
+        job_id: uuid::Uuid,
+    },
+    StopBackgroundProcess {
+        job_id: uuid::Uuid,
+    },
+    FindDefinition {
+        symbol: String,
+    },
+    Task {
+        description: String,
+        prompt: String,
+    },
     /// MCP 工具调用不走这里的静态解析——工具名是运行时按已连接的服务器动态生成
     /// 的（`mcp__<server>__<tool>`），`CodingSession::send_message` 在调
     /// `parse_tool_call` 之前先检查这个前缀，命中就直接构造这个变体，见
@@ -260,6 +430,8 @@ pub enum ToolCall {
 struct ReadFileArgs {
     path: String,
 }
+#[derive(Deserialize)]
+struct ReadEvidenceArgs { evidence_id: uuid::Uuid, start_line: Option<usize>, end_line: Option<usize> }
 #[derive(Deserialize)]
 struct ListDirectoryArgs {
     path: String,
@@ -311,6 +483,52 @@ struct QuestionArgs {
 struct SkillArgs {
     name: String,
 }
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultiEditItem {
+    pub old_text: String,
+    pub new_text: String,
+}
+#[derive(Deserialize)]
+struct MultiEditArgs {
+    path: String,
+    edits: Vec<MultiEditItem>,
+}
+#[derive(Deserialize)]
+struct GitStatusArgs {
+    #[serde(default)]
+    path: Option<String>,
+}
+#[derive(Deserialize)]
+struct GitDiffArgs {
+    #[serde(default)]
+    path: Option<String>,
+}
+#[derive(Deserialize)]
+struct GitCommitArgs {
+    message: String,
+    paths: Vec<String>,
+}
+#[derive(Deserialize)]
+struct RunCommandBackgroundArgs {
+    command: String,
+}
+#[derive(Deserialize)]
+struct ReadBackgroundOutputArgs {
+    job_id: uuid::Uuid,
+}
+#[derive(Deserialize)]
+struct StopBackgroundProcessArgs {
+    job_id: uuid::Uuid,
+}
+#[derive(Deserialize)]
+struct FindDefinitionArgs {
+    symbol: String,
+}
+#[derive(Deserialize)]
+struct TaskArgs {
+    description: String,
+    prompt: String,
+}
 
 pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, AppError> {
     let bad_args = |e: serde_json::Error| {
@@ -320,6 +538,10 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         "read_file" => {
             let a: ReadFileArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
             Ok(ToolCall::ReadFile { path: a.path })
+        }
+        "read_evidence" => {
+            let a: ReadEvidenceArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::ReadEvidence { id: a.evidence_id, start_line: a.start_line, end_line: a.end_line })
         }
         "list_directory" => {
             let a: ListDirectoryArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
@@ -380,6 +602,42 @@ pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, App
         "skill" => {
             let a: SkillArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
             Ok(ToolCall::Skill { name: a.name })
+        }
+        "multi_edit" => {
+            let a: MultiEditArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::MultiEdit { path: a.path, edits: a.edits })
+        }
+        "git_status" => {
+            let a: GitStatusArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::GitStatus { path: a.path })
+        }
+        "git_diff" => {
+            let a: GitDiffArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::GitDiff { path: a.path })
+        }
+        "git_commit" => {
+            let a: GitCommitArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::GitCommit { message: a.message, paths: a.paths })
+        }
+        "run_command_background" => {
+            let a: RunCommandBackgroundArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::RunCommandBackground { command: a.command })
+        }
+        "read_background_output" => {
+            let a: ReadBackgroundOutputArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::ReadBackgroundOutput { job_id: a.job_id })
+        }
+        "stop_background_process" => {
+            let a: StopBackgroundProcessArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::StopBackgroundProcess { job_id: a.job_id })
+        }
+        "find_definition" => {
+            let a: FindDefinitionArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::FindDefinition { symbol: a.symbol })
+        }
+        "task" => {
+            let a: TaskArgs = serde_json::from_str(arguments_json).map_err(bad_args)?;
+            Ok(ToolCall::Task { description: a.description, prompt: a.prompt })
         }
         other => Err(AppError::Internal(format!("unknown tool: {other}"))),
     }

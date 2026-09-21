@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { logFrontendError } from "./services/diagnosticsService";
+import { formatError } from "./utils/error";
 import "./monacoSetup";
 import "./styles/globals.css";
 import "./styles/components.css";
@@ -15,7 +16,12 @@ window.addEventListener("error", (event) => {
 });
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason;
-  const message = reason instanceof Error ? reason.message : String(reason);
+  // Tauri invoke() 失败时 reject 的是后端 `AppError` 序列化后的裸对象
+  // `{ kind, message }`，不是 `Error` 实例——`String(reason)` 只会得到
+  // "[object Object]"，日志里排查不出具体是哪个命令、报了什么错（2026-09
+  // 真实复现："新建会话"点了没反应，日志里一整串全是这个占位符，排查不出
+  // 是哪次 invoke 失败的）。统一走 `formatError`，和其他 catch 分支一致。
+  const message = formatError(reason);
   const stack = reason instanceof Error ? reason.stack : undefined;
   logFrontendError(message, stack, "unhandledrejection");
 });

@@ -35,6 +35,13 @@ pub struct AiProvider {
     /// 用户自己判断要不要填）。裸 `Option<String>` 而不是枚举，跟 `wire_api`
     /// 同样的理由——校验交给前端下拉框，不在这里重复定义一遍取值范围。
     pub reasoning_effort: Option<String>,
+    /// 这个 Provider 实际能接受的上下文窗口（估算 token 数）——`coding/session.rs`
+    /// 的 `limit_context` 用它替代原来"全局写死 60_000"的保守默认值（2026-09
+    /// 用户反馈：大窗口 Provider 被按小窗口的保守阈值频繁压缩上下文，同一轮对话
+    /// 内反复丢弃刚探索过的文件/搜索结果，逼着模型对同一个任务重复探索）。
+    /// `None` 时退回 `coding::session::DEFAULT_CONTEXT_TOKENS_ESTIMATE`（原来的
+    /// 60_000 常量），不强制用户填，兼容所有存量 Provider。
+    pub context_window_tokens: Option<u32>,
     pub created_at: String,
 }
 
@@ -47,6 +54,7 @@ pub struct AiProviderInput {
     pub is_local: bool,
     pub wire_api: String,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 fn credential_key(id: Uuid) -> String {
@@ -96,6 +104,7 @@ impl AiProviderManager {
             is_local: input.is_local,
             wire_api: input.wire_api,
             reasoning_effort: normalize_reasoning_effort(input.reasoning_effort),
+            context_window_tokens: input.context_window_tokens,
             created_at: Utc::now().to_rfc3339(),
         };
         self.repo.create(&provider)?;
@@ -132,6 +141,7 @@ impl AiProviderManager {
             is_local: input.is_local,
             wire_api: input.wire_api,
             reasoning_effort: normalize_reasoning_effort(input.reasoning_effort),
+            context_window_tokens: input.context_window_tokens,
             created_at: existing.created_at,
         };
         self.repo.update(&provider)?;
@@ -161,5 +171,50 @@ impl AiProviderManager {
             Some(key) => self.credential_store.get(key).await,
             None => Ok(None),
         }
+    }
+
+    /// 拉取这个 Provider 实际支持的模型列表——OpenAI 兼容协议的 `GET /models`
+    /// （`{"data":[{"id":"gpt-5.5"},...]}`），豆包/DeepSeek/通义千问/Ollama 的
+    /// OpenAI 兼容层基本都支持这个端点。2026-09 需求：配置好 Provider 后不再要求
+    /// 用户自己手填一个固定的模型名字符串，改成自动拉取可选列表，用户从列表里选；
+    /// 不缓存——每次调用都是一次真实请求，配合前端"每次 AI 会话启动时重新拉取一遍"
+    /// 的策略，保证不会因为客户端缓存了旧列表而看不到 Provider 侧新上线的模型。
+    /// 不支持这个端点的 Provider（网络错误/404/响应格式不对）直接把错误抛给调用方，
+    /// 前端退回"只能用 Provider 配置里那个默认模型"的兜底展示，不在这里吞掉错误。
+    pub async fn list_models(&self, id: Uuid) -> Result<Vec<String>, AppError> {
+        let provider = self
+            .get(id)?
+            .ok_or_else(|| AppError::NotFound(format!("ai provider not found: {id}")))?;
+        let api_key = self.resolve_api_key(&provider).await?;
+        let url = format!("{}/models", provider.api_base.trim_end_matches('/'));
+        let client = reqwest::Client::new();
+        let mut req = client.get(&url);
+        if let Some(key) = &api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), req.send())
+            .await
+            .map_err(|_| AppError::Connection("获取模型列表超时".to_string()))??;
+        if !resp.status().is_success() {
+            return Err(AppError::Connection(format!(
+                "获取模型列表失败：HTTP {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Connection(format!("解析模型列表响应失败：{e}")))?;
+        let mut models: Vec<String> = body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        models.sort();
+        models.dedup();
+        Ok(models)
     }
 }

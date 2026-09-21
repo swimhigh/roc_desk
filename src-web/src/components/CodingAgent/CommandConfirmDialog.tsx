@@ -23,6 +23,13 @@ interface CommandConfirmDialogProps {
  * "记住此模式"不是简单的"以后都不问了"——落地成一条 `allow` 权限规则（按用户可
  * 编辑的模式匹配），用户随时能在权限规则管理里看到、改、删，不是一个隐藏的
  * 会话内开关。
+ *
+ * 模式输入框从一开始就常驻显示（不再靠"允许并记住"先把它点出来、再点一次
+ * "确认并保存规则"才真正生效）——之前那版是"点一下展开表单、再点一下才提交"
+ * 的两步流程，同一个决定要点两次按钮，用户反馈"改一个东西需要两次确认，太
+ * 麻烦"（2026-09）。现在"允许并记住"直接读取当前输入框里的模式一次性提交，
+ * 只想放行这一次、不想保存规则的用户走旁边的"仅本次允许"即可，不用先把这个
+ * 表单点出来又不填。
  */
 export const CommandConfirmDialog: React.FC<CommandConfirmDialogProps> = ({
   open,
@@ -34,11 +41,9 @@ export const CommandConfirmDialog: React.FC<CommandConfirmDialogProps> = ({
   onAllowOnce,
   onAllowAndRemember,
 }) => {
-  const [rememberMode, setRememberMode] = useState(false);
   const [pattern, setPattern] = useState(suggestedPattern);
 
   React.useEffect(() => {
-    setRememberMode(false);
     setPattern(suggestedPattern);
   }, [suggestedPattern, open]);
 
@@ -58,13 +63,9 @@ export const CommandConfirmDialog: React.FC<CommandConfirmDialogProps> = ({
         <>
           <button className="btn ghost sm" onClick={onReject}>拒绝</button>
           <button className="btn ghost sm" onClick={onAllowOnce}>仅本次允许</button>
-          {rememberMode ? (
-            <button className="btn primary sm" onClick={() => onAllowAndRemember(pattern)} disabled={!pattern.trim()}>
-              确认并保存规则
-            </button>
-          ) : (
-            <button className="btn primary sm" onClick={() => setRememberMode(true)}>允许并记住</button>
-          )}
+          <button className="btn primary sm" onClick={() => onAllowAndRemember(pattern)} disabled={!pattern.trim()}>
+            允许并记住
+          </button>
         </>
       }
     >
@@ -83,12 +84,10 @@ export const CommandConfirmDialog: React.FC<CommandConfirmDialogProps> = ({
       <p style={{ fontSize: 12, color: "var(--text-secondary)" }}>
         此{kind === "mcp" ? "工具调用" : "命令"}将{host ? "在远程主机上" : "本地"}执行，请确认你了解其影响。
       </p>
-      {rememberMode && (
-        <div className="form-row" style={{ marginTop: 8 }}>
-          <label className="form-label">以后自动放行匹配此模式的{kind === "mcp" ? "调用" : "命令"}（支持 * / ?）</label>
-          <input className="form-input" value={pattern} onChange={(e) => setPattern(e.target.value)} />
-        </div>
-      )}
+      <div className="form-row" style={{ marginTop: 8 }}>
+        <label className="form-label">"允许并记住"会保存这条规则，以后自动放行匹配此模式的{kind === "mcp" ? "调用" : "命令"}（支持 * / ?）</label>
+        <input className="form-input" value={pattern} onChange={(e) => setPattern(e.target.value)} />
+      </div>
     </ConfirmDialog>
   );
 };

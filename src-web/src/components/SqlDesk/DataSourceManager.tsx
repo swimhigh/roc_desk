@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 const DB_KIND_OPTIONS: { value: DbKind; label: string; defaultPort: number }[] = [
   { value: "postgres", label: "PostgreSQL", defaultPort: 5432 },
   { value: "mysql", label: "MySQL", defaultPort: 3306 },
+  { value: "tdsql", label: "TDSQL（MySQL 协议）", defaultPort: 15300 },
   { value: "opengauss", label: "openGauss", defaultPort: 5432 },
   { value: "sql_server", label: "SQL Server", defaultPort: 1433 },
   { value: "oracle", label: "Oracle（暂未实现）", defaultPort: 1521 },

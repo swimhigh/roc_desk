@@ -202,6 +202,19 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({ workspaceId, workspaceNa
     explorer.select(path);
     window.dispatchEvent(new CustomEvent("roc:reveal-explorer", { detail: { path } }));
   }, [workspaceId, rootPath]);
+
+  // 打开的文件左侧 Explorer 树不联动（2026-09 用户反馈）——之前只有手动点标签页/
+  // 面包屑才会调 `revealInExplorer`，AI 工具面板打开文件（`App.tsx` 的
+  // `onOpenFile` 直接调 `openPreview`）完全绕过了这条路径。改成响应式：只要
+  // "当前激活的文件"变了（不管是谁触发的——Explorer 点击、AI 面板打开、标签页
+  // 切换），都自动展开/定位一次，不用每个打开文件的入口各自记得调用一遍。
+  // 幂等操作（展开已展开的目录、选中已选中的项）重复调用无副作用，不需要额外
+  // 判断"是不是已经点过 Explorer 触发的"。
+  React.useEffect(() => {
+    if (active?.path) void revealInExplorer(active.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.path]);
+
   const language = active ? detectLanguage(active.path) : "plaintext";
   const isMarkdown = language === "markdown";
   // HTML 文件预览（2026-08-29 需求）：和 Markdown 预览共用同一套"编辑/预览切换"

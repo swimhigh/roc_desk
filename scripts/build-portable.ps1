@@ -1,14 +1,30 @@
 ﻿$ErrorActionPreference = 'Stop'
 
-# 便携版正在运行时会锁住 bin\roc_desk.exe——之前踩过一次：目录已经清空但拷贝
-# 因为文件被占用而失败，脚本中止，留下一个只剩 .rock_desk 的半损坏 bin\ 目录。
-# 构建前先关掉任何还在跑的实例，避免重现这个问题。
-Get-Process roc_desk -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $releaseDir = Join-Path $repoRoot 'build\release'
 $portableDir = Join-Path $repoRoot 'bin'
 $exePath = Join-Path $releaseDir 'roc_desk.exe'
+$portableExePath = [System.IO.Path]::GetFullPath((Join-Path $portableDir 'roc_desk.exe'))
+
+# 便携版正在运行时会锁住 bin\roc_desk.exe——之前踩过一次：目录已经清空但拷贝
+# 因为文件被占用而失败，脚本中止，留下一个只剩 .rock_desk 的半损坏 bin\ 目录。
+# 构建前先关掉这个 bin\ 目录里正在跑的那个实例。
+#
+# 2026-09 真实事故：这里原来是 `Get-Process roc_desk | Stop-Process`——按进程名
+# 全局杀，不区分是哪个目录下的 roc_desk.exe。用户在另一个完全独立的日常使用
+# 位置（跟这个仓库的 bin\ 无关）开着 roc_desk 用 AI 编程助手调试自己的项目，
+# 这里一构建就把那个不相关的实例也杀掉了，正好打断了 AI 正在进行的一轮对话；
+# 那一轮恰好是"模型直接给一段文本回复、没调用任何工具"，没能触发任何自动存档
+# （见 `codingStore.ts` `checkpointHistory` 的文档），进程重启后恢复到的是这条
+# 回复之前的旧存档，AI 因此"忘了"自己刚说过的话。改成只按可执行文件的完整路径
+# 匹配——只杀"就是我们要覆盖的这一份 bin\roc_desk.exe"，不影响其他目录下的实例。
+Get-CimInstance Win32_Process -Filter "Name='roc_desk.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+        try { [System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $portableExePath }
+        catch { $false }
+    } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 # roc_desk_agent.exe 故意编译到 `x86_64-win7-windows-msvc`（Tier 3 目标），
 # 不是默认的 `x86_64-pc-windows-msvc`——从 Rust 1.78 起，默认目标产出的二进制
 # 静态导入表里带了 `api-ms-win-core-synch-l1-2-0.dll`（新同步原语 WaitOnAddress，

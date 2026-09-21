@@ -107,6 +107,7 @@ pub async fn sql_agent_send_message(
     app_handle: AppHandle,
     data_source_id: Uuid,
     text: String,
+    attachments: Option<Vec<crate::coding::ChatAttachment>>,
 ) -> Result<String, AppError> {
     let session = get_session(&state, data_source_id).await?;
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -115,6 +116,7 @@ pub async fn sql_agent_send_message(
     let result = session
         .send_message(
             &text,
+            &attachments.unwrap_or_default(),
             &state.ai_provider_manager,
             &state.sql_data_source_service,
             &state.sql_session_manager,

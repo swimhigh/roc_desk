@@ -1,99 +1,126 @@
 import React, { useState } from "react";
+import Editor from "@monaco-editor/react";
 import { useHttpDeskStore } from "../../stores/httpDeskStore";
+import { useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
+import { httpMethodClass } from "../../utils/httpMethod";
 import { KeyValueTable } from "./KeyValueTable";
 import type { AuthConfig, RequestBody, RequestDef } from "../../types/bindings";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 type SubTab = "params" | "headers" | "body" | "auth";
-const SUB_TABS: { id: SubTab; label: string }[] = [
-  { id: "params", label: "Params" },
-  { id: "headers", label: "Headers" },
+const SUB_TABS: { id: SubTab; label: string; count?: (r: RequestDef) => number }[] = [
+  { id: "params", label: "Params", count: (r) => r.params.filter((p) => p.key).length },
+  { id: "headers", label: "Headers", count: (r) => r.headers.filter((h) => h.key).length },
   { id: "body", label: "Body" },
   { id: "auth", label: "Auth" },
 ];
 
 const BODY_TYPES: { value: RequestBody["type"]; label: string }[] = [
-  { value: "none", label: "无" },
+  { value: "none", label: "无 Body" },
   { value: "json", label: "JSON" },
   { value: "raw", label: "Raw / XML / Text" },
   { value: "form_url_encoded", label: "x-www-form-urlencoded" },
   { value: "form_data", label: "form-data" },
 ];
 
-const BodyEditor: React.FC<{ body: RequestBody; onChange: (b: RequestBody) => void }> = ({ body, onChange }) => (
-  <div>
-    <select
-      className="form-select"
-      value={body.type}
-      onChange={(e) => {
-        switch (e.target.value as RequestBody["type"]) {
-          case "none":
-            onChange({ type: "none" });
-            break;
-          case "json":
-            onChange({ type: "json", content: body.type === "json" ? body.content : "" });
-            break;
-          case "raw":
-            onChange({ type: "raw", content: "", content_type: "text/plain" });
-            break;
-          case "form_url_encoded":
-            onChange({ type: "form_url_encoded", items: [] });
-            break;
-          case "form_data":
-            onChange({ type: "form_data", items: [] });
-            break;
-        }
-      }}
-    >
-      {BODY_TYPES.map((b) => (
-        <option key={b.value} value={b.value}>
-          {b.label}
-        </option>
-      ))}
-    </select>
-    <div style={{ marginTop: 8 }}>
-      {body.type === "json" && (
-        <textarea
-          className="form-input"
-          style={{ width: "100%", minHeight: 220, fontFamily: "monospace", resize: "vertical" }}
-          value={body.content}
-          onChange={(e) => onChange({ type: "json", content: e.target.value })}
-          placeholder='{"key": "value"}'
-        />
-      )}
-      {body.type === "raw" && (
-        <>
+function contentTypeLanguage(contentType: string): string {
+  const ct = contentType.toLowerCase();
+  if (ct.includes("json")) return "json";
+  if (ct.includes("xml")) return "xml";
+  if (ct.includes("html")) return "html";
+  return "plaintext";
+}
+
+const MONACO_OPTIONS = {
+  minimap: { enabled: false },
+  fontSize: 13,
+  automaticLayout: true,
+  scrollBeyondLastLine: false,
+  wordWrap: "on" as const,
+  tabSize: 2,
+};
+
+const BodyEditor: React.FC<{ body: RequestBody; onChange: (b: RequestBody) => void }> = ({ body, onChange }) => {
+  const monacoTheme = useThemeStore((s) => (s.theme === "dark" ? "roc-dark" : "roc-light"));
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div className="http-body-type-row">
+        <select
+          className="form-select"
+          value={body.type}
+          onChange={(e) => {
+            switch (e.target.value as RequestBody["type"]) {
+              case "none":
+                onChange({ type: "none" });
+                break;
+              case "json":
+                onChange({ type: "json", content: body.type === "json" ? body.content : "" });
+                break;
+              case "raw":
+                onChange({ type: "raw", content: "", content_type: "text/plain" });
+                break;
+              case "form_url_encoded":
+                onChange({ type: "form_url_encoded", items: [] });
+                break;
+              case "form_data":
+                onChange({ type: "form_data", items: [] });
+                break;
+            }
+          }}
+        >
+          {BODY_TYPES.map((b) => (
+            <option key={b.value} value={b.value}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+        {body.type === "raw" && (
           <input
             className="form-input"
-            style={{ marginBottom: 6, maxWidth: 320 }}
+            style={{ width: 220 }}
             value={body.content_type}
             onChange={(e) => onChange({ type: "raw", content: body.content, content_type: e.target.value })}
             placeholder="Content-Type"
           />
-          <textarea
-            className="form-input"
-            style={{ width: "100%", minHeight: 200, fontFamily: "monospace", resize: "vertical" }}
+        )}
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {body.type === "json" && (
+          <Editor
+            language="json"
+            theme={monacoTheme}
             value={body.content}
-            onChange={(e) => onChange({ type: "raw", content: e.target.value, content_type: body.content_type })}
+            onChange={(v) => onChange({ type: "json", content: v ?? "" })}
+            options={MONACO_OPTIONS}
           />
-        </>
-      )}
-      {body.type === "form_url_encoded" && (
-        <KeyValueTable items={body.items} onChange={(items) => onChange({ type: "form_url_encoded", items })} />
-      )}
-      {body.type === "form_data" && (
-        <KeyValueTable items={body.items} onChange={(items) => onChange({ type: "form_data", items })} />
-      )}
-      {body.type === "none" && (
-        <div className="empty-state" style={{ padding: 16, opacity: 0.6 }}>
-          无请求体
-        </div>
-      )}
+        )}
+        {body.type === "raw" && (
+          <Editor
+            language={contentTypeLanguage(body.content_type)}
+            theme={monacoTheme}
+            value={body.content}
+            onChange={(v) => onChange({ type: "raw", content: v ?? "", content_type: body.content_type })}
+            options={MONACO_OPTIONS}
+          />
+        )}
+        {body.type === "form_url_encoded" && (
+          <div style={{ height: "100%", overflowY: "auto", padding: "var(--space-2)" }}>
+            <KeyValueTable items={body.items} onChange={(items) => onChange({ type: "form_url_encoded", items })} />
+          </div>
+        )}
+        {body.type === "form_data" && (
+          <div style={{ height: "100%", overflowY: "auto", padding: "var(--space-2)" }}>
+            <KeyValueTable items={body.items} onChange={(items) => onChange({ type: "form_data", items })} />
+          </div>
+        )}
+        {body.type === "none" && <div className="empty-state">这个请求没有 Body</div>}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const AUTH_TYPES: { value: AuthConfig["type"]; label: string }[] = [
   { value: "none", label: "无认证" },
@@ -103,90 +130,94 @@ const AUTH_TYPES: { value: AuthConfig["type"]; label: string }[] = [
 ];
 
 const AuthEditor: React.FC<{ auth: AuthConfig; onChange: (a: AuthConfig) => void }> = ({ auth, onChange }) => (
-  <div>
-    <select
-      className="form-select"
-      value={auth.type}
-      onChange={(e) => {
-        switch (e.target.value as AuthConfig["type"]) {
-          case "none":
-            onChange({ type: "none" });
-            break;
-          case "bearer":
-            onChange({ type: "bearer", token: "" });
-            break;
-          case "basic":
-            onChange({ type: "basic", username: "", password: "" });
-            break;
-          case "api_key":
-            onChange({ type: "api_key", key: "", value: "", add_to: "header" });
-            break;
-        }
-      }}
-    >
-      {AUTH_TYPES.map((a) => (
-        <option key={a.value} value={a.value}>
-          {a.label}
-        </option>
-      ))}
-    </select>
-    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6, maxWidth: 380 }}>
+  <div style={{ padding: "var(--space-3) var(--space-2)" }}>
+    <div className="form-row" style={{ maxWidth: 320, marginBottom: "var(--space-3)" }}>
+      <span className="form-label">认证方式</span>
+      <select
+        className="form-select"
+        value={auth.type}
+        onChange={(e) => {
+          switch (e.target.value as AuthConfig["type"]) {
+            case "none":
+              onChange({ type: "none" });
+              break;
+            case "bearer":
+              onChange({ type: "bearer", token: "" });
+              break;
+            case "basic":
+              onChange({ type: "basic", username: "", password: "" });
+              break;
+            case "api_key":
+              onChange({ type: "api_key", key: "", value: "", add_to: "header" });
+              break;
+          }
+        }}
+      >
+        {AUTH_TYPES.map((a) => (
+          <option key={a.value} value={a.value}>
+            {a.label}
+          </option>
+        ))}
+      </select>
+    </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", maxWidth: 380 }}>
       {auth.type === "bearer" && (
-        <input
-          className="form-input"
-          placeholder="Token（可用 {{var}}）"
-          value={auth.token}
-          onChange={(e) => onChange({ type: "bearer", token: e.target.value })}
-        />
+        <div className="form-row">
+          <span className="form-label">Token</span>
+          <input
+            className="form-input"
+            placeholder="支持 {{var}} 变量插值"
+            value={auth.token}
+            onChange={(e) => onChange({ type: "bearer", token: e.target.value })}
+          />
+        </div>
       )}
       {auth.type === "basic" && (
         <>
-          <input
-            className="form-input"
-            placeholder="用户名"
-            value={auth.username}
-            onChange={(e) => onChange({ type: "basic", username: e.target.value, password: auth.password })}
-          />
-          <input
-            className="form-input"
-            type="password"
-            placeholder="密码"
-            value={auth.password}
-            onChange={(e) => onChange({ type: "basic", username: auth.username, password: e.target.value })}
-          />
+          <div className="form-row">
+            <span className="form-label">用户名</span>
+            <input className="form-input" value={auth.username} onChange={(e) => onChange({ type: "basic", username: e.target.value, password: auth.password })} />
+          </div>
+          <div className="form-row">
+            <span className="form-label">密码</span>
+            <input
+              className="form-input"
+              type="password"
+              value={auth.password}
+              onChange={(e) => onChange({ type: "basic", username: auth.username, password: e.target.value })}
+            />
+          </div>
         </>
       )}
       {auth.type === "api_key" && (
         <>
-          <input
-            className="form-input"
-            placeholder="Key 名称"
-            value={auth.key}
-            onChange={(e) => onChange({ type: "api_key", key: e.target.value, value: auth.value, add_to: auth.add_to })}
-          />
-          <input
-            className="form-input"
-            placeholder="Value（可用 {{var}}）"
-            value={auth.value}
-            onChange={(e) => onChange({ type: "api_key", key: auth.key, value: e.target.value, add_to: auth.add_to })}
-          />
-          <select
-            className="form-select"
-            value={auth.add_to}
-            onChange={(e) =>
-              onChange({ type: "api_key", key: auth.key, value: auth.value, add_to: e.target.value as "header" | "query" })
-            }
-          >
-            <option value="header">放在 Header</option>
-            <option value="query">放在 Query 参数</option>
-          </select>
+          <div className="form-row">
+            <span className="form-label">Key 名称</span>
+            <input className="form-input" value={auth.key} onChange={(e) => onChange({ type: "api_key", key: e.target.value, value: auth.value, add_to: auth.add_to })} />
+          </div>
+          <div className="form-row">
+            <span className="form-label">Value</span>
+            <input
+              className="form-input"
+              placeholder="支持 {{var}} 变量插值"
+              value={auth.value}
+              onChange={(e) => onChange({ type: "api_key", key: auth.key, value: e.target.value, add_to: auth.add_to })}
+            />
+          </div>
+          <div className="form-row">
+            <span className="form-label">添加位置</span>
+            <select
+              className="form-select"
+              value={auth.add_to}
+              onChange={(e) => onChange({ type: "api_key", key: auth.key, value: auth.value, add_to: e.target.value as "header" | "query" })}
+            >
+              <option value="header">Header</option>
+              <option value="query">Query 参数</option>
+            </select>
+          </div>
         </>
       )}
-      {auth.type === "none" && (
-        <div className="empty-state" style={{ padding: 16, opacity: 0.6 }}>
-          不添加任何认证信息
-        </div>
-      )}
+      {auth.type === "none" && <div className="empty-state">不添加任何认证信息</div>}
     </div>
   </div>
 );
@@ -210,8 +241,12 @@ export const RequestEditor: React.FC<{ requestId: string }> = ({ requestId }) =>
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-      <div style={{ display: "flex", gap: 6, padding: 8, borderBottom: "1px solid var(--border-default)" }}>
-        <select className="form-select" style={{ width: 110 }} value={draft.method} onChange={(e) => patch({ method: e.target.value })}>
+      <div style={{ display: "flex", gap: "var(--space-2)", padding: "var(--space-2)", borderBottom: "1px solid var(--border-default)" }}>
+        <select
+          className={`http-method-select ${httpMethodClass(draft.method)}`}
+          value={draft.method}
+          onChange={(e) => patch({ method: e.target.value })}
+        >
           {METHODS.map((m) => (
             <option key={m} value={m}>
               {m}
@@ -220,10 +255,13 @@ export const RequestEditor: React.FC<{ requestId: string }> = ({ requestId }) =>
         </select>
         <input
           className="form-input"
-          style={{ flex: 1, minWidth: 0 }}
+          style={{ flex: 1, minWidth: 0, fontFamily: "monospace" }}
           placeholder="https://api.example.com/users?id={{id}}"
           value={draft.url}
           onChange={(e) => patch({ url: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && draft.url && !sending) void sendDraft(requestId);
+          }}
         />
         <button className="btn primary sm" disabled={sending || !draft.url} onClick={() => void sendDraft(requestId)}>
           {sending ? "发送中…" : "发送"}
@@ -233,28 +271,36 @@ export const RequestEditor: React.FC<{ requestId: string }> = ({ requestId }) =>
           disabled={!dirty}
           onClick={() => void saveDraft(requestId).catch((e) => push("error", `保存失败：${formatError(e)}`))}
         >
-          保存{dirty ? " *" : ""}
+          保存{dirty ? " •" : ""}
         </button>
       </div>
-      <div style={{ display: "flex", gap: 4, padding: "4px 8px", borderBottom: "1px solid var(--border-default)" }}>
-        {SUB_TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`btn ghost sm ${subTab === t.id ? "active" : ""}`}
-            onClick={() => setSubTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="http-subtabs">
+        {SUB_TABS.map((t) => {
+          const count = t.count?.(draft) ?? 0;
+          return (
+            <div key={t.id} className={`http-subtab ${subTab === t.id ? "active" : ""}`} onClick={() => setSubTab(t.id)}>
+              {t.label}
+              {count > 0 && <span className="http-subtab-count">{count}</span>}
+            </div>
+          );
+        })}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 8 }}>
-        {subTab === "params" && <KeyValueTable items={draft.params} onChange={(items) => patch({ params: items })} />}
-        {subTab === "headers" && (
+      {subTab === "params" && (
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "var(--space-2)" }}>
+          <KeyValueTable items={draft.params} onChange={(items) => patch({ params: items })} />
+        </div>
+      )}
+      {subTab === "headers" && (
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "var(--space-2)" }}>
           <KeyValueTable items={draft.headers} onChange={(items) => patch({ headers: items })} keyPlaceholder="Header" />
-        )}
-        {subTab === "body" && <BodyEditor body={draft.body} onChange={(body) => patch({ body })} />}
-        {subTab === "auth" && <AuthEditor auth={draft.auth} onChange={(auth) => patch({ auth })} />}
-      </div>
+        </div>
+      )}
+      {subTab === "body" && <BodyEditor body={draft.body} onChange={(body) => patch({ body })} />}
+      {subTab === "auth" && (
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          <AuthEditor auth={draft.auth} onChange={(auth) => patch({ auth })} />
+        </div>
+      )}
     </div>
   );
 };

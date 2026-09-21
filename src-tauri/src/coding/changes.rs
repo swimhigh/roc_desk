@@ -32,9 +32,22 @@ pub struct ChangeStore {
     file_ops: Arc<dyn FileOps>,
     git_repo: bool,
     pub auto_git_commit: bool,
-    /// "完全授权模式"的实时状态：开启后 AI 提出的文件改动直接落盘，并跳过普通
-    /// 命令确认。原子值使开关能在 AI 任务运行中立即影响后续工具调用。
+    /// "完全授权模式"的实时状态：开启后 AI 提出的文件改动直接落盘，**并且**跳过
+    /// 普通命令确认（`session.rs` 里 `run_command` 的确认门禁单独判断这个字段，
+    /// 不受下面 `auto_apply_changes` 影响）。默认关闭——这个开关的范围比单纯
+    /// "文件改动要不要自动应用"大得多，默认打开等于把所有 shell 命令确认也一起
+    /// 关掉，不是这次需求的本意（见 `auto_apply_changes` 文档）。
     pub full_auto: AtomicBool,
+    /// 文件改动是否自动应用——2026-09 用户明确要求"默认不是给用户点应用，而是
+    /// 只给用户点撤销，减少用户干预"：默认开启，AI 提出的文件改动直接落盘，
+    /// UI 上只出现"撤销"，不需要用户逐个点"应用"。**故意和 `full_auto` 分成两个
+    /// 独立字段**——`full_auto` 同时还控制"跳过命令确认"，把两者合一会导致
+    /// "默认自动应用文件改动"这个诉求顺带默认关掉了所有命令的二次确认，扩大了
+    /// 没人要求过的风险面；这里只管文件改动这一件事，命令确认门禁完全不受它
+    /// 影响，`stage()` 检查 `full_auto || auto_apply_changes`（任一为真就自动
+    /// 应用），`run_command` 的确认门禁只看 `full_auto`。仍然可以在 AI 工具栏
+    /// 关掉，退回"每次手动点应用"的旧行为。
+    pub auto_apply_changes: AtomicBool,
     /// "自动放行只读命令"的实时状态——同样的原因用原子值（不是 `CodingSession`
     /// 的普通字段）：`send_message` 处理一轮对话期间会一直持有 `CodingSession`
     /// 自己那把锁，普通字段的话用户在 AI 任务运行中点这个开关，实际是在排队等
@@ -65,6 +78,7 @@ impl ChangeStore {
             git_repo,
             auto_git_commit: false,
             full_auto: AtomicBool::new(false),
+            auto_apply_changes: AtomicBool::new(true),
             auto_allow_readonly: AtomicBool::new(false),
             changes: Vec::new(),
             undo_stack: Vec::new(),
@@ -201,7 +215,9 @@ impl ChangeStore {
             turn_id,
         };
 
-        let sync = if self.full_auto.load(Ordering::Relaxed) {
+        let sync = if self.full_auto.load(Ordering::Relaxed)
+            || self.auto_apply_changes.load(Ordering::Relaxed)
+        {
             let mtime = self
                 .write_and_commit(
                     ssh_pool,

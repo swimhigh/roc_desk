@@ -8,6 +8,11 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum DbKind {
     Mysql,
+    /// Tencent TDSQL through its MySQL-compatible proxy. It intentionally
+    /// reuses the MySQL wire adapter while keeping a distinct profile type so
+    /// TDSQL-specific defaults and diagnostics can be added without changing
+    /// ordinary MySQL connections.
+    Tdsql,
     Postgres,
     Opengauss,
     SqlServer,
@@ -18,6 +23,11 @@ impl DbKind {
     pub fn default_port(self) -> Option<u16> {
         match self {
             DbKind::Mysql => Some(3306),
+            // TDSQL deployments commonly expose a proxy port (15300 in the
+            // reported environment) instead of the ordinary MySQL 3306.
+            // The field remains editable because Tencent regions/products can
+            // choose a different listener port.
+            DbKind::Tdsql => Some(15300),
             DbKind::Postgres | DbKind::Opengauss => Some(5432),
             DbKind::SqlServer => Some(1433),
             DbKind::Oracle => Some(1521),

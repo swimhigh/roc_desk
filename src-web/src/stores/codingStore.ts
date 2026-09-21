@@ -96,6 +96,15 @@ interface CodingState {
   timeline: TimelineEntry[];
   changesById: Record<string, FileChange>;
   sending: boolean;
+  /** 当前这一轮还在进行中的 token 用量——2026-09 用户反馈"屏幕上不停在刷
+   * token，也看不到关键进度"：根因是之前每一次模型往返（一轮用户消息里可能
+   * 有几十次）都各自往时间线里插一条"本次请求消耗 tokens"消息，把真正有信息量
+   * 的"已完成 XXX/正在思考"这些进度提示淹没在一长串数字里。改成参考
+   * Claude Code 自己的做法：单次请求的用量只做"实时覆盖式"展示（这个字段），
+   * 跟"AI 正在处理…"状态行放一起、原地更新，不占用一条独立的历史消息；只有
+   * 一整轮真正结束时的汇总（`coding:token-usage-summary`）才留一条时间线记录，
+   * 见下面两个事件监听器。 */
+  liveTokenUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
   error: string | null;
   /** composer 里"待发送"的附件——发出去之后清空（见 `sendMessage`）。 */
   attachments: PendingAttachment[];
@@ -147,6 +156,8 @@ interface CodingState {
   /** "完全授权模式"：开启后 AI 提出的文件改动直接落盘，不再逐个 Accept
    * （用户反馈"一次改 20 多个文件还要逐个确认太繁琐"）。会话级开关。 */
   setFullAuto: (enabled: boolean) => Promise<void>;
+  /** 文件改动自动应用（默认开启），关掉退回"每条手动点应用"，不影响命令确认。 */
+  setAutoApplyChanges: (enabled: boolean) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   /** "停止"按钮：只在 `sending` 为 true 时有意义——`sendMessage` 本身的
    * catch 分支已经会处理后端返回的"已取消"错误，这里不需要额外更新
@@ -194,6 +205,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   timeline: [],
   changesById: {},
   sending: false,
+  liveTokenUsage: null,
   error: null,
   attachments: [],
   optimizing: false,
@@ -270,13 +282,42 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     }));
   },
 
+  setAutoApplyChanges: async (enabled) => {
+    const { workspaceId, sessionInfo, viewingHistoryId } = get();
+    if (viewingHistoryId) return;
+    if (!workspaceId || !sessionInfo) return;
+    await codingService.setAutoApplyChanges(workspaceId, enabled);
+    set({ sessionInfo: { ...sessionInfo, auto_apply_changes: enabled } });
+  },
+
   sendMessage: async (text) => {
     const { workspaceId, sending, viewingHistoryId, attachments } = get();
-    if (!workspaceId || (!text.trim() && attachments.length === 0) || sending || viewingHistoryId) return;
+    if (!workspaceId || (!text.trim() && attachments.length === 0) || viewingHistoryId) return;
     const outgoing = attachments.map(toChatAttachment);
     const timelineAttachments: TimelineAttachment[] | undefined = attachments.length
       ? attachments.map((a) => ({ kind: a.kind, name: a.name, previewUrl: a.previewUrl }))
       : undefined;
+
+    // AI 还在处理上一条消息——之前这里直接 no-op 返回，但调用方 `handleSend`
+    // 无条件清空了输入框，导致这条新消息看起来像是"发出去了"，实际上既没有
+    // 进时间线也没有真正发给后端（2026-09 用户反馈：处理期间按 Enter，输入框
+    // 内容消失、消息没有插入到对话里）。现在改成走 `injectMessage`：不等这一
+    // 轮结束，后端会在下一次工具调用/模型请求前把它塞进对话上下文（见
+    // `codingService.injectMessage` 文档），这里先把气泡乐观加进时间线、清空
+    // 输入框，不改 `sending`（已经是 true，这次调用不会有对应的 assistant 回复）。
+    if (sending) {
+      set((s) => ({
+        timeline: [...s.timeline, { kind: "user", id: nextId(), text, attachments: timelineAttachments }],
+        attachments: [],
+      }));
+      try {
+        await codingService.injectMessage(workspaceId, text, outgoing);
+      } catch (e) {
+        set({ error: formatError(e) });
+      }
+      return;
+    }
+
     set((s) => ({
       timeline: [...s.timeline, { kind: "user", id: nextId(), text, attachments: timelineAttachments }],
       sending: true,
@@ -570,8 +611,16 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     await get().saveCurrentHistory();
     const workspaceId = get().workspaceId;
     if (!workspaceId) return;
-    const info = await codingService.newSession(workspaceId, providerId);
-    set({ sessionInfo: info, timeline: [], changesById: {}, viewingHistoryId: null, error: null });
+    // `coding_new_session` 失败（比如 provider 被删了）之前没有 catch，button 的
+    // onClick 也是 fire-and-forget——异常直接变成一条不可见的 unhandled rejection，
+    // 界面上就是"点了没反应，还停在老会话"，用户完全不知道发生了什么
+    // （2026-09 用户真实反馈）。这里补上 catch，把错误显示出来。
+    try {
+      const info = await codingService.newSession(workspaceId, providerId);
+      set({ sessionInfo: info, timeline: [], changesById: {}, viewingHistoryId: null, error: null });
+    } catch (e) {
+      set({ error: formatError(e) });
+    }
   },
 
   restoreOrStart: async (workspaceId, providerId) => {
@@ -638,12 +687,33 @@ export const useCodingStore = create<CodingState>((set, get) => ({
         const latestTime = latest ? Date.parse(latest.updated_at) : NaN;
         const recent = latest && Number.isFinite(latestTime) && (Date.now() - latestTime) <= 12 * 60 * 60 * 1000;
         if (!recent) return;
-        const detail = await codingService.historyGet(latest.id).catch(() => null);
-        if (!detail || get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
-        const changes = detail.changes as FileChange[];
-        if (detail.mode === "build") await codingService.setMode(workspaceId, "build").catch(() => undefined);
-        if (get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
-        set({ sessionInfo: { ...info, mode: detail.mode as CodingMode, changes }, timeline: detail.timeline as TimelineEntry[], changesById: Object.fromEntries(changes.map((change) => [change.id, change])), error: null });
+        // 用户还没碰过这个刚建好的空会话才去替换——已经开始在里面说话了就不要
+        // 再把它换掉，避免刚打的字/已经发出去的消息被"补历史"这步悄悄顶掉。
+        if (get().timeline.length > 0) return;
+        // 2026-09 真实复现："进程被杀掉重开后，历史会话里的待确认文件改动点
+        // 应用没反应"——根因是这里原来只用 `historyGet` 把 timeline/changes
+        // 摆回前端做"看起来接上了"的展示，从来没调 `historyResume` 真正在
+        // 后端重建 `CodingSession.messages`/`ChangeStore`。用户点的"应用"发给
+        // 的是后端一个全新、空的 `ChangeStore`（`newSession` 建的那个），找不到
+        // 时间线上显示的那个 change_id，自然什么反应都没有。改成和 `openHistory`
+        // 同一条正确路径：调 `historyResume` 真正续上后端会话，而不是只做前端
+        // 展示层面的"贴图"。
+        try {
+          const resumedInfo = await codingService.historyResume(workspaceId, latest.id);
+          if (get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
+          const detail = await codingService.historyGet(latest.id);
+          if (!detail || get().workspaceId !== workspaceId || get().sessionInfo?.id !== info.id) return;
+          const changes = detail.changes as FileChange[];
+          set({
+            sessionInfo: resumedInfo,
+            timeline: detail.timeline as TimelineEntry[],
+            changesById: Object.fromEntries(changes.map((change) => [change.id, change])),
+            error: null,
+          });
+        } catch {
+          // 恢复失败（比如这条历史关联的 Provider 已被删除）不影响已经建好的
+          // 新会话，用户可以继续在这个空会话里正常工作，不阻塞整个面板。
+        }
       }).catch(() => undefined);
     } catch (e) {
       if (get().workspaceId === workspaceId) set({ error: formatError(e) });
@@ -753,8 +823,10 @@ let listenersRegistered = false;
  * 退出了"——见 `coding/session.rs` 的 `MAX_TOOL_RESULT_CHARS` 注释，根因是超大
  * 工具结果反复重发导致内存失控被系统直接终止，不会走任何清理/保存逻辑），这一整
  * 轮的进度（含中途已经 stage/accept 的文件改动）完全没有落盘，重启后自然找不到。
- * 这里在"确实产生了新进度"的事件（工具调用完成、文件改动）上顺带触发一次存档，
- * 用时间节流而不是每个事件都存，避免快速连续的工具调用把 SQLite/磁盘 I/O 打爆。 */
+ * 这里在"确实产生了新进度"的事件（工具调用完成、文件改动、以及每一轮结束时的
+ * `coding:token-usage-summary`——覆盖"这一轮完全没调用工具，纯文本回复"的情况，
+ * 见该监听器里的文档）上顺带触发一次存档，用时间节流而不是每个事件都存，避免
+ * 快速连续的工具调用把 SQLite/磁盘 I/O 打爆。 */
 const HISTORY_CHECKPOINT_THROTTLE_MS = 5000;
 let lastHistoryCheckpointAt = 0;
 function checkpointHistory() {
@@ -807,28 +879,28 @@ export function registerCodingListeners(): Promise<() => void> {
           : { kind: "note", id: nextId(), text: event.payload.text }],
       }));
     }),
+    // 单次模型往返的用量——只做"实时覆盖"，不再各自插一条时间线消息（见
+    // `liveTokenUsage` 字段文档：之前这里 append 进 timeline，一轮几十次工具
+    // 调用就是几十条"本次请求消耗 tokens"，把真正有信息量的进度提示淹没了）。
     listen<CodingTokenUsageEvent>("coding:token-usage", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
-      useCodingStore.setState((s) => ({
-        timeline: [
-          ...s.timeline,
-          {
-            kind: "usage",
-            id: nextId(),
-            promptTokens: event.payload.promptTokens,
-            completionTokens: event.payload.completionTokens,
-            totalTokens: event.payload.totalTokens,
-            isTurnTotal: false,
-          },
-        ],
-      }));
+      useCodingStore.setState({
+        liveTokenUsage: {
+          promptTokens: event.payload.promptTokens,
+          completionTokens: event.payload.completionTokens,
+          totalTokens: event.payload.totalTokens,
+        },
+      });
     }),
     // 一整轮对话（一条用户消息到最终给出结论，中间可能跑了好几次工具调用/API
     // 请求）结束时的汇总，和上面单次请求的 `coding:token-usage` 是两个不同粒度
-    // 的事件——单次请求那条在过程中当进度参考，这条是"这一轮总共花了多少"。
+    // 的事件——单次请求那条只做实时进度参考（不进历史），这条是"这一轮总共花了
+    // 多少"，作为唯一进时间线的 usage 记录留存；同时清空 `liveTokenUsage`，
+    // 避免这一轮的数字残留到下一轮开始之前的空档期里。
     listen<CodingTokenUsageEvent>("coding:token-usage-summary", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;
       useCodingStore.setState((s) => ({
+        liveTokenUsage: null,
         timeline: [
           ...s.timeline,
           {
@@ -841,6 +913,15 @@ export function registerCodingListeners(): Promise<() => void> {
           },
         ],
       }));
+      // 这一轮对话结束了（不管中间有没有调用工具）——之前只在"工具调用完成/
+      // 文件改动"上存档，遗漏了"模型直接给一段纯文本回复、这一轮完全没调工具"
+      // 这种情况（比如只是回答/解释方案，不产生任何 tool-call-end/file-change
+      // 事件）。2026-09 真实复现：这类纯文本回复因为从没被存档，进程一旦被杀掉
+      // 重启（哪怕是几分钟后另一次不相关的操作杀的），resume 恢复到的还是这条
+      // 回复之前的旧存档——用户接着说"按刚才说的方案改"，AI 上下文里根本没有
+      // "刚才"那段内容，只能一脸茫然地要用户重新贴一遍。`coding:token-usage-summary`
+      // 每轮不管有没有工具调用都必然触发一次，是"这一轮真的结束了"最可靠的信号。
+      checkpointHistory();
     }),
     listen<CodingFileChangeEvent>("coding:file-change", (event) => {
       if (event.payload.sessionId !== currentSessionId()) return;

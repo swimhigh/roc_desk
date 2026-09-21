@@ -20,7 +20,7 @@ pub fn new_backend_handle_slot() -> BackendHandleSlot {
 /// Preview SQL uses the adapter dialect and always quotes metadata identifiers.
 pub fn preview_sql(kind: DbKind, object: &ObjectRef) -> String {
     let quote = |s: &str| match kind {
-        DbKind::Mysql => format!("`{}`", s.replace('`', "``")),
+        DbKind::Mysql | DbKind::Tdsql => format!("`{}`", s.replace('`', "``")),
         DbKind::SqlServer => format!("[{}]", s.replace(']', "]]")),
         _ => format!("\"{}\"", s.replace('"', "\"\"")),
     };

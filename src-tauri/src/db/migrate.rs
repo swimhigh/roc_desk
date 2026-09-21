@@ -67,6 +67,14 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0021_sql_agent_history",
         include_str!("../../migrations/0021_sql_agent_history.sql"),
     ),
+    (
+        "0024_ai_providers_context_window",
+        include_str!("../../migrations/0024_ai_providers_context_window.sql"),
+    ),
+    (
+        "0025_ai_evidence_cache",
+        include_str!("../../migrations/0025_ai_evidence_cache.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[

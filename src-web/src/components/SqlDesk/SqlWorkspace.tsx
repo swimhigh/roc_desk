@@ -33,7 +33,7 @@ export const SqlWorkspace: React.FC<SqlWorkspaceProps> = ({ dataSource }) => {
   const resize = (key: "left" | "right" | "result") => (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     const startX = event.clientX, startY = event.clientY, initial = layout[key];
-    event.currentTarget.onpointermove = (e) => setLayout((l: typeof layout) => ({ ...l, [key]: key === "result" ? Math.max(20, Math.min(80, initial - (e.clientY - startY) / window.innerHeight * 100)) : Math.max(180, Math.min(480, initial + (e.clientX - startX) * (key === "right" ? -1 : 1))) }));
+    event.currentTarget.onpointermove = (e) => setLayout((l: typeof layout) => ({ ...l, [key]: key === "result" ? Math.max(20, Math.min(80, initial - (e.clientY - startY) / window.innerHeight * 100)) : Math.max(key === "right" ? 320 : 180, Math.min(key === "right" ? 760 : 480, initial + (e.clientX - startX) * (key === "right" ? -1 : 1))) }));
     event.currentTarget.onpointerup = (e) => { const el = e.currentTarget as HTMLDivElement; el.onpointermove = null; el.releasePointerCapture(e.pointerId); };
   };
   const [viewDataObject, setViewDataObject] = React.useState<ObjectRef | null>(null);
@@ -91,7 +91,7 @@ export const SqlWorkspace: React.FC<SqlWorkspaceProps> = ({ dataSource }) => {
           <ResultPanel maximized={maxResult} onToggleMaximized={() => setMaxResult(!maxResult)} />
         </div>
       </div>
-      {layout.ai && <><div title="拖动调整 AI 宽度" onPointerDown={resize("right")} style={{ width: 5, cursor: "col-resize", touchAction: "none" }} /><div style={{ width: layout.right, flexShrink: 0, borderLeft: "1px solid var(--border-default)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {layout.ai && <><div title="拖动调整 AI 宽度" onPointerDown={resize("right")} style={{ width: 5, cursor: "col-resize", touchAction: "none" }} /><div style={{ width: layout.right, minWidth: 320, maxWidth: 760, flexShrink: 0, borderLeft: "1px solid var(--border-default)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
         <SqlAgentPanel dataSourceId={dataSource.id} />
       </div></>}
       </div>

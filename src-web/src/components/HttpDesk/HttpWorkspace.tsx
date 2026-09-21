@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { History, Import, Settings2, X } from "lucide-react";
 import { useHttpDeskStore } from "../../stores/httpDeskStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
+import { httpMethodClass } from "../../utils/httpMethod";
 import { CollectionExplorer } from "./CollectionExplorer";
 import { RequestEditor } from "./RequestEditor";
 import { ResponsePanel } from "./ResponsePanel";
@@ -37,6 +38,8 @@ export const HttpWorkspace: React.FC<{ workspaceId: string }> = ({ workspaceId: 
   }, [showHistory]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  const dirtyMap = useHttpDeskStore((s) => s.dirty);
+  const drafts = useHttpDeskStore((s) => s.drafts);
 
   return (
     <div style={{ display: "flex", width: "100%", minWidth: 0 }}>
@@ -44,10 +47,10 @@ export const HttpWorkspace: React.FC<{ workspaceId: string }> = ({ workspaceId: 
         <CollectionExplorer />
       </div>
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 6, borderBottom: "1px solid var(--border-default)" }}>
+        <div className="http-toolbar">
           <select
             className="form-select"
-            style={{ width: 160 }}
+            style={{ width: 170, flex: "0 0 auto" }}
             value={activeEnvironmentId ?? ""}
             onChange={(e) => setActiveEnvironment(e.target.value || null)}
             title="当前环境——决定 {{变量}} 怎么解析"
@@ -60,45 +63,37 @@ export const HttpWorkspace: React.FC<{ workspaceId: string }> = ({ workspaceId: 
             ))}
           </select>
           <button className="btn ghost sm" onClick={() => setShowEnvDialog(true)}>
-            环境管理
+            <Settings2 size={13} /> 环境管理
           </button>
           <button className="btn ghost sm" onClick={() => setShowImport(true)}>
-            导入 curl
+            <Import size={13} /> 导入 curl
           </button>
           <button className={`btn ghost sm ${showHistory ? "active" : ""}`} style={{ marginLeft: "auto" }} onClick={() => setShowHistory(!showHistory)}>
-            历史
+            <History size={13} /> 历史
           </button>
         </div>
-        <div style={{ display: "flex", overflowX: "auto", borderBottom: "1px solid var(--border-default)" }}>
-          {tabs.map((t) => (
-            <div
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 10px",
-                cursor: "pointer",
-                borderRight: "1px solid var(--border-default)",
-                borderBottom: t.id === activeTabId ? "2px solid var(--accent)" : "2px solid transparent",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span>{t.title}</span>
-              <button
-                className="btn ghost sm"
-                style={{ padding: 2 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void closeTab(t.id);
-                }}
-              >
-                <X size={11} />
-              </button>
-            </div>
-          ))}
-          {tabs.length === 0 && <div style={{ padding: 8, opacity: 0.5, fontSize: 12 }}>暂无打开的请求，从左侧新建或选择一个</div>}
+        <div className="editor-tabs">
+          {tabs.map((t) => {
+            const isDirty = dirtyMap[t.request_id];
+            const method = drafts[t.request_id]?.method;
+            return (
+              <div key={t.id} className={`editor-tab ${t.id === activeTabId ? "active" : ""}`} onClick={() => setActiveTab(t.id)}>
+                {method && <span className={httpMethodClass(method)} style={{ fontSize: 11, fontWeight: 700 }}>{method}</span>}
+                <span>{t.title}</span>
+                {isDirty && <span className="dirty-dot" title="有未保存的改动" />}
+                <span
+                  className="editor-tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void closeTab(t.id);
+                  }}
+                >
+                  <X />
+                </span>
+              </div>
+            );
+          })}
+          {tabs.length === 0 && <div style={{ padding: "0 var(--space-3)", color: "var(--text-secondary)", fontSize: 12.5, display: "flex", alignItems: "center" }}>暂无打开的请求，从左侧新建或选择一个</div>}
         </div>
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           {activeTab ? (
@@ -118,24 +113,28 @@ export const HttpWorkspace: React.FC<{ workspaceId: string }> = ({ workspaceId: 
         </div>
       </div>
       {showHistory && (
-        <div style={{ width: 300, flexShrink: 0, borderLeft: "1px solid var(--border-default)", overflowY: "auto" }}>
-          <div style={{ padding: 8, fontWeight: 600, fontSize: 13 }}>请求历史</div>
-          {history.map((h) => (
-            <div key={h.id} className="home-dashboard-card-item">
-              <span style={{ fontWeight: 700, fontSize: 11, width: 44, flexShrink: 0 }}>{h.method}</span>
-              <span className="home-dashboard-item-name" title={h.url}>
-                {h.url}
-              </span>
-              <span className="home-dashboard-item-sub">
-                {h.status_code ?? "错误"} · {h.duration_ms ?? "-"}ms
-              </span>
-            </div>
-          ))}
-          {history.length === 0 && (
-            <div className="empty-state" style={{ padding: 16, opacity: 0.6 }}>
-              暂无历史
-            </div>
-          )}
+        <div style={{ width: 300, flexShrink: 0, borderLeft: "1px solid var(--border-default)", display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "var(--space-2)", fontWeight: 600, fontSize: 13, borderBottom: "1px solid var(--border-default)" }}>请求历史</div>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+            {history.map((h) => (
+              <div key={h.id} className="http-tree-item" style={{ height: 40, cursor: "default" }}>
+                <span className={`http-method-chip ${httpMethodClass(h.method)}`}>{h.method}</span>
+                <span style={{ display: "flex", flexDirection: "column", minWidth: 0, gap: 2 }}>
+                  <span className="http-tree-name" title={h.url} style={{ fontSize: 12.5 }}>
+                    {h.url}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    {h.status_code ?? "请求失败"} · {h.duration_ms ?? "-"} ms
+                  </span>
+                </span>
+              </div>
+            ))}
+            {history.length === 0 && (
+              <div className="empty-state" style={{ padding: 16 }}>
+                暂无历史
+              </div>
+            )}
+          </div>
         </div>
       )}
       {showEnvDialog && <EnvironmentDialog onClose={() => setShowEnvDialog(false)} />}

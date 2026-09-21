@@ -50,7 +50,7 @@ const PENDING_WRITE_MAX_AGE_SECS: u64 = 10 * 60;
 /// 重传，前端的"测试连接"按钮会永远停在"测试中…"（2026-09 用户实测反馈）。
 /// 参照 `ssh::session::exec`/`coding::webfetch` 等既有超时约定，给测试连接
 /// 也套一层 `tokio::time::timeout`，保证前端一定能在有限时间内拿到结果。
-const TEST_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TEST_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn statement_allows_readonly(statement: &Statement) -> bool {
     matches!(statement, Statement::Query(_) | Statement::Explain { .. })

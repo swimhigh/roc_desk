@@ -3,17 +3,8 @@ import { FilePlus2, Folder, FolderPlus, Trash2 } from "lucide-react";
 import { useHttpDeskStore } from "../../stores/httpDeskStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
+import { httpMethodClass } from "../../utils/httpMethod";
 import type { RequestSummary } from "../../types/bindings";
-
-const METHOD_COLORS: Record<string, string> = {
-  GET: "#22863a",
-  POST: "#b08800",
-  PUT: "#0969da",
-  PATCH: "#8250df",
-  DELETE: "#cf222e",
-  HEAD: "#6e7781",
-  OPTIONS: "#6e7781",
-};
 
 /** 左栏：集合选择 + 当前集合的请求树（docs/HTTP_DESKTOP_PLAN.md §3.3）。文件夹
  * 只读展示（按已有请求的 `folder` 分组），本轮没有做"新建文件夹/拖拽移动请求到
@@ -35,6 +26,8 @@ export const CollectionExplorer: React.FC = () => {
 
   const [newCollectionName, setNewCollectionName] = useState("");
   const [showNewCollection, setShowNewCollection] = useState(false);
+  const [newRequestName, setNewRequestName] = useState("");
+  const [showNewRequest, setShowNewRequest] = useState(false);
 
   const activeRequestId = tabs.find((t) => t.id === activeTabId)?.request_id;
 
@@ -46,107 +39,130 @@ export const CollectionExplorer: React.FC = () => {
     groups.set(key, list);
   }
 
+  const submitNewRequest = () => {
+    const name = newRequestName.trim();
+    if (!name) return;
+    void createRequest(name)
+      .then(() => {
+        setNewRequestName("");
+        setShowNewRequest(false);
+      })
+      .catch((e) => push("error", `新建请求失败：${formatError(e)}`));
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-      <div style={{ padding: 8, borderBottom: "1px solid var(--border-default)" }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <select
-            className="form-select"
-            style={{ flex: 1, minWidth: 0 }}
-            value={activeSlug ?? ""}
-            onChange={(e) => void selectCollection(e.target.value)}
+      <div className="http-collection-toolbar">
+        <select className="form-select" value={activeSlug ?? ""} onChange={(e) => void selectCollection(e.target.value)}>
+          {collections.length === 0 && <option value="">暂无集合</option>}
+          {collections.map((c) => (
+            <option key={c.slug} value={c.slug}>
+              {c.name}（{c.request_count}）
+            </option>
+          ))}
+        </select>
+        <button className="btn ghost sm" title="新建集合" onClick={() => setShowNewCollection(true)}>
+          <FolderPlus size={14} />
+        </button>
+        {activeSlug && (
+          <button
+            className="btn ghost sm"
+            title="删除当前集合"
+            onClick={() => {
+              if (confirm(`删除集合"${collections.find((c) => c.slug === activeSlug)?.name}"？此操作不可撤销。`)) {
+                void deleteCollection(activeSlug).catch((e) => push("error", `删除集合失败：${formatError(e)}`));
+              }
+            }}
           >
-            {collections.length === 0 && <option value="">暂无集合</option>}
-            {collections.map((c) => (
-              <option key={c.slug} value={c.slug}>
-                {c.name}（{c.request_count}）
-              </option>
-            ))}
-          </select>
-          <button className="btn ghost sm" title="新建集合" onClick={() => setShowNewCollection(true)}>
-            <FolderPlus size={14} />
+            <Trash2 size={14} />
           </button>
-          {activeSlug && (
-            <button
-              className="btn ghost sm"
-              title="删除当前集合"
-              onClick={() => {
-                if (confirm(`删除集合"${collections.find((c) => c.slug === activeSlug)?.name}"？此操作不可撤销。`)) {
-                  void deleteCollection(activeSlug).catch((e) => push("error", `删除集合失败：${formatError(e)}`));
-                }
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
-          )}
-        </div>
-        {showNewCollection && (
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <input
-              className="form-input"
-              style={{ flex: 1 }}
-              autoFocus
-              placeholder="集合名称"
-              value={newCollectionName}
-              onChange={(e) => setNewCollectionName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && newCollectionName.trim()) {
-                  void createCollection(newCollectionName.trim())
-                    .then(() => {
-                      setNewCollectionName("");
-                      setShowNewCollection(false);
-                    })
-                    .catch((err) => push("error", `新建集合失败：${formatError(err)}`));
-                } else if (e.key === "Escape") {
-                  setShowNewCollection(false);
-                }
-              }}
-            />
-            <button
-              className="btn primary sm"
-              disabled={!newCollectionName.trim()}
-              onClick={() => {
+        )}
+      </div>
+      {showNewCollection && (
+        <div style={{ display: "flex", gap: 6, padding: "0 var(--space-2) var(--space-2)" }}>
+          <input
+            className="form-input"
+            style={{ flex: 1 }}
+            autoFocus
+            placeholder="集合名称"
+            value={newCollectionName}
+            onChange={(e) => setNewCollectionName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newCollectionName.trim()) {
                 void createCollection(newCollectionName.trim())
                   .then(() => {
                     setNewCollectionName("");
                     setShowNewCollection(false);
                   })
                   .catch((err) => push("error", `新建集合失败：${formatError(err)}`));
-              }}
-            >
-              创建
-            </button>
-          </div>
-        )}
-      </div>
-
-      {activeSlug && (
-        <div style={{ padding: "6px 8px" }}>
-          <button
-            className="btn ghost sm"
-            style={{ width: "100%", justifyContent: "flex-start" }}
-            onClick={() => {
-              const name = prompt("请求名称", "新建请求");
-              if (name?.trim()) {
-                void createRequest(name.trim()).catch((e) => push("error", `新建请求失败：${formatError(e)}`));
+              } else if (e.key === "Escape") {
+                setShowNewCollection(false);
               }
             }}
+          />
+          <button
+            className="btn primary sm"
+            disabled={!newCollectionName.trim()}
+            onClick={() => {
+              void createCollection(newCollectionName.trim())
+                .then(() => {
+                  setNewCollectionName("");
+                  setShowNewCollection(false);
+                })
+                .catch((err) => push("error", `新建集合失败：${formatError(err)}`));
+            }}
           >
-            <FilePlus2 size={13} /> 新建请求
+            创建
           </button>
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 4px 8px" }}>
+      {activeSlug && (
+        <div style={{ padding: "var(--space-2)", borderBottom: "1px solid var(--border-default)" }}>
+          {showNewRequest ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                className="form-input"
+                style={{ flex: 1 }}
+                autoFocus
+                placeholder="请求名称"
+                value={newRequestName}
+                onChange={(e) => setNewRequestName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNewRequest();
+                  else if (e.key === "Escape") setShowNewRequest(false);
+                }}
+                onBlur={() => !newRequestName.trim() && setShowNewRequest(false)}
+              />
+              <button className="btn primary sm" disabled={!newRequestName.trim()} onClick={submitNewRequest}>
+                创建
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn ghost sm"
+              style={{ width: "100%", justifyContent: "flex-start" }}
+              onClick={() => {
+                setNewRequestName("新建请求");
+                setShowNewRequest(true);
+              }}
+            >
+              <FilePlus2 size={13} /> 新建请求
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="http-tree-scroll">
         {requests.length === 0 && (
-          <div className="empty-state" style={{ padding: 16, fontSize: 13, opacity: 0.7 }}>
+          <div className="empty-state" style={{ padding: 16, fontSize: 13 }}>
             {activeSlug ? "还没有请求，点上方新建" : "先新建一个集合"}
           </div>
         )}
         {[...groups.entries()].map(([folderKey, items]) => (
           <div key={folderKey || "__root__"}>
             {folderKey && (
-              <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", opacity: 0.65, fontSize: 12 }}>
+              <div className="http-tree-folder">
                 <Folder size={12} /> {folderKey}
               </div>
             )}
@@ -154,17 +170,16 @@ export const CollectionExplorer: React.FC = () => {
               <div
                 key={r.id}
                 onClick={() => void openRequestTab(r.id, r.name)}
-                className={`home-dashboard-card-item ${activeRequestId === r.id ? "active" : ""}`}
-                style={{ cursor: "pointer", paddingLeft: folderKey ? 20 : undefined }}
+                className={`http-tree-item ${activeRequestId === r.id ? "active" : ""}`}
+                style={{ paddingLeft: folderKey ? 28 : undefined }}
               >
-                <span style={{ color: METHOD_COLORS[r.method] ?? "#6e7781", fontWeight: 700, fontSize: 11, width: 44, flexShrink: 0 }}>
-                  {r.method}
+                <span className={`http-method-chip ${httpMethodClass(r.method)}`}>{r.method}</span>
+                <span className="http-tree-name" title={r.name}>
+                  {r.name}
                 </span>
-                <span className="home-dashboard-item-name" title={r.name}>{r.name}</span>
                 <button
-                  className="btn ghost sm"
+                  className="http-tree-delete"
                   title="删除请求"
-                  style={{ marginLeft: "auto", padding: "2px 4px" }}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (confirm(`删除请求"${r.name}"？`)) {

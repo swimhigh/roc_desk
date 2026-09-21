@@ -37,6 +37,7 @@ use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
 use db::repo::browser_history_repo::BrowserHistoryRepo;
 use db::repo::coding_history_repo::CodingHistoryRepo;
+use db::repo::ai_evidence_repo::AiEvidenceRepo;
 use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
 use db::repo::http_request_history_repo::HttpRequestHistoryRepo;
@@ -342,6 +343,7 @@ pub fn run() {
 
             let audit_log = Arc::new(AuditLogRepo::new(pool.clone()));
             let coding_history = Arc::new(CodingHistoryRepo::new(pool.clone()));
+            let ai_evidence = Arc::new(AiEvidenceRepo::new(pool.clone()));
             let browser_history = Arc::new(BrowserHistoryRepo::new(pool.clone()));
             let permission_rules = Arc::new(PermissionRulesRepo::new(pool.clone()));
             let mcp_servers_repo = Arc::new(McpServersRepo::new(pool.clone()));
@@ -397,6 +399,7 @@ pub fn run() {
                 command_confirms: CommandConfirmRegistry::default(),
                 audit_log,
                 coding_history,
+                ai_evidence,
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
@@ -413,6 +416,9 @@ pub fn run() {
                 launch_mode: launch_mode.clone(),
                 launch_open: launch_open.clone(),
                 coding_cancel_tokens: Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                coding_pending_injections: Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
                 symbol_indexes: Arc::new(RwLock::new(HashMap::new())),
@@ -564,6 +570,7 @@ pub fn run() {
             commands::ai::ai_provider_create,
             commands::ai::ai_provider_update,
             commands::ai::ai_provider_delete,
+            commands::ai::ai_provider_list_models,
             commands::ai::ai_chat_send,
             commands::ai::ai_chat_cancel,
             commands::coding::coding_start,
@@ -574,7 +581,9 @@ pub fn run() {
             commands::coding::coding_set_auto_allow_readonly,
             commands::coding::coding_set_auto_git_commit,
             commands::coding::coding_set_full_auto,
+            commands::coding::coding_set_auto_apply_changes,
             commands::coding::coding_send_message,
+            commands::coding::coding_inject_message,
             commands::coding::coding_cancel_turn,
             commands::coding::coding_optimize_prompt,
             commands::coding::coding_accept_change,

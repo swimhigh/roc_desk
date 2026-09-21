@@ -7,6 +7,7 @@ use super::tools::{self, TodoItem, ToolCall};
 use crate::agent_llm;
 use crate::ai::AiProviderManager;
 use crate::coding::{CommandConfirmRegistry, QuestionRegistry};
+use crate::coding::ChatAttachment;
 use crate::db::repo::sql_query_history_repo::SqlQueryHistoryRepo;
 use crate::error::AppError;
 use crate::sql::adapter::new_backend_handle_slot;
@@ -15,8 +16,9 @@ use crate::sql::policy::{self, ExecutionKind};
 use crate::sql::service::{SqlDataSourceService, SqlSessionManager};
 
 /// SQL 对话通常比"分析整个项目"这类编程任务收敛快得多——一般是"看几眼表结构、
-/// 跑一两条查询、给结论"，给比 `coding::session::MAX_TOOL_ITERATIONS`（30）
-/// 小的预算即可；真的用完了和编程助手一样不丢上下文，用户发"继续"即可接着跑。
+/// 跑一两条查询、给结论"，给一个比较小的预算即可；真的用完了不丢上下文，用户发
+/// "继续"即可接着跑（`coding::session` 的工具循环 2026-09 应用户要求已经改成没有
+/// 硬编码轮次上限的 `loop`，这里的预算/强制收尾机制是两边各自独立的实现，不联动）。
 const MAX_TOOL_ITERATIONS: usize = 20;
 const FORCE_CONCLUDE_LAST_N: usize = 3;
 /// 触发裁剪的消息条数上限——没有做 `coding::session::limit_context` 那套按
@@ -91,6 +93,7 @@ impl SqlAgentSession {
     pub async fn send_message(
         &mut self,
         user_text: &str,
+        attachments: &[ChatAttachment],
         providers: &AiProviderManager,
         ds_service: &SqlDataSourceService,
         sql_sessions: &SqlSessionManager,
@@ -100,7 +103,7 @@ impl SqlAgentSession {
         app_handle: &AppHandle,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<String, AppError> {
-        self.messages.push(json!({ "role": "user", "content": user_text }));
+        self.messages.push(json!({ "role": "user", "content": crate::coding::session::user_message_content(user_text, attachments) }));
         self.limit_context();
 
         let provider = providers

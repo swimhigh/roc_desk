@@ -223,17 +223,32 @@
 .fcc.pending { border-color: var(--warning); }
 .fcc.applied { border-color: var(--success); }
 .fcc.rejected { border-color: var(--danger); }
-.fcc-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+/* 2026-09 用户反馈：AI 工具栏比较窄时，长文件路径把 flex 行撑爆，"应用"/"拒绝"
+   按钮被挤得比文字内容还窄，文字被迫逐字换行（"查\n看\nDiff"）——根因是
+   `.fcc-path` 作为 flex 子项默认 `min-width: auto`，不会为了腾地方而收缩/截断，
+   连带把 `.fcc-actions` 和它的按钮往窄了挤。改成路径自己截断省略号、徽标和按钮
+   固定不收缩，并允许整行在极窄时换行（操作区掉到路径下面一行），双保险不再
+   出现按钮文字被压变形的情况。 */
+.fcc-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .fcc-header.pending { background: rgba(217, 164, 65, 0.08); }
 .fcc-header.applied { background: rgba(63, 185, 80, 0.08); }
 .fcc-header.rejected { background: rgba(229, 83, 75, 0.08); }
-.fcc-header .fcc-path { font-family: var(--font-mono); flex: 1; }
-.fcc-badge { font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-full); }
+.fcc-header .fcc-path {
+  font-family: var(--font-mono);
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.fcc-badge { flex-shrink: 0; font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-full); white-space: nowrap; }
 .fcc-badge.pending { background: var(--warning); color: #000; }
 .fcc-badge.applied { background: var(--success); color: #000; }
 .fcc-badge.rejected { background: var(--danger); color: #fff; }
-.fcc-actions { display: flex; gap: var(--space-1); }
-.fcc-btn { height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-xs); display: flex; align-items: center; gap: 4px; }
+.fcc-actions { display: flex; flex-shrink: 0; gap: var(--space-1); margin-left: auto; }
+.fcc-btn { height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-xs); display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
 .fcc-btn.outline { border: 1px solid var(--border-default); color: var(--text-secondary); }
 .fcc-btn.outline:hover { background: var(--bg-hover); color: var(--text-primary); }
 .fcc-btn.success { background: var(--success); color: #000; }
@@ -292,6 +307,7 @@
 }
 .tree-item:hover { background: var(--bg-hover); }
 .tree-item.active { background: var(--bg-selected); }
+.tree-item.drop-target { background: color-mix(in srgb, var(--accent) 22%, var(--bg-hover)); outline: 1px dashed var(--accent); outline-offset: -1px; }
 .tree-item .tree-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary); }
 .tree-item .tree-icon.is-dir { color: #dcb67a; } /* 文件夹用暖色区分，VS Code 惯例 */
 .tree-item .tree-name { overflow: hidden; text-overflow: ellipsis; }
@@ -1153,20 +1169,40 @@
 .tool-file-ref:hover { color: var(--accent); opacity: 1; text-decoration: underline; }
 .tool-detail-cmd { font-family: var(--font-mono); font-size: 0.95em; padding: 1px 6px; border-radius: 4px; background: var(--bg-terminal); color: var(--shell-cmd); }
 .tool-output-pane { margin: 4px 0 4px 16px; padding: 6px 8px; border-radius: 4px; background: var(--bg-terminal); color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; }
+.agent-round-collapse-toggle,
+.agent-jump-bottom { flex-shrink: 0; }
+.agent-jump-bottom { position: sticky; bottom: 8px; align-self: center; z-index: 3; padding: 5px 12px; border: 1px solid var(--border-default); border-radius: 999px; background: var(--bg-surface-raised); color: var(--accent); box-shadow: var(--shadow); cursor: pointer; }
 
 /* === Coding Agent conversation (Codex/OpenCode inspired hierarchy) === */
-.agent-model-select {
-  min-width: 190px;
-  max-width: 320px;
-  height: 26px;
-  font-size: 12px;
+/* 2026-09 用户反馈：模型切换应该在输入框下方（对齐 ChatGPT/Claude 桌面版的
+   composer 惯例），顶部工具栏那份是多余的重复入口，已经移除——这里是移到
+   `.agent-composer-footer` 里的版本，看起来像普通文字，只有 hover/focus 时才
+   露出下拉框的视觉痕迹，不占用顶部工具栏本来就紧张的横向空间。 */
+.agent-model-select-inline {
+  max-width: 220px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 11px;
+  padding: 1px 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
+.agent-model-select-inline:hover,
+.agent-model-select-inline:focus {
+  border-color: var(--border-default);
+  background: var(--bg-hover);
+}
+.agent-model-select-inline:disabled { cursor: default; opacity: 0.7; }
 .agent-message {
   flex: 1;
   min-width: 0;
   font-size: 13px;
   line-height: 1.65;
   word-break: break-word;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 80px;
 }
 .agent-user-text { white-space: pre-wrap; }
 .agent-markdown { color: var(--text-primary); }
@@ -1310,6 +1346,22 @@
 .coding-history-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-default); background: var(--accent-dim); color: var(--text-primary); font-size: 12px; }
 .agent-composer-input:disabled { cursor: not-allowed; opacity: .62; }
 .agent-progress-note { display: flex; align-items: flex-start; gap: 7px; max-width: 760px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 4px 8px 8px 4px; background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+/* 早于当前轮次的工具调用/思考过程折叠摘要（2026-09 用户反馈"多轮后拉得太长
+   了"）——刻意比 .agent-progress-note 更低调（灰底、无强调色左边框），提示
+   "这是可以忽略的历史细节"，不是需要注意的内容。 */
+.agent-round-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.agent-round-collapse-toggle:hover { background: var(--bg-hover); color: var(--text-primary); border-style: solid; }
 
 /* 固定在消息列表底部、composer 上方的"AI 是否还在运行"状态条——不随滚动
    消失，覆盖两个后端事件之间的空档期（见 CodingAgentPanel 里 liveStatusText
@@ -1317,6 +1369,10 @@
    而不是让用户盯着一段静止不变的文字猜测程序是否卡住。 */
 .agent-live-status { display: flex; align-items: center; gap: 7px; padding: 5px 12px; font-size: 12px; color: var(--text-secondary); border-top: 1px solid var(--border-subtle); flex-shrink: 0; }
 .agent-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.1s ease-in-out infinite; }
+/* 进行中的 token 用量，跟着 .agent-live-status 这行原地更新（2026-09 需求：
+   不要再像以前那样每次请求各插一条独立的历史消息，参考 Claude Code 自己的
+   用量展示方式，做成不占用滚动历史的实时状态）。 */
+.agent-live-tokens { opacity: 0.75; white-space: nowrap; }
 
 /* === 编程助手：输入优化 / 附件（DESIGN.md §3.8 附件与提示词优化）=== */
 .agent-composer-icon-btn { width: 26px; height: 26px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--text-secondary); background: transparent; }
@@ -1435,4 +1491,203 @@
 .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { font-size: calc(var(--text-scale-factor) * var(--font-height)); }
 .textLayer ::selection { background: rgba(0, 100, 255, 0.28); }
 .textLayer .pdf-search-hit { border-radius: 2px; background: rgba(255, 212, 0, 0.45); }
+
+/* === HTTP 测试工作台（docs/HTTP_DESKTOP_PLAN.md） === */
+
+/* 方法配色——固定映射，GET/POST/PUT/PATCH/DELETE 各自一个颜色，和 Apifox/
+   Postman 的行业惯例保持一致，用户一眼扫过去就能分辨。 */
+.http-method-get { color: #2f8f4e; }
+.http-method-post { color: #b08800; }
+.http-method-put { color: #0969da; }
+.http-method-patch { color: #8250df; }
+.http-method-delete { color: #cf222e; }
+.http-method-head, .http-method-options { color: var(--text-secondary); }
+
+.http-method-select {
+  height: 30px;
+  width: 106px;
+  flex-shrink: 0;
+  padding: 0 var(--space-2);
+  background: var(--bg-app);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  outline: none;
+}
+.http-method-select:focus { border-color: var(--accent); }
+
+/* 请求树/标签页/历史列表里的小徽标——固定宽度对齐，浅色背景衬底让方法名
+   像一个真正的"标签"而不是裸文本。 */
+.http-method-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  flex-shrink: 0;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.http-method-chip.http-method-get { background: rgba(47, 143, 78, 0.14); }
+.http-method-chip.http-method-post { background: rgba(176, 136, 0, 0.16); }
+.http-method-chip.http-method-put { background: rgba(9, 105, 218, 0.14); }
+.http-method-chip.http-method-patch { background: rgba(130, 80, 223, 0.14); }
+.http-method-chip.http-method-delete { background: rgba(207, 34, 46, 0.14); }
+.http-method-chip.http-method-head, .http-method-chip.http-method-options { background: var(--bg-selected); }
+
+.http-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.http-toolbar .form-select { flex: 1; min-width: 0; }
+
+.http-tree-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-1) 0; }
+.http-tree-folder {
+  display: flex; align-items: center; gap: 4px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.http-tree-item {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.http-tree-item:hover { background: var(--bg-hover); }
+.http-tree-item.active { background: var(--bg-selected); }
+.http-tree-item .http-tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.http-tree-delete {
+  opacity: 0;
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.http-tree-delete:hover { background: var(--bg-selected); color: var(--danger); }
+.http-tree-item:hover .http-tree-delete { opacity: 1; }
+
+/* 下划线 Tab（Params/Headers/Body/Auth，响应区 Body/Headers）——比通用 .btn
+   更贴近 Apifox/Postman 的信息密度，下划线而不是整块背景，视觉上更轻。 */
+.http-subtabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.http-subtab {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.http-subtab:hover { color: var(--text-primary); }
+.http-subtab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+.http-subtab .http-subtab-count {
+  font-size: 10.5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: var(--radius-full);
+  background: var(--bg-selected);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.http-subtab.active .http-subtab-count { background: var(--accent-dim); color: var(--accent); }
+
+/* 键值对表格（Params/Headers/表单字段/环境变量共用）——用 grid 代替 <table>，
+   列宽固定不会被内容撑歪，比原生表格更好控制间距和 hover 状态。 */
+.kv-table { display: flex; flex-direction: column; }
+.kv-row {
+  display: grid;
+  grid-template-columns: 22px 1fr 1fr 28px;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.kv-row.kv-row-secret { grid-template-columns: 22px 1fr 1fr 44px 28px; }
+.kv-row:last-child { border-bottom: none; }
+.kv-row:hover { background: var(--bg-hover); }
+.kv-row input[type="text"], .kv-row input:not([type]) {
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  outline: none;
+}
+.kv-row input[type="text"]:focus, .kv-row input:not([type]):focus {
+  background: var(--bg-app);
+  border-color: var(--accent);
+}
+.kv-row input::placeholder { color: var(--text-disabled); }
+.kv-row-header {
+  display: grid;
+  grid-template-columns: 22px 1fr 1fr 28px;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-1);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.kv-row-header.kv-row-secret { grid-template-columns: 22px 1fr 1fr 44px 28px; }
+.kv-row-delete {
+  opacity: 0;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.kv-row-delete:hover { background: var(--bg-hover); color: var(--danger); }
+.kv-row:hover .kv-row-delete, .kv-row-delete.always { opacity: 1; }
+
+.http-body-type-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); }
+.http-body-type-row .form-select { width: 220px; }
+
+/* 响应状态徽标——用淡色底 + 深色字而不是裸文本颜色，一眼能看出"这是个状态"，
+   不会和普通说明文字混在一起（Apifox 用的就是这种药丸样式）。 */
+.http-status-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+.http-status-2xx { background: rgba(47, 143, 78, 0.14); color: #2f8f4e; }
+.http-status-3xx { background: rgba(9, 105, 218, 0.14); color: #0969da; }
+.http-status-4xx, .http-status-5xx { background: rgba(207, 34, 46, 0.14); color: #cf222e; }
+.http-status-0 { background: var(--bg-selected); color: var(--text-secondary); }
+
+.http-response-meta { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border-bottom: 1px solid var(--border-default); flex-shrink: 0; font-size: var(--text-sm); }
+.http-response-meta .meta-item { color: var(--text-secondary); }
+
+.http-collection-toolbar { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--border-default); }
+.http-collection-toolbar .form-select { flex: 1; min-width: 0; }
 .textLayer .pdf-search-hit-active { background: rgba(255, 140, 0, 0.75); }

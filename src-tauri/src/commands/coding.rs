@@ -204,6 +204,9 @@ pub struct CodingSessionInfo {
     pub auto_git_commit: bool,
     /// "完全授权模式"开关的当前状态（见 `ChangeStore::full_auto` 的文档）。
     pub full_auto: bool,
+    /// 文件改动是否自动应用的当前状态（见 `ChangeStore::auto_apply_changes` 的
+    /// 文档），默认 true。
+    pub auto_apply_changes: bool,
     pub changes: Vec<FileChange>,
     pub todos: Vec<TodoItem>,
     /// 本次会话实际读到的项目记忆文件名（`AGENTS.md`/`CLAUDE.md`），前端据此
@@ -224,6 +227,9 @@ async fn session_info(session: &CodingSession) -> CodingSessionInfo {
         git_repo: store.git_repo(),
         auto_git_commit: store.auto_git_commit,
         full_auto: store.full_auto.load(std::sync::atomic::Ordering::Relaxed),
+        auto_apply_changes: store
+            .auto_apply_changes
+            .load(std::sync::atomic::Ordering::Relaxed),
         changes: store.changes().to_vec(),
         todos: session.todos.clone(),
         project_memory_loaded: session.project_memory_loaded.clone(),
@@ -335,6 +341,7 @@ async fn build_new_session(
         provider_id,
         file_ops,
         change_store.clone(),
+        state.ai_evidence.clone(),
     );
     session.apply_project_memory(memory);
     session.apply_skills(skills);
@@ -444,6 +451,7 @@ pub async fn coding_new_session(
     }
     state.coding_sessions.write().await.remove(&workspace_id);
     state.coding_changes.write().await.remove(&workspace_id);
+    state.coding_pending_injections.lock().unwrap().remove(&workspace_id);
     let (session, change_store) =
         build_new_session(&state, workspace_id, provider_id, false, None).await?;
     let info = session_info(&session).await;
@@ -469,6 +477,7 @@ pub async fn coding_new_session(
 pub async fn coding_close(state: State<'_, AppState>, workspace_id: Uuid) -> Result<(), AppError> {
     state.coding_sessions.write().await.remove(&workspace_id);
     state.coding_changes.write().await.remove(&workspace_id);
+    state.coding_pending_injections.lock().unwrap().remove(&workspace_id);
     Ok(())
 }
 
@@ -575,6 +584,25 @@ pub async fn coding_set_full_auto(
     Ok(())
 }
 
+/// "文件改动自动应用"开关（2026-09 用户明确要求默认开启，见
+/// `ChangeStore::auto_apply_changes` 的文档）：和 `full_auto` 不同，这里只管
+/// 文件改动要不要自动落盘，不碰 `run_command` 的确认门禁——关掉这个开关就退回
+/// "每条改动手动点应用"的旧行为，不影响命令确认。
+#[tauri::command]
+pub async fn coding_set_auto_apply_changes(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let store = get_change_store(&state, workspace_id).await?;
+    store
+        .lock()
+        .await
+        .auto_apply_changes
+        .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn coding_send_message(
     state: State<'_, AppState>,
@@ -611,6 +639,8 @@ pub async fn coding_send_message(
             &state.mcp_manager,
             &app_handle,
             &cancel_token,
+            &state.coding_pending_injections,
+            &state.symbol_indexes,
         )
         .await;
     // 这一轮已经结束（不管成功/失败/被取消），把 token 摘掉——如果还留着，
@@ -637,6 +667,33 @@ pub async fn coding_cancel_turn(
     if let Some(token) = state.coding_cancel_tokens.lock().unwrap().get(&workspace_id) {
         token.cancel();
     }
+    Ok(())
+}
+
+/// AI 正在处理上一条消息时，用户又发了一条——不等当前这一轮工具循环彻底结束，
+/// 直接返回（不需要拿 `coding_sessions` 那把被独占的锁），把消息攒进
+/// `state.coding_pending_injections`，`CodingSession::send_message` 的工具循环
+/// 每轮迭代开头会读一次这张表并把攒到的追加进对话上下文（见该字段/
+/// `drain_pending_injections` 的文档）。前端负责在时间线里乐观展示这条消息，
+/// 这里不发任何事件。
+#[tauri::command]
+pub async fn coding_inject_message(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    text: String,
+    attachments: Option<Vec<crate::coding::ChatAttachment>>,
+) -> Result<(), AppError> {
+    let attachments = attachments.unwrap_or_default();
+    if text.trim().is_empty() && attachments.is_empty() {
+        return Ok(());
+    }
+    state
+        .coding_pending_injections
+        .lock()
+        .unwrap()
+        .entry(workspace_id)
+        .or_default()
+        .push(crate::coding::PendingInjection { text, attachments });
     Ok(())
 }
 
@@ -991,6 +1048,8 @@ fn maybe_auto_continue(
     let question_confirms = state.question_confirms.clone();
     let mcp_manager = state.mcp_manager.clone();
     let coding_cancel_tokens = state.coding_cancel_tokens.clone();
+    let coding_pending_injections = state.coding_pending_injections.clone();
+    let symbol_indexes = state.symbol_indexes.clone();
     let app_handle = app_handle.clone();
 
     tokio::spawn(async move {
@@ -1046,6 +1105,8 @@ fn maybe_auto_continue(
                 &mcp_manager,
                 &app_handle,
                 &cancel_token,
+                &coding_pending_injections,
+                &symbol_indexes,
             )
             .await;
         coding_cancel_tokens.lock().unwrap().remove(&workspace_id);

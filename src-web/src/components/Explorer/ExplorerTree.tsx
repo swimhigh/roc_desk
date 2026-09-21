@@ -17,15 +17,20 @@ import type { FileEntry } from "../../types/bindings";
 /** 常见脚本类型 → 运行命令（右键"运行脚本"，DESIGN.md §3.2 终端面板复用）。
  * 只是个方便入口，不是通用的"运行配置"系统——命令写死，用户要跑别的解释器
  * 自己在终端里敲就行，不需要为这个做成可配置项。 */
-function runCommandFor(path: string): string | null {
+function runCommandFor(path: string, remote = false): string | null {
   const ext = path.split(".").pop()?.toLowerCase();
   switch (ext) {
     case "sh":
       return `bash "${path}"`;
     case "py":
-      return `python3 "${path}"`;
+      return `${remote ? "python3" : "py -3"} "${path}"`;
     case "ps1":
-      return `powershell -File "${path}"`;
+      return `${remote ? "powershell" : "powershell.exe"} -File "${path}"`;
+    case "bat":
+    case "cmd":
+      return `cmd /c "${path}"`;
+    case "exe":
+      return `"${path}"`;
     default:
       return null;
   }
@@ -80,6 +85,8 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   const treeContainerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
   const [clipboard, setClipboard] = useState<{ path: string; name: string; isDir: boolean; mode: "cut" | "copy" } | null>(null);
+  const [dragPath, setDragPath] = useState<string | null>(null);
+  const [dropPath, setDropPath] = useState<string | null>(null);
 
   useEffect(() => {
     loadRoot(workspaceId, rootPath);
@@ -229,10 +236,11 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
   };
 
   const runScript = async (entry: FileEntry) => {
-    const cmd = runCommandFor(entry.path);
-    if (!cmd) return;
     const current = useWorkspaceStore.getState().current;
     if (!current) return;
+    const remote = current.kind === "remote";
+    const cmd = runCommandFor(entry.path, remote);
+    if (!cmd) return;
     const term = useTerminalStore.getState();
     try {
       let targetId = term.activeId;
@@ -295,6 +303,30 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     }
   };
 
+  const moveDraggedInto = async (targetDir: string) => {
+    if (!dragPath) return;
+    const source = dragPath;
+    const sourceParent = parentOf(source);
+    const normalizedSource = source.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+    const normalizedTarget = targetDir.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+    if (normalizedSource === normalizedTarget || normalizedTarget.startsWith(`${normalizedSource}/`)) {
+      push("error", "不能把文件夹移动到自身或其子目录中");
+      return;
+    }
+    const name = baseName(source);
+    const destination = `${targetDir}/${name}`;
+    try {
+      await fsService.rename(workspaceId, source, destination);
+      setDragPath(null);
+      setDropPath(null);
+      await reloadDir(workspaceId, targetDir);
+      if (sourceParent !== targetDir) await reloadDir(workspaceId, sourceParent);
+      select(destination);
+    } catch (e) {
+      push("error", `移动失败：${formatError(e)}`);
+    }
+  };
+
   const menuItems = (entry: FileEntry, depth: number): ContextMenuItem[] => {
     // Windows 本地工作区下 `entry.path` 和 `rootPath` 分隔符不一致：后端 `list_dir`
     // 统一把路径正规化成 `/`（见 fsops/local.rs），但 `rootPath`（原生目录选择器
@@ -325,8 +357,8 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
       { label: "新建文件", onClick: () => startCreate(createTargetDir, createTargetDepth, false) },
       { label: "新建文件夹", onClick: () => startCreate(createTargetDir, createTargetDepth, true) },
     );
-    if (runCommandFor(entry.path)) {
-      items.push({ label: "运行脚本", onClick: () => runScript(entry) });
+    if (!entry.is_dir && runCommandFor(entry.path, useWorkspaceStore.getState().current?.kind === "remote")) {
+      items.push({ label: "运行", onClick: () => runScript(entry) });
     }
     if (!entry.is_dir) {
       items.push({ label: "导入到本地搜索引擎", onClick: () => importToLogSearch(entry) });
@@ -369,7 +401,8 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     return (
       <React.Fragment key={entry.path}>
         <div
-          className={`tree-item ${selectedPath === entry.path ? "active" : ""}`}
+          className={`tree-item ${selectedPath === entry.path ? "active" : ""} ${dropPath === entry.path ? "drop-target" : ""}`}
+          draggable
           style={{ paddingLeft: 8 + depth * 16 }}
           data-path={entry.path}
           onClick={() => {
@@ -391,6 +424,29 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
             e.stopPropagation();
             select(entry.path);
             setMenu({ x: e.clientX, y: e.clientY, entry, depth });
+          }}
+          onDragStart={(e) => {
+            setDragPath(entry.path);
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", entry.path);
+          }}
+          onDragEnd={() => {
+            setDragPath(null);
+            setDropPath(null);
+          }}
+          onDragOver={(e) => {
+            if (!entry.is_dir || !dragPath || dragPath === entry.path) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setDropPath(entry.path);
+          }}
+          onDragLeave={() => {
+            if (dropPath === entry.path) setDropPath(null);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (entry.is_dir) void moveDraggedInto(entry.path);
+            else setDropPath(null);
           }}
         >
           {entry.is_dir ? (
@@ -455,6 +511,19 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     <div
       ref={treeContainerRef}
       className="project-tree"
+      onDragOver={(e) => {
+        if (!dragPath) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDropPath(rootPath);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDropPath(null);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (e.target === e.currentTarget) void moveDraggedInto(rootPath);
+      }}
       onContextMenu={(e) => {
         // 只在真正点到空白背景（没冒泡自某一行，那些行已经 stopPropagation 了）时
         // 才处理——但不管有没有剪贴板内容都要先 preventDefault，不然空剪贴板时

@@ -18,6 +18,7 @@ const emptyForm: AiProviderInput = {
   is_local: false,
   wire_api: "chat_completions",
   reasoning_effort: "",
+  context_window_tokens: null,
 };
 
 /** 对齐 Codex `config.toml` 的 `model_reasoning_effort` 取值——只对 gpt-5/o 系列
@@ -84,6 +85,7 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
       is_local: p.is_local,
       wire_api: p.wire_api || "chat_completions",
       reasoning_effort: p.reasoning_effort ?? "",
+      context_window_tokens: p.context_window_tokens,
     };
     setForm(next);
     providerDraft = { form: next, editingId: id };
@@ -214,6 +216,20 @@ export const ProviderManagerDialog: React.FC<ProviderManagerDialogProps> = ({ on
               </option>
             ))}
           </select>
+        </div>
+        <div className="form-row">
+          <label className="form-label" title="AI 编程助手自动裁剪/摘要历史对话时用这个值判断预算；留空则用保守的全局默认值（60,000），大窗口 Provider 建议填实际支持的上下文窗口，避免被过度频繁地压缩上下文">
+            上下文窗口（估算 token 数，可选）
+          </label>
+          <input
+            className="form-input"
+            type="number"
+            min={1000}
+            step={1000}
+            value={form.context_window_tokens ?? ""}
+            onChange={(e) => set("context_window_tokens", e.target.value.trim() === "" ? null : Number(e.target.value))}
+            placeholder="留空则用默认值 60,000，比如 128000/200000"
+          />
         </div>
         <div className="form-actions">
           {isFormDirty(form, editingId) && (

@@ -17,6 +17,7 @@ use uuid::Uuid;
 pub use changes::ChangeStore;
 pub use session::{
     ChangeStatus, ChatAttachment, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
+    PendingInjection,
 };
 
 /// 等待前端响应的 `run_command` 确认请求（DESIGN.md §3.8.2.1），和

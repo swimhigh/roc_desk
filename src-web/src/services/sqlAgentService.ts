@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SqlAgentHistoryDetail, SqlAgentHistorySummary, SqlAgentSessionInfo } from "../types/bindings";
+import type { ChatAttachment, SqlAgentHistoryDetail, SqlAgentHistorySummary, SqlAgentSessionInfo } from "../types/bindings";
 
 /** IPC 边界：SQL Agent 会话（`sql::agent`）——和 `codingService.ts` 一一对应，
  * 只是把 `workspaceId` 换成 `dataSourceId`。 */
@@ -16,8 +16,8 @@ export const sqlAgentService = {
   setProvider(dataSourceId: string, providerId: string): Promise<void> {
     return invoke("sql_agent_set_provider", { dataSourceId, providerId });
   },
-  sendMessage(dataSourceId: string, text: string): Promise<string> {
-    return invoke("sql_agent_send_message", { dataSourceId, text });
+  sendMessage(dataSourceId: string, text: string, attachments: ChatAttachment[] = []): Promise<string> {
+    return invoke("sql_agent_send_message", { dataSourceId, text, attachments });
   },
   cancelTurn(dataSourceId: string): Promise<void> {
     return invoke("sql_agent_cancel_turn", { dataSourceId });

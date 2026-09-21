@@ -8,7 +8,7 @@ use crate::sql::model::{DbKind, ObjectRef};
 /// 引用符号是固定事实，不会变）。
 pub fn quote_ident(kind: DbKind, s: &str) -> String {
     match kind {
-        DbKind::Mysql => format!("`{}`", s.replace('`', "``")),
+        DbKind::Mysql | DbKind::Tdsql => format!("`{}`", s.replace('`', "``")),
         DbKind::SqlServer => format!("[{}]", s.replace(']', "]]")),
         _ => format!("\"{}\"", s.replace('"', "\"\"")),
     }

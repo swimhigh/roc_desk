@@ -1,14 +1,17 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+﻿use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
+use tokio::io::AsyncBufReadExt;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+use sha2::{Digest, Sha256};
 
 use super::changes::ChangeStore;
 use super::diff::DiffLine;
+use super::git_ops;
 use super::guard;
 use super::permission::{Decision, PermissionEngine};
 use super::skills::{self, SkillMeta};
@@ -19,11 +22,13 @@ use crate::agent::AgentConnectionPool;
 use crate::agent_llm;
 use crate::ai::{search_web_results, AiProvider, AiProviderManager};
 use crate::db::repo::audit_log_repo::AuditLogRepo;
+use crate::db::repo::ai_evidence_repo::{AiEvidenceRepo, EvidenceEntry, MAX_EVIDENCE_BYTES};
 use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
 use crate::error::AppError;
 use crate::fsops::{search_stream, FileOps, SearchMode, SearchOptions};
 use crate::mcp::McpServerManager;
 use crate::ssh::SshConnectionPool;
+use crate::symbols::{build_index, SymbolIndex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +80,18 @@ pub enum ChatAttachment {
         name: String,
         content: String,
     },
+}
+
+/// AI 正在处理上一条消息时用户又发了一条——不等当前这一轮工具循环彻底结束，攒
+/// 在 `AppState.coding_pending_injections`（按 workspace_id 一份，独立于
+/// `CodingSession` 外层那把锁）里，`send_message` 的工具循环每轮迭代开头会读
+/// 一次这张表、把攒到的都当作普通用户消息追加进 `messages`，供下一次模型请求
+/// 看到。不能做成 `CodingSession` 自己的字段——`send_message` 从进入到返回一直
+/// 独占持有会话外层的锁，塞在会话内部的字段在这轮结束前根本抢不到锁去写。
+#[derive(Debug, Clone)]
+pub struct PendingInjection {
+    pub text: String,
+    pub attachments: Vec<ChatAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +157,9 @@ pub struct CodingSession {
     /// 本次会话实际读到并注入系统提示词的项目记忆文件名（`AGENTS.md`/`CLAUDE.md`
     /// 中存在的那些），前端用来在工具栏渲染"已加载 XXX"徽标。
     pub project_memory_loaded: Vec<String>,
-    messages: Vec<serde_json::Value>,
+    pub(crate) evidence_repo: Arc<AiEvidenceRepo>,
+    evidence_recall_query: Option<String>,
+messages: Vec<serde_json::Value>,
     pub(crate) file_ops: Arc<dyn FileOps>,
     /// 当前正在处理的用户消息轮次 id——`send_message` 一开始就生成一个新的，
     /// 这一轮里 `stage_change` 产生的所有 `FileChange` 都打上同一个 `turn_id`，
@@ -153,17 +172,67 @@ pub struct CodingSession {
     /// 再执行 xxx"，用户点了应用却没有任何后续，必须自己再发一条消息才会继续）。
     /// `None` 表示当前没有"卡在等确认"的轮次。
     awaiting_confirmation_turn: Option<Uuid>,
+    /// `run_command_background` 启动的后台进程，key 是工具返回给模型的 job_id——
+    /// 只在本地目标下可用。放在会话自己的字段里而不是像 `change_store` 那样单独
+    /// 开一把 `AppState` 级别的锁，是因为只有 `execute_tool`（已经持有 `&mut
+    /// self`）会读写它，不存在"要在 `send_message` 整轮持锁期间被别的命令并发
+    /// 访问"的需求。会话被丢弃（关闭工作区/开新会话）时 `Drop` 实现会把还没
+    /// 手动 `stop_background_process` 的进程一并杀掉，不会有开发服务器之类的
+    /// 子进程在用户已经离开这个会话后还悄悄留在后台占端口。
+    background_jobs: HashMap<Uuid, BackgroundJob>,
 }
 
-// 2026-08-18 用户真实反馈：让编程助手"分析本项目源代码，对代码进行评审"这类
-// 开放式大任务，8 轮工具调用就把预算用完了，被当成"疑似死循环"直接中止——这不是
-// 真死循环，是这个仓库本身有几十个源文件，认真读一遍再给评审意见，工具调用次数
-// 本来就会比"改一个已知文件的一行 bug"这种收敛型任务多得多。调到 30，给探索型任务
-// 更合理的空间；即使还是用完了，`self.messages` 里的进度不会丢（下一条用户消息
-// 会接着当前上下文继续），所以调大上限只是"减少不必要的中断"，不是移除保护本身。
-const MAX_TOOL_ITERATIONS: usize = 30;
-/// 最后这么多轮强制不再提供工具，逼模型收尾给结论（见 send_message 里的用法和注释）。
-const FORCE_CONCLUDE_LAST_N: usize = 5;
+impl Drop for CodingSession {
+    fn drop(&mut self) {
+        for (_, mut job) in self.background_jobs.drain() {
+            let _ = job.child.start_kill();
+        }
+    }
+}
+
+/// `run_command_background` 的一个在跑（或已结束但还没被 `stop_background_process`
+/// 清理）的进程。`output` 是两个后台读取任务（stdout/stderr 各一个）持续追加的
+/// 累计输出，用 `Arc<StdMutex<..>>` 而不是 `tokio::sync::Mutex`——追加操作本身
+/// 不跨 `.await`，标准库的锁足够，不需要 tokio 版本的开销。
+struct BackgroundJob {
+    command: String,
+    child: tokio::process::Child,
+    output: Arc<StdMutex<String>>,
+}
+
+/// 单个后台进程累计输出的字符数上限——开发服务器/watch 进程可能一直不退出、
+/// 一直往 stdout 写东西，不设上限的话这个 `String` 会无限增长。超过上限
+/// （`2x` 之后才截断，不是每写一行就截断一次）就只保留最近这一段，配合
+/// `is_char_boundary` 避免在多字节字符中间切断。
+const MAX_BACKGROUND_OUTPUT_CHARS: usize = 20_000;
+
+fn append_background_output(buf: &StdMutex<String>, text: &str) {
+    let mut s = buf.lock().unwrap();
+    s.push_str(text);
+    if s.len() > MAX_BACKGROUND_OUTPUT_CHARS * 2 {
+        let keep_from = s.len().saturating_sub(MAX_BACKGROUND_OUTPUT_CHARS);
+        let mut idx = keep_from;
+        while idx < s.len() && !s.is_char_boundary(idx) {
+            idx += 1;
+        }
+        *s = s[idx..].to_string();
+    }
+}
+
+// 2026-08-18 用户真实反馈：让编程助手"分析本项目源代码，对代码进行评审"这类开放式
+// 大任务，几十轮工具调用的硬上限会把预算用完，被当成"疑似死循环"直接中止——这不是
+// 真死循环，是这个仓库本身有几十个源文件，认真读一遍再给评审意见，工具调用次数本来
+// 就会比"改一个已知文件的一行 bug"这种收敛型任务多得多。最初把上限从 8 调到 30，
+// 后来又加了"最后 5 轮强制断供 tools 逼模型收尾"的兜底，但这个强制收尾的系统提示会
+// 永久留在 `self.messages` 里（从不撤回）——2026-09 用户真实复现：这类大任务撞到
+// 硬上限后，模型不仅这一轮被断供，后续新的一轮（工具预算其实已经重置、`tools` 字段
+// 也正常发了）依然被历史里那条"接下来不再提供任何工具"的系统消息带偏，误以为整个
+// 会话都不能再用工具，反过来告诉用户"当前会话已无法调用文件读写和执行工具"——这是
+// 一句误导性的话，用户由此误以为是权限/配额问题去查权限设置，白费功夫。用户明确要求
+// 干脆不做这层限制：工具循环不再有硬编码的轮次上限，只由"模型自己决定不再调用工具、
+// 给出最终答案"或者用户主动点"停止"（`cancel_token`）来结束。代价是真遇到模型陷入
+// 死循环、一直调工具不收敛的场景，不会再有自动兜底掐断——只能用户手动点停止；
+// `self.messages` 不会丢失进度这一点不受影响。
 
 /// 单条工具结果塞进 `self.messages` 前的字符数上限——`run_command`（截 4000 字符）
 /// 和 `webfetch`（截 8000 字符）从一开始就有这层保护，`read_file`/`list_directory`
@@ -181,25 +250,45 @@ const FORCE_CONCLUDE_LAST_N: usize = 5;
 /// 2026-09 复盘：原来直接拿字符数当预算单位，对不同模型的真实上下文窗口没有代表性
 /// （尤其中文场景：一个汉字在 UTF-8 里是 3 字节，用字符数算预算会系统性低估实际 token
 /// 消耗）。真实复现过一次"HTTP 400 context_too_large"——用户接的 provider 实际能接受
-/// 的窗口明显比这里假设的更小，60_000 是收紧后的全局默认值，宁可压缩得频繁一点，也不
-/// 要让请求真的超限被 Provider 拒绝（拒绝了这一整轮就白跑，压缩只是多花一次轻量调用）。
-/// 不是精确值——真要精确匹配每个 provider 的上下文窗口需要一份 per-provider 配置，
-/// 这次先不做。
-const MAX_CONTEXT_TOKENS_ESTIMATE: usize = 60_000;
+/// 的窗口明显比这里假设的更小，60_000 是收紧后的保守默认值。
+///
+/// **只是没配置 `AiProvider::context_window_tokens` 时的兜底值**——2026-09 第二次
+/// 复盘：把所有 Provider 都按这个保守默认值压缩，大窗口 Provider（比如实际支持
+/// 128K/200K+ 上下文的模型）被同一套小阈值频繁触发压缩，一次 87 万 token 的探索性
+/// 任务里被压缩了几十次，探索出来的文件路径/搜索结果几乎全被摘要抹掉，用户紧接着
+/// 追问同一个任务时模型对着几句摘要没法定位到具体文件，只能整个重新探索一遍。现在
+/// 优先用 Provider 设置里用户手填的真实窗口大小（`effective_context_budget`），没填
+/// 才退回这个全局保守值。
+const DEFAULT_CONTEXT_TOKENS_ESTIMATE: usize = 60_000;
+/// 用户手填的 `context_window_tokens` 只留 80% 当预算，不是 100%——上下文里除了
+/// 历史消息，还要给 system 提示词、工具 schema 定义、以及这一轮的响应本身留出
+/// 空间，全部吃满真实窗口大小反而更容易触发 Provider 的硬性拒绝。
+const CONTEXT_BUDGET_HEADROOM_NUM: usize = 8;
+const CONTEXT_BUDGET_HEADROOM_DEN: usize = 10;
+
+fn effective_context_budget(provider: &AiProvider) -> usize {
+    match provider.context_window_tokens {
+        Some(window) => (window as usize * CONTEXT_BUDGET_HEADROOM_NUM) / CONTEXT_BUDGET_HEADROOM_DEN,
+        None => DEFAULT_CONTEXT_TOKENS_ESTIMATE,
+    }
+}
 /// 在总量没有触顶时，仍只保留最近这些用户轮次，避免长时间会话缓慢挤占内存。
 const MAX_CONTEXT_USER_TURNS: usize = 8;
 /// 标记 `self.messages[1]`（如果存在）是"早前对话摘要"消息，不是真实的历史内容——
 /// `limit_context` 用这个前缀识别"要不要新建一条摘要消息，还是往已有的追加"。
 const CONTEXT_SUMMARY_PREFIX: &str = "【早前对话摘要】";
 /// 摘要消息自己的字符上限——长会话里如果不停追加摘要，摘要本身也会无限增长，超过这个
-/// 阈值就丢弃最早的一截摘要片段（不再摘要一次摘要，避免过度设计）。
-const MAX_CONTEXT_SUMMARY_CHARS: usize = 4_000;
+/// 阈值就丢弃最早的一截摘要片段（不再摘要一次摘要，避免过度设计）。2026-09 从 4_000
+/// 提到 16_000：4_000 字符的预算下，摘要提示词又要求"保留文件路径/结论"，模型写出来
+/// 的内容密度很高，多轮压缩后早期摘要几乎全被挤掉，等于白摘要——加大到 16_000 后
+/// 一次探索性任务里翻过的十几个文件路径和结论基本能留得住，不用被下一轮摘要挤没。
+const MAX_CONTEXT_SUMMARY_CHARS: usize = 16_000;
 /// 摘要请求本身的超时——摘要是锦上添花，不能变成新的卡死点，超时/失败就直接退回硬删。
 const CONTEXT_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// 把即将从 `self.messages` 里删掉的一批轮次压成一段 2-4 句的摘要——发一次不带
-/// `tools` 字段的轻量请求，不走 `MAX_TOOL_ITERATIONS` 预算（这是 `limit_context`
-/// 自己触发的独立请求，不是工具循环的一部分）。任何失败（网络错误、超时、响应里
+/// `tools` 字段的轻量请求，不计入工具循环本身（这是 `limit_context` 自己触发的
+/// 独立请求，不是工具循环的一部分）。任何失败（网络错误、超时、响应里
 /// 没有可用的文本）都返回 `None`，调用方直接退回"这批轮次就是删掉、不留痕迹"的
 /// 原有行为——摘要是锦上添花，不能变成新的卡死点。
 async fn summarize_dropped_turns(
@@ -239,9 +328,15 @@ async fn summarize_dropped_turns(
         "messages": [
             {
                 "role": "system",
-                "content": "你是对话摘要助手。用 2-4 句中文总结下面这段编程助手对话做了什么、\
-                             涉及哪些文件/结论，给后续对话保留必要背景。不要客套，不要逐句复述，\
-                             只给结论性摘要。"
+                "content": "你是对话摘要助手。这段摘要是给正在处理同一个任务的编程助手接着往下\
+                             用的背景资料，不是写给人看的概述，必须具体到文件路径和关键发现，\
+                             不能只给模糊结论——后续对话要能直接引用这些路径和发现，不用重新\
+                             搜索/读文件。按下面的格式输出中文内容，没有的部分直接省略，不要写\
+                             占位词：\n\
+                             已读文件：<路径1>：<这个文件里的关键发现，一两句>；<路径2>：...\n\
+                             已确认结论：<明确的技术结论/决策，逐条列>\n\
+                             下一步：<如果任务还没做完，下一步打算做什么>\n\
+                             不要写客套话，不要逐句复述对话过程，只保留后续用得上的具体信息。"
             },
             { "role": "user", "content": transcript }
         ]
@@ -270,7 +365,95 @@ async fn summarize_dropped_turns(
     }
 }
 
+/// `summarize_dropped_turns` 失败（网络错误/超时/Provider 没返回可用文本）时的
+/// 兜底摘要——之前失败就直接把这批消息静默丢掉、不留任何痕迹，2026-09 真实
+/// 复现：一次持续过载的长任务里摘要请求反复超时，被压缩掉的内容完全没留下
+/// 任何线索，用户下一轮说"按刚才的方案"时模型手里是真正的一片空白，只能让
+/// 用户把内容整个重新贴一遍。这里不依赖模型调用，纯算法从被删的消息里摘出
+/// "用户说了什么、碰过哪些文件"，保底也要留下这点线索，不能什么都不剩——
+/// 摘要质量比不上 LLM 生成的那版，但"有损线索"总比"彻底消失"强。
+fn deterministic_fallback_summary(dropped: &[serde_json::Value]) -> String {
+    let mut user_texts = Vec::new();
+    let mut file_paths = std::collections::BTreeSet::new();
+    for message in dropped {
+        if message["role"].as_str() == Some("user") {
+            if let Some(text) = message["content"].as_str() {
+                let trimmed: String = text.chars().take(200).collect();
+                if !trimmed.trim().is_empty() {
+                    user_texts.push(trimmed);
+                }
+            }
+        }
+        if let Some(calls) = message["tool_calls"].as_array() {
+            for call in calls {
+                if let Some(args) = call["function"]["arguments"].as_str() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args) {
+                        for key in ["path", "file_path", "directory"] {
+                            if let Some(p) = parsed[key].as_str() {
+                                file_paths.insert(p.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut summary =
+        String::from("（自动摘要生成失败，以下是算法兜底提取的线索，细节不如正常摘要完整）\n");
+    if !user_texts.is_empty() {
+        summary.push_str("用户消息：");
+        summary.push_str(&user_texts.join("；"));
+        summary.push('\n');
+    }
+    if !file_paths.is_empty() {
+        summary.push_str("涉及文件：");
+        summary.push_str(&file_paths.into_iter().collect::<Vec<_>>().join("、"));
+        summary.push('\n');
+    }
+    summary
+}
+
 impl CodingSession {
+    fn evidence_version(mtime: i64, bytes: u64) -> String {
+        format!("mtime={mtime};size={bytes}")
+    }
+
+    fn evidence_hash(text: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(text.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+
+    async fn persist_file_evidence(&self, path: &str, text: &str, mtime: i64, bytes: u64) -> Uuid {
+        let content: String = text.chars().take(MAX_EVIDENCE_BYTES).collect();
+        let version = Self::evidence_version(mtime, bytes);
+        let hash = Self::evidence_hash(&content);
+        let entry = EvidenceEntry {
+            id: Uuid::new_v4(),
+            workspace_id: self.workspace_id,
+            target_key: format!("{}", self.target_key()),
+            kind: "file_snapshot".into(),
+            query_hash: hash.clone(),
+            path_or_url: path.into(),
+            version_token: version,
+            content_hash: hash,
+            payload_json: serde_json::json!({"path": path}).to_string(),
+            summary: format!("文件快照：{path}"),
+            content,
+            expires_at: None,
+        };
+        let id = entry.id;
+        let _ = self.evidence_repo.upsert(&entry);
+        id
+    }
+
+    fn target_key(&self) -> String {
+        match &self.target {
+            CodingTarget::Local => "local".into(),
+            CodingTarget::Remote { connection_id, .. } => format!("ssh:{connection_id}"),
+            CodingTarget::Agent { connection_id, .. } => format!("agent:{connection_id}"),
+        }
+    }
     /// 把上下文限制在一个可预期的内存/token 预算内。优先删历史时以"用户消息"为
     /// 边界整轮删（一轮 assistant tool_calls 与紧随其后的 tool 结果始终一起保留，
     /// 不会留下 OpenAI 兼容接口无法接受的孤立 tool message；最前面的 system 提示
@@ -287,6 +470,8 @@ impl CodingSession {
     /// tool 结果"整体删掉（`trim_oldest_exchange_in_current_round`），只保留这一轮
     /// 最新的一组不动——模型至少还看得到最近一次工具调用的结果，旧的换成摘要。
     async fn limit_context(&mut self, client: &reqwest::Client, provider: &AiProvider, api_key: &Option<String>) {
+        self.inject_evidence_recall();
+        let budget = effective_context_budget(provider);
         let mut user_turns = self
             .messages
             .iter()
@@ -299,7 +484,7 @@ impl CodingSession {
                     .map(|message| message.to_string().len())
                     .sum::<usize>(),
             );
-            if size_tokens <= MAX_CONTEXT_TOKENS_ESTIMATE && user_turns <= MAX_CONTEXT_USER_TURNS {
+            if size_tokens <= budget && user_turns <= MAX_CONTEXT_USER_TURNS {
                 break;
             }
             let Some(start) = self
@@ -321,11 +506,11 @@ impl CodingSession {
                 Some(end) => {
                     let dropped: Vec<serde_json::Value> = self.messages.drain(start..end).collect();
                     user_turns -= 1;
-                    if let Some(summary) =
-                        summarize_dropped_turns(&dropped, client, provider, api_key).await
-                    {
-                        self.append_context_summary(&summary);
-                    }
+                    let summary = match summarize_dropped_turns(&dropped, client, provider, api_key).await {
+                        Some(summary) => summary,
+                        None => deterministic_fallback_summary(&dropped),
+                    };
+                    self.append_context_summary(&summary);
                 }
                 None => {
                     if !self
@@ -376,12 +561,24 @@ impl CodingSession {
         }
         let (unit_start, unit_end) = exchanges[0];
         let dropped: Vec<serde_json::Value> = self.messages.drain(unit_start..unit_end).collect();
-        if let Some(summary) = summarize_dropped_turns(&dropped, client, provider, api_key).await {
-            self.append_context_summary(&summary);
-        }
+        let summary = match summarize_dropped_turns(&dropped, client, provider, api_key).await {
+            Some(summary) => summary,
+            None => deterministic_fallback_summary(&dropped),
+        };
+        self.append_context_summary(&summary);
         true
     }
 
+    fn inject_evidence_recall(&mut self) {
+        let Some(query) = self.messages.iter().rev().find(|m| m["role"].as_str() == Some("user")).and_then(|m| m["content"].as_str()).map(str::trim).filter(|q| !q.is_empty()) else { return; };
+        if self.evidence_recall_query.as_deref() == Some(query) { return; }
+        self.evidence_recall_query = Some(query.to_string());
+        let terms = query.split_whitespace().take(8).collect::<Vec<_>>().join(" OR ");
+        let Ok(rows) = self.evidence_repo.search_fts(self.workspace_id, &self.target_key(), &terms, 8) else { return; };
+        if rows.is_empty() { return; }
+        let body = rows.into_iter().map(|(id, path, summary)| format!("- evidence_id={id} source={path} {summary}")).collect::<Vec<_>>().join("\n");
+        self.messages.push(json!({"role":"system","content":format!("[历史证据召回，仅供定位，需用 read_evidence 获取正文]\n{body}")}));
+    }
     /// 把一段新摘要文本并入 `self.messages` 里专门的摘要消息——用 `CONTEXT_SUMMARY_PREFIX`
     /// 这个前缀识别"哪条是摘要消息"，而不是假设固定下标：项目记忆（AGENTS.md/CLAUDE.md）
     /// 也是插在最前面的 system 消息，数量随项目而变，摘要消息必须插在"所有前置 system
@@ -439,6 +636,7 @@ impl CodingSession {
         provider_id: Uuid,
         file_ops: Arc<dyn FileOps>,
         change_store: Arc<Mutex<ChangeStore>>,
+        evidence_repo: Arc<AiEvidenceRepo>,
     ) -> Self {
         // 2026-09 复盘：不明确告诉模型"你在什么系统上、用什么 shell"，它会凭训练数据的
         // 默认假设去猜命令语法（最常见的是无论目标是什么系统都先猜 Linux/bash），猜错了
@@ -459,9 +657,11 @@ impl CodingSession {
             }
         };
         // 2026-08-18 真实复现：分析整个项目/做代码评审这类开放式大任务，模型会没完
-        // 没了地交替 search_files/read_file，一直不给结论。后端有 FORCE_CONCLUDE_LAST_N
-        // 硬兜底（见 send_message），但那是最后一道防线；这里在提示词里先明确给出
-        // "工具调用总量有限、该收敛就收敛"的预期，减少真的撞到硬限制的次数。
+        // 没了地交替 search_files/read_file，一直不给结论。后端曾经有过硬编码的轮次
+        // 上限兜底（见 send_message 顶部的历史记录），2026-09 用户明确要求去掉这层
+        // 限制，工具循环现在没有硬上限，全靠模型自己判断"该收敛就收敛"——提示词里
+        // 仍然给出这个预期，只是不再说"总次数有限"（那句话配合已移除的硬上限说得通，
+        // 单独留着会误导模型以为还有一个不存在的配额，反而更容易在长任务里过早收尾）。
         let system_prompt = format!(
             "你是集成在 roc_desk 桌面工具里的 AI 编程助手，当前绑定的工作区根目录是 `{workspace_root}`（{target_desc}）。\
              run_command 执行的命令必须匹配上面说明的 shell 语法，不要凭空假设是另一种系统/shell。\
@@ -469,10 +669,9 @@ impl CodingSession {
              不要凭模型记忆回答。write_file/edit_file 产生的改动不会立即生效，\
              而是生成 Diff 交给用户确认，所以你可以放心连续提出多个改动，不需要等待每一步都被确认才能继续推理。\
              run_command 有安全限制：破坏性命令会被直接拦截，其余命令需要用户在弹窗里确认才会真正执行。\
-             工具调用总次数是有限的（几十次量级），不是无限预算：面对\"分析整个项目\"这类开放式大任务时，\
-             优先用 search_files/list_directory 快速定位最相关的一小批文件（不需要每个文件都读一遍），\
-             读完这些就给出结论；不要为了追求\"看得更全\"而无休止地继续搜索/读取，觉得信息已经够回答用户的\
-             问题时就直接总结，而不是再多看几个文件。\
+             面对\"分析整个项目\"这类开放式大任务时，优先用 search_files/list_directory 快速定位\
+             最相关的一小批文件（不需要每个文件都读一遍），读完这些就给出结论；不要为了追求\"看得更全\"\
+             而无休止地继续搜索/读取，觉得信息已经够回答用户的问题时就直接总结，而不是再多看几个文件。\
              \n\n读文件内容优先用 read_file 工具，不要用 run_command 里 sed/cat/head 这类命令去手动\
              分段读——read_file 会自动按合理长度截断并在截断处提示，不需要你自己为了\"怕超长\"而每次\
              只读几十行、切成一大堆零碎调用（这样反而更浪费工具调用次数）；单次工具结果本身有长度保护，\
@@ -482,7 +681,26 @@ impl CodingSession {
              不要凭猜测直接选一种理解就展开长篇回答——调用 question 工具，把你想到的几种理解列成\
              options 让用户选一下，等用户选完再按确定下来的理解继续，比自己猜错了、答非所问、用户还要\
              再纠正一轮更省事。只有在意图已经足够清楚、只是细节需要你自己判断的情况下，才不需要用这个\
-             工具反复确认——不要把它用成什么都要问一遍的过度谨慎。",
+             工具反复确认——不要把它用成什么都要问一遍的过度谨慎。\
+             \n\n如果歧义的原因是你手头缺上下文——比如用户说\"按刚才的方案\"\"继续处理\"\"你说的那个\
+             办法\"，但当前对话历史里根本找不到对应的具体内容（长对话被自动摘要压缩后会发生这种情况）——\
+             不要立刻用 question 工具让用户把内容重新讲一遍。先主动用手头已有的工具自己找线索：用\
+             git_status/git_diff/run_command 跑 git log -n 10 看最近改了什么，用 read_file/\
+             list_directory/search_files 看用户提到的文件、函数现在是什么状态。多数时候当前代码库的\
+             实际情况就足够你推断出大致是要做什么、直接继续把任务做完，不需要用户重新说一遍。只有这样\
+             查过之后仍然拿不准关键决策（比如有两种同样合理但结果差异很大的做法）时，才用 question 工具\
+             问一个具体、带着你已经查到的线索的问题（例如\"我看到 X 文件现在是 Y 状态，接下来是按 A 方式\
+             改还是 B 方式改？\"），而不是空泛地让用户把整个方案重新讲一遍。\
+             \n\n除了前面提到的这些，还有几个更专用的工具，适用时优先用它们而不是绕远路用 run_command 拼命令行：\
+             查看仓库状态/改动用 git_status/git_diff（只读，不需要确认），确定要提交时用 git_commit（需要\
+             明确给出要提交的路径列表）；同一个文件要改好几处时用 multi_edit 一次性提交，不要为了改一个文件\
+             连续调好几次 edit_file；按函数名/类名找定义位置优先用 find_definition，比用 search_files 猜关键词\
+             更精确（找不到再退回 search_files）；需要启动一个不会自己退出的进程（开发服务器、watch 进程）\
+             时用 run_command_background，不要用 run_command——那会一直等它退出、把这一轮卡住，配合\
+             read_background_output 查看输出、stop_background_process 结束它；遇到\"在一大堆文件里找到某个\
+             具体结论\"这种会消耗大量探索性工具调用、但你自己只需要一个结论的子任务，可以用 task 委派给一个\
+             独立上下文的子代理去做，避免探索过程占满你自己的上下文——但子任务之间没有共享的探索上下文，\
+             委派时要把背景信息写全。",
         );
         Self {
             id,
@@ -495,10 +713,13 @@ impl CodingSession {
             todos: Vec::new(),
             skills: Vec::new(),
             project_memory_loaded: Vec::new(),
+            evidence_repo,
+            evidence_recall_query: None,
             messages: vec![json!({ "role": "system", "content": system_prompt })],
             file_ops,
             current_turn_id: Uuid::new_v4(),
             awaiting_confirmation_turn: None,
+            background_jobs: HashMap::new(),
         }
     }
 
@@ -579,6 +800,26 @@ impl CodingSession {
         }
     }
 
+    /// 把这个会话在 `AppState.coding_pending_injections` 里攒到的插话消息（如果
+    /// 有）取出并清空、按顺序追加进 `messages`。用 `workspace_id` 做 key（和
+    /// `coding_cancel_tokens` 同一个键空间），不是 `self.id`——`inject_message`
+    /// 命令拿到的也是 workspace_id，会话内部 id 前端根本不需要知道。
+    fn drain_pending_injections(
+        &mut self,
+        pending_injections: &Arc<StdMutex<HashMap<Uuid, Vec<PendingInjection>>>>,
+    ) {
+        let injected = {
+            let mut map = pending_injections.lock().unwrap();
+            map.remove(&self.workspace_id).unwrap_or_default()
+        };
+        for inj in injected {
+            self.messages.push(json!({
+                "role": "user",
+                "content": user_message_content(&inj.text, &inj.attachments),
+            }));
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         &mut self,
@@ -594,18 +835,27 @@ impl CodingSession {
         mcp_manager: &McpServerManager,
         app_handle: &AppHandle,
         cancel_token: &tokio_util::sync::CancellationToken,
+        pending_injections: &Arc<StdMutex<HashMap<Uuid, Vec<PendingInjection>>>>,
+        symbol_indexes: &Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
     ) -> Result<String, AppError> {
+        // 先捞一遍上一轮结束后才插进来、还没来得及塞进 `messages` 的消息（如果
+        // 有），再压进这次用户主动发的 `user_text`——保证时间顺序：先来的排前面。
+        self.drain_pending_injections(pending_injections);
         self.current_turn_id = Uuid::new_v4();
 
         self.messages.push(
             json!({ "role": "user", "content": user_message_content(user_text, attachments) }),
         );
-        // 不在这里裁剪——下面工具循环的第一轮（`for i in 0..MAX_TOOL_ITERATIONS`）一
-        // 进去就会调用 `limit_context`，那时候 provider/api_key/client 才解析出来，
-        // 摘要请求需要用到它们。
-        // 规则改动（比如刚点了"允许并记住"）只需要下一条消息生效，不需要额外的
-        // 缓存失效通知——这里每条用户消息都重新从数据库现取一份规则快照。
-        let permission_engine = PermissionEngine::load(permission_rules)?;
+        // 不在这里裁剪——下面工具循环（`loop { ... }`）第一轮一进去就会调用
+        // `limit_context`，那时候 provider/api_key/client 才解析出来，摘要请求
+        // 需要用到它们。
+        // 权限规则不在这里一次性取快照——早期版本只在这里 `PermissionEngine::load`
+        // 一次、整轮工具调用循环共用同一份快照，导致用户在"确认执行命令"弹窗还开着
+        // 的时候跑去权限规则管理里新增/改一条规则，当前这一轮后面的工具调用完全看
+        // 不到这条新规则，还是照样弹确认（2026-09 用户反馈"我已经放开只读直接过了，
+        // 它还是弹"）。现在改成每个工具调用决策前才现取一份最新规则（下面
+        // `for call in &tool_calls` 循环里），本地 SQLite 读一次的开销可以忽略，
+        // 换来的是规则改动能在同一轮对话里立刻生效，不用等到下一条消息。
         // Build 模式下把已启用 MCP 服务器的工具合并进模型可调用列表；单个服务器
         // 连接失败（子进程起不来/HTTP 握手失败）不影响其它服务器和内置工具，
         // 静默跳过——真正需要诊断的话，用户可以在 MCP 服务器管理里手动测试。
@@ -661,28 +911,24 @@ impl CodingSession {
         let mut turn_usage = agent_llm::TurnUsage::default();
         let session_id = self.id;
 
-        for i in 0..MAX_TOOL_ITERATIONS {
+        // 2026-09 用户明确要求去掉硬编码的轮次上限（见本文件顶部 `MAX_TOOL_ITERATIONS`
+        // 旧常量位置的历史记录）：这里不再是 `for i in 0..N`，而是一个没有内建终止
+        // 条件的 `loop`——工具循环只在两种情况下结束：模型自己不再调用任何工具（下面
+        // `tool_calls.is_empty()` 分支里 `return Ok(text)`），或者用户点了"停止"
+        // （`cancel_token` 被取消，下面立刻 `return Err`）。不会再出现"最后几轮强制
+        // 断供 tools、还留一条永久性的系统消息误导后续轮次"的情况，代价是真遇到模型
+        // 陷入死循环、一直调工具不收敛的场景，没有自动兜底，只能用户手动停止。
+        loop {
             if cancel_token.is_cancelled() {
                 return Err(AppError::Internal(
                     "已停止：用户取消了当前对话轮次".to_string(),
                 ));
             }
+            // 每轮工具调用之间的检查点——用户在这一轮进行中插的话（`inject_message`
+            // 命令，不经过这个会话外层的锁）攒到这里才被真正塞进对话上下文，供
+            // 下一次模型请求看到；不是打断正在跑的这次请求，是"下一轮生效"。
+            self.drain_pending_injections(pending_injections);
             self.limit_context(&client, &provider, &api_key).await;
-
-            // 2026-08-18 真实复现：让模型做"分析整个项目并评审"这类开放式大任务时，
-            // 它会没完没了地交替 search_files/read_file，一直不给结论，直到把
-            // MAX_TOOL_ITERATIONS 用完只剩一个报错——中间收集的所有信息全部浪费。
-            // 到了最后几轮强制不再提供工具（不发 `tools` 字段，模型物理上叫不了任何
-            // 工具），逼它基于已经读到的内容直接给结论，总比"报错、什么都没有"强。
-            let force_conclude_start = MAX_TOOL_ITERATIONS.saturating_sub(FORCE_CONCLUDE_LAST_N);
-            let force_conclude = i >= force_conclude_start;
-            if i == force_conclude_start {
-                self.messages.push(json!({
-                    "role": "system",
-                    "content": "你已经调用了很多次工具，收集到的信息应该已经足够。接下来不再提供任何工具，\
-                                 请直接基于目前已经了解到的内容给出结论/总结，不要说\"我需要再看看\"这类话。"
-                }));
-            }
 
             let mut tools = tools_for_mode(self.mode);
             if let Some(arr) = tools.as_array_mut() {
@@ -697,7 +943,7 @@ impl CodingSession {
                 &provider,
                 &api_key,
                 &self.messages,
-                (!force_conclude).then_some(&tools),
+                Some(&tools),
                 app_handle,
                 session_id,
                 "coding",
@@ -818,6 +1064,10 @@ impl CodingSession {
                 // 不是每个工具分支都记得套。这里挪到 `execute_tool` 唯一的结果
                 // 汇聚点统一兜底，不管以后新增哪个工具、哪个分支忘记自己限制长度，
                 // 单条工具结果都不可能超过 `MAX_TOOL_RESULT_CHARS`。
+                // 每个工具调用决策前现取一份最新规则快照，而不是整轮共用一份加载于
+                // 循环之前的旧快照——见本函数顶部的说明，这样规则改动能在同一轮
+                // 对话里立刻生效。
+                let permission_engine = PermissionEngine::load(permission_rules)?;
                 let result_text = agent_llm::cap_tool_result(match call_result {
                     Ok(call) => self
                         .execute_tool(
@@ -829,6 +1079,11 @@ impl CodingSession {
                             &permission_engine,
                             question_confirms,
                             mcp_manager,
+                            &client,
+                            &provider,
+                            &api_key,
+                            symbol_indexes,
+                            cancel_token,
                             app_handle,
                         )
                         .await
@@ -852,12 +1107,6 @@ impl CodingSession {
                 }));
             }
         }
-
-        turn_usage.emit_summary(app_handle, session_id, "coding");
-        Err(AppError::Internal(format!(
-            "这一轮已经调用了 {MAX_TOOL_ITERATIONS} 次工具还没给出最终结论，先停下来避免无限跑下去。\
-             之前的进度都还在（对话上下文没丢），直接发\"继续\"就会接着刚才的内容往下做，不需要重新描述任务。"
-        )))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -871,6 +1120,15 @@ impl CodingSession {
         permission_engine: &PermissionEngine,
         question_confirms: &QuestionRegistry,
         mcp_manager: &McpServerManager,
+        // 下面这三个只有 `ToolCall::Task` 分支会用到（子代理要发起自己的 LLM
+        // 请求）——之所以还是加进这个统一的签名而不是单独开一条路径，是因为
+        // `task` 工具的执行逻辑（`run_subagent_task`）需要递归调用回这同一个
+        // `execute_tool` 来跑子代理自己的工具调用，两边共用一份签名更简单。
+        client: &reqwest::Client,
+        provider: &AiProvider,
+        api_key: &Option<String>,
+        symbol_indexes: &Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
         app_handle: &AppHandle,
     ) -> Result<String, AppError> {
         match call {
@@ -878,13 +1136,30 @@ impl CodingSession {
                 if let Some(content) = self.change_store.lock().await.pending_content_for(&path) {
                     return Ok(agent_llm::cap_tool_result(content));
                 }
+                // 先以文件大小做廉价的弱校验，命中后仍由版本 token 标记为可复用快照。
+                if let Ok(size) = self.file_ops.file_size(&path).await {
+                    if let Ok(Some(entry)) = self.evidence_repo.get_latest_path(
+                        self.workspace_id, &self.target_key(), &path, size,
+                    ) {
+                        return Ok(agent_llm::cap_tool_result(entry.content));
+                    }
+                }
                 // `read_file_for_editor`（不是不设上限的 `read_file`）：超过
                 // `EDITOR_PREVIEW_MAX_BYTES` 只读前面一部分字节，不会像默认实现那样
                 // 把一个几百 MB 的日志/压缩包/生成产物整份吸进内存——见下面
                 // `cap_tool_result` 的注释，这是同一个内存失控问题的另一半修复
                 // （字节层面 vs. 字符层面）。
                 let content = self.file_ops.read_file_for_editor(&path).await?;
-                Ok(agent_llm::cap_tool_result(content.text))
+                let evidence_id = self.persist_file_evidence(&path, &content.text, content.mtime, content.total_size).await;
+                Ok(format!("{}\n[evidence_id={evidence_id}]", agent_llm::cap_tool_result(content.text)))
+            }
+            ToolCall::ReadEvidence { id, start_line, end_line } => {
+                let entry = self.evidence_repo.get_by_id(id)?.ok_or_else(|| AppError::NotFound("证据不存在或已清理".into()))?;
+                let lines: Vec<&str> = entry.content.lines().collect();
+                let start = start_line.unwrap_or(1).max(1);
+                let end = end_line.unwrap_or(lines.len()).min(lines.len().max(start));
+                let body = if lines.is_empty() { String::new() } else { lines[(start - 1).min(lines.len())..end].join("\n") };
+                Ok(format!("[evidence_id={id} source={} version={}]\n{}", entry.path_or_url, entry.version_token, agent_llm::cap_tool_result(body)))
             }
             ToolCall::ListDirectory { path } => {
                 let entries = self.file_ops.list_dir(&path).await?;
@@ -952,6 +1227,104 @@ impl CodingSession {
             }
             ToolCall::Skill { name } => {
                 skills::load_skill_body(self.file_ops.as_ref(), &self.skills, &name).await
+            }
+            ToolCall::MultiEdit { path, edits } => {
+                let mut content = match self.change_store.lock().await.pending_content_for(&path) {
+                    Some(c) => c,
+                    None => self.file_ops.read_file(&path).await?.text,
+                };
+                for (i, edit) in edits.iter().enumerate() {
+                    if !content.contains(&edit.old_text) {
+                        return Err(AppError::Internal(format!(
+                            "multi_edit 失败：第 {} 处替换的 old_text 在 {path} 中没有找到匹配（前面 {} 处\
+                             已经在内存里预演成功，但这次调用整体不会生效，不会留下部分修改），请先用 \
+                             read_file 确认最新内容后重试",
+                            i + 1,
+                            i
+                        )));
+                    }
+                    content = content.replacen(&edit.old_text, &edit.new_text, 1);
+                }
+                self.stage_change(&path, content, ssh_pool, agent_pool, app_handle)
+                    .await
+            }
+            ToolCall::GitStatus { path } => Ok(agent_llm::cap_tool_result(
+                git_ops::status(&self.target, &self.workspace_root, path.as_deref(), ssh_pool, agent_pool)
+                    .await?,
+            )),
+            ToolCall::GitDiff { path } => Ok(agent_llm::cap_tool_result(
+                git_ops::diff(&self.target, &self.workspace_root, path.as_deref(), ssh_pool, agent_pool)
+                    .await?,
+            )),
+            ToolCall::GitCommit { message, paths } => {
+                if paths.is_empty() {
+                    return Err(AppError::Internal(
+                        "git_commit 失败：paths 不能为空，请明确给出要提交的文件/目录路径（可以先用 \
+                         git_status 确认）"
+                            .to_string(),
+                    ));
+                }
+                let (auto_allow_readonly, full_auto) = {
+                    let store = self.change_store.lock().await;
+                    (
+                        store.auto_allow_readonly.load(std::sync::atomic::Ordering::Relaxed),
+                        store.full_auto.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                };
+                let synthetic_command = format!("git commit -m {message:?} -- {}", paths.join(" "));
+                match gate_command(
+                    self.id,
+                    &self.target,
+                    auto_allow_readonly,
+                    full_auto,
+                    &synthetic_command,
+                    audit,
+                    confirms,
+                    permission_engine,
+                    app_handle,
+                )
+                .await
+                {
+                    GateOutcome::Blocked(msg) => Ok(msg),
+                    GateOutcome::Allowed => Ok(agent_llm::cap_tool_result(
+                        git_ops::commit_paths(
+                            &self.target,
+                            &self.workspace_root,
+                            &paths,
+                            &message,
+                            ssh_pool,
+                            agent_pool,
+                        )
+                        .await?,
+                    )),
+                }
+            }
+            ToolCall::RunCommandBackground { command } => {
+                self.run_command_background_gated(&command, audit, confirms, permission_engine, app_handle)
+                    .await
+            }
+            ToolCall::ReadBackgroundOutput { job_id } => self.read_background_output(job_id),
+            ToolCall::StopBackgroundProcess { job_id } => self.stop_background_process(job_id),
+            ToolCall::FindDefinition { symbol } => self.find_definition(&symbol, symbol_indexes).await,
+            ToolCall::Task { description, prompt } => {
+                Box::pin(self.run_subagent_task(
+                    &description,
+                    &prompt,
+                    client,
+                    provider,
+                    api_key,
+                    ssh_pool,
+                    agent_pool,
+                    audit,
+                    confirms,
+                    permission_engine,
+                    question_confirms,
+                    mcp_manager,
+                    symbol_indexes,
+                    cancel_token,
+                    app_handle,
+                ))
+                .await
             }
             ToolCall::Mcp {
                 server_id,
@@ -1108,6 +1481,29 @@ impl CodingSession {
         ssh_pool: &SshConnectionPool,
         agent_pool: &AgentConnectionPool,
     ) -> Result<String, AppError> {
+        let mut h = Sha256::new();
+        h.update(pattern.as_bytes()); h.update([0]); h.update(path.as_bytes());
+        let query_hash = format!("{:x}", h.finalize());
+        if let Some(entry) = self.evidence_repo.get_exact(self.workspace_id, &self.target_key(), "content_search", &query_hash, path, "search-v1")? {
+            return Ok(format!("{}\n[evidence_id={} cache_hit=true]", entry.content, entry.id));
+        }
+        let result = self.search_files_uncached(pattern, path, ssh_pool, agent_pool).await?;
+        let content: String = result.chars().take(MAX_EVIDENCE_BYTES).collect();
+        let id = Uuid::new_v4();
+        let mut ch = Sha256::new(); ch.update(content.as_bytes());
+        let hash = format!("{:x}", ch.finalize());
+        let entry = EvidenceEntry { id, workspace_id: self.workspace_id, target_key: self.target_key(), kind: "content_search".into(), query_hash, path_or_url: path.into(), version_token: "search-v1".into(), content_hash: hash, payload_json: serde_json::json!({"pattern": pattern, "path": path}).to_string(), summary: format!("搜索 {pattern} in {path}"), content, expires_at: None };
+        let _ = self.evidence_repo.upsert(&entry);
+        Ok(format!("{}\n[evidence_id={} cache_hit=false]", result, id))
+    }
+
+    async fn search_files_uncached(
+        &self,
+        pattern: &str,
+        path: &str,
+        ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
+    ) -> Result<String, AppError> {
         match &self.target {
             CodingTarget::Local => {
                 let results = tools::search_files_local(std::path::Path::new(path), pattern, 50);
@@ -1199,15 +1595,17 @@ impl CodingSession {
             .await?;
         let id = change.id;
         let applied = sync.is_some();
-        // `sync` 非空表示"完全授权模式"已经把这个改动直接落盘了——一并广播出去，
-        // 前端据此刷新这个路径对应的、可能已经打开的编辑器 buffer（否则磁盘内容
-        // 变了，编辑器里显示的还是旧内容）。
+        let _ = self.evidence_repo.invalidate_path(self.workspace_id, &self.target_key(), path);
+        // `sync` 非空表示"自动应用"（`auto_apply_changes`，默认开启，或用户额外
+        // 开了"完全授权模式" `full_auto`）已经把这个改动直接落盘了——一并广播
+        // 出去，前端据此刷新这个路径对应的、可能已经打开的编辑器 buffer（否则
+        // 磁盘内容变了，编辑器里显示的还是旧内容）。
         let _ = app_handle.emit(
             "coding:file-change",
             json!({ "sessionId": self.id, "change": &change, "sync": sync }),
         );
         Ok(if applied {
-            format!("已为 {path} 生成变更（id={id}）。完全授权模式已开启，已直接写入磁盘。")
+            format!("已为 {path} 生成变更（id={id}），已直接写入磁盘，用户可在界面上点\"撤销\"。")
         } else {
             format!("已为 {path} 生成变更（id={id}），已在界面展示 Diff，等待用户 Accept 后才会真正写入磁盘。")
         })
@@ -1247,6 +1645,300 @@ impl CodingSession {
             app_handle,
         )
         .await
+    }
+
+    /// `run_command_background` 工具——只支持 `CodingTarget::Local`：Remote/Agent
+    /// 目标下的"后台进程"意味着要在一条 SSH/Agent 连接上一直保持某种状态、跨
+    /// 多次工具调用复用，现有连接池是"每次 exec 用完就还回去"的短连接模式，硬
+    /// 要支持这个场景需要单独一套远程会话状态管理，收益（远程开发服务器场景）
+    /// 暂时不足以承担这份复杂度，先只做本地。
+    pub(crate) async fn run_command_background_gated(
+        &mut self,
+        command: &str,
+        audit: &AuditLogRepo,
+        confirms: &CommandConfirmRegistry,
+        permission_engine: &PermissionEngine,
+        app_handle: &AppHandle,
+    ) -> Result<String, AppError> {
+        if !matches!(self.target, CodingTarget::Local) {
+            return Ok(
+                "后台执行目前只支持本地工作区。远程/Agent 目标请改用 run_command，在命令本身里用 \
+                 shell 自带的后台手段（比如 Linux 下 `nohup ... &`，Windows 下 `Start-Process`）。"
+                    .to_string(),
+            );
+        }
+        let (auto_allow_readonly, full_auto) = {
+            let store = self.change_store.lock().await;
+            (
+                store.auto_allow_readonly.load(std::sync::atomic::Ordering::Relaxed),
+                store.full_auto.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        match gate_command(
+            self.id,
+            &self.target,
+            auto_allow_readonly,
+            full_auto,
+            command,
+            audit,
+            confirms,
+            permission_engine,
+            app_handle,
+        )
+        .await
+        {
+            GateOutcome::Blocked(message) => return Ok(message),
+            GateOutcome::Allowed => {}
+        }
+
+        #[cfg(target_os = "windows")]
+        let mut cmd = windows_command_for(command, true);
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = unix_command_for(command);
+        cmd.current_dir(&self.workspace_root);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        // 这里故意不设 `kill_on_drop`——这个 `Child` 会被塞进 `self.background_jobs`
+        // 长期持有，它该被杀掉的时机是"用户调用 stop_background_process"或者
+        // "整个会话结束"（`Drop for CodingSession` 统一兜底，见结构体字段文档），
+        // 不是"这次 execute_tool 调用返回"，不需要 tokio 在这里提前介入。
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| AppError::Internal(format!("启动后台进程失败：{e}")))?;
+        let pid = child.id();
+        let output = Arc::new(StdMutex::new(String::new()));
+        if let Some(stdout) = child.stdout.take() {
+            let buf = output.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    append_background_output(&buf, &format!("{line}\n"));
+                }
+            });
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let buf = output.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    append_background_output(&buf, &format!("[stderr] {line}\n"));
+                }
+            });
+        }
+        let job_id = Uuid::new_v4();
+        self.background_jobs.insert(
+            job_id,
+            BackgroundJob {
+                command: command.to_string(),
+                child,
+                output,
+            },
+        );
+        Ok(format!(
+            "已在后台启动{}，job_id={job_id}。用 read_background_output 查看目前的输出，用 \
+             stop_background_process 结束它。",
+            pid.map(|p| format!("（pid={p}）")).unwrap_or_default()
+        ))
+    }
+
+    /// `read_background_output` 工具——`try_wait` 是非阻塞的查询，不会等它退出。
+    pub(crate) fn read_background_output(&mut self, job_id: Uuid) -> Result<String, AppError> {
+        let job = self.background_jobs.get_mut(&job_id).ok_or_else(|| {
+            AppError::Internal(format!(
+                "找不到 job_id={job_id}，可能已经用 stop_background_process 结束并清理过了，或者 id 有误"
+            ))
+        })?;
+        let status = match job.child.try_wait() {
+            Ok(Some(status)) => format!("已结束，退出码 {:?}", status.code()),
+            Ok(None) => "仍在运行".to_string(),
+            Err(e) => format!("查询进程状态失败：{e}"),
+        };
+        let output = agent_llm::cap_tool_result(job.output.lock().unwrap().clone());
+        let output = if output.trim().is_empty() {
+            "（还没有任何输出）".to_string()
+        } else {
+            output
+        };
+        Ok(format!("命令：{}\n状态：{status}\n累计输出：\n{output}", job.command))
+    }
+
+    /// `stop_background_process` 工具。
+    pub(crate) fn stop_background_process(&mut self, job_id: Uuid) -> Result<String, AppError> {
+        let mut job = self.background_jobs.remove(&job_id).ok_or_else(|| {
+            AppError::Internal(format!("找不到 job_id={job_id}，可能已经结束并清理过了，或者 id 有误"))
+        })?;
+        let _ = job.child.start_kill();
+        Ok(format!("已终止 job_id={job_id}（命令：{}）", job.command))
+    }
+
+    /// `find_definition` 工具——索引还没建过（这个工作区在这次会话里第一次用到
+    /// 这个工具）就现场扫一遍整个工作区建索引，构建结果顺带存回
+    /// `symbol_indexes`，供同一个工作区后面的调用（这个会话或者其它命令，比如
+    /// 编辑器里的"转到定义"）复用，不用每次都重新扫一遍。
+    pub(crate) async fn find_definition(
+        &self,
+        symbol: &str,
+        symbol_indexes: &Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
+    ) -> Result<String, AppError> {
+        {
+            let indexes = symbol_indexes.read().await;
+            if let Some(index) = indexes.get(&self.workspace_id) {
+                return Ok(format_symbol_lookup(symbol, index.lookup(symbol)));
+            }
+        }
+        let index = build_index(self.file_ops.as_ref(), &self.workspace_root).await?;
+        let result = format_symbol_lookup(symbol, index.lookup(symbol));
+        symbol_indexes.write().await.insert(self.workspace_id, index);
+        Ok(result)
+    }
+
+    /// `task` 工具——委派一个子任务给一个临时的、独立消息历史的子代理去跑一个
+    /// 有界的工具循环，只把最终这段文字总结交还给主循环（子代理的探索过程不会
+    /// 混进 `self.messages`，这正是这个工具存在的意义：避免大量探索性工具调用
+    /// 占满主对话的上下文）。副作用（写文件产生的 Diff、执行的命令）是真实的、
+    /// 和主循环共享同一个 `self`——子代理不是完全沙盒隔离，只是"对话历史"这一件
+    /// 事是独立的一份临时 `messages`，用完即弃。
+    #[allow(clippy::too_many_arguments)]
+    async fn run_subagent_task(
+        &mut self,
+        description: &str,
+        prompt: &str,
+        client: &reqwest::Client,
+        provider: &AiProvider,
+        api_key: &Option<String>,
+        ssh_pool: &SshConnectionPool,
+        agent_pool: &AgentConnectionPool,
+        audit: &AuditLogRepo,
+        confirms: &CommandConfirmRegistry,
+        permission_engine: &PermissionEngine,
+        question_confirms: &QuestionRegistry,
+        mcp_manager: &McpServerManager,
+        symbol_indexes: &Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        app_handle: &AppHandle,
+    ) -> Result<String, AppError> {
+        const MAX_SUBAGENT_ITERATIONS: usize = 15;
+        let mut messages = vec![
+            json!({ "role": "system", "content": format!(
+                "你是被主任务临时委派的子代理，工作区根目录是 `{}`。只需要完成下面这一个具体子任务，\
+                 不需要和用户交互、不需要维护任务清单，完成后用一段简洁但信息完整的文字总结你做了什么、\
+                 找到了什么、结论是什么——这段总结会被直接交回给委派你的主任务，它看不到你这边的过程\
+                 细节，只看得到这段总结文字，务必把关键信息（具体文件路径、结论、必要的后续建议）写全，\
+                 不要只说\"已完成\"。",
+                self.workspace_root
+            ) }),
+            json!({ "role": "user", "content": prompt }),
+        ];
+        let _ = app_handle.emit(
+            "coding:assistant-note",
+            json!({ "sessionId": self.id, "text": format!("委派子任务：{description}"), "kind": "status" }),
+        );
+        // 子代理能用的工具集和主循环按同一个模式（Plan/Build）过滤，只是再减去
+        // task 自己（防止无限递归委派）和 question/todo_write（那两个是面向
+        // 用户的顶层交互通道，子代理没有直接对话用户的路径）。
+        let mut tools = tools_for_mode(self.mode);
+        if let Some(arr) = tools.as_array_mut() {
+            arr.retain(|t| {
+                !matches!(
+                    t["function"]["name"].as_str().unwrap_or(""),
+                    "task" | "question" | "todo_write"
+                )
+            });
+        }
+        for _ in 0..MAX_SUBAGENT_ITERATIONS {
+            // 子代理复用主循环传下来的同一个 `cancel_token`——用户点"停止"时，
+            // 主循环那次检查要等这次 `execute_tool`（也就是整个子任务）返回才能
+            // 生效，所以子任务自己的循环也要在每轮迭代开头做同样的检查，不然
+            // 委派一个子任务期间点"停止"会完全没有反应，直到最多 15 轮子任务
+            // 自然跑完。
+            if cancel_token.is_cancelled() {
+                return Err(AppError::Internal("已停止：用户取消了当前对话轮次".to_string()));
+            }
+            let round = match agent_llm::call_llm_once(
+                client,
+                provider,
+                api_key,
+                &messages,
+                Some(&tools),
+                app_handle,
+                self.id,
+                "coding",
+                cancel_token,
+            )
+            .await
+            {
+                Ok(r) => r,
+                // 和主循环用同一句文案（见 `send_message` 里的用法）——前端按这句
+                // 固定文本识别"用户主动停止"，不当成真正的错误展示。
+                Err(agent_llm::LlmCallError::Cancelled) => {
+                    return Err(AppError::Internal("已停止：用户取消了当前对话轮次".to_string()))
+                }
+                Err(agent_llm::LlmCallError::RequestFailed(detail)) => {
+                    return Err(AppError::Connection(detail))
+                }
+                Err(agent_llm::LlmCallError::ParseFailed(e)) => {
+                    return Err(AppError::Internal(format!("子任务解析响应失败: {e}")))
+                }
+            };
+            let message = round.message;
+            let tool_calls = round.tool_calls;
+            if tool_calls.is_empty() {
+                let text = message["content"].as_str().unwrap_or("").to_string();
+                return Ok(format!("[子任务「{description}」完成]\n{text}"));
+            }
+            messages.push(message);
+            for call in &tool_calls {
+                let call_id = call["id"].as_str().unwrap_or_default().to_string();
+                let fn_name = call["function"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let fn_args = call["function"]["arguments"].as_str().unwrap_or("{}");
+                let call_result = tools::parse_tool_call(&fn_name, fn_args);
+                let result_text = agent_llm::cap_tool_result(match call_result {
+                    Ok(c) => Box::pin(self.execute_tool(
+                        c,
+                        ssh_pool,
+                        agent_pool,
+                        audit,
+                        confirms,
+                        permission_engine,
+                        question_confirms,
+                        mcp_manager,
+                        client,
+                        provider,
+                        api_key,
+                        symbol_indexes,
+                        cancel_token,
+                        app_handle,
+                    ))
+                    .await
+                    .unwrap_or_else(|e| format!("工具执行出错：{e}")),
+                    Err(e) => format!("工具调用参数解析失败：{e}"),
+                });
+                messages.push(json!({ "role": "tool", "tool_call_id": call_id, "content": result_text }));
+            }
+        }
+        Ok(format!(
+            "[子任务「{description}」在 {MAX_SUBAGENT_ITERATIONS} 轮内没有给出最终结论，已提前收尾；\
+             如果任务确实很大，建议拆成更小的子任务分别委派]"
+        ))
+    }
+}
+
+fn format_symbol_lookup(symbol: &str, locations: Vec<crate::symbols::SymbolLocation>) -> String {
+    if locations.is_empty() {
+        format!(
+            "没有找到符号 `{symbol}` 的定义——索引是基于正则的轻量扫描，不理解语言语义，多行签名/\
+             宏生成的定义/罕见写法可能漏掉；符号名如果没写错，改用 search_files 按关键词搜索。"
+        )
+    } else {
+        let lines: Vec<String> = locations
+            .iter()
+            .map(|loc| format!("{}:{} ({})", loc.path, loc.line, loc.kind))
+            .collect();
+        format!("找到 {} 处候选定义：\n{}", locations.len(), lines.join("\n"))
     }
 }
 
@@ -1323,22 +2015,31 @@ pub(crate) async fn run_command_gated_shared_with_status(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_command_gated_shared_with_status_in_context(
+/// `gate_command` 的判定结果——`Blocked` 携带的文本直接就是要交回给模型的工具
+/// 结果（黑名单拦截/权限规则拒绝/用户点了拒绝，三种情况文案不同，调用方不需要
+/// 关心具体是哪一种，原样透出即可）。
+pub(crate) enum GateOutcome {
+    Blocked(String),
+    Allowed,
+}
+
+/// 把"这条命令能不能执行"的判定逻辑（黑名单 → 权限规则 → 白名单自动放行/
+/// 弹窗确认）从"判定完了真的去跑它"里拆出来——`run_command`（跑完等结果）和
+/// `run_command_background`（起了就不等）需要完全相同的判定逻辑，但后续动作
+/// 不一样，不应该把"要不要执行"和"怎么执行"耦合在同一个函数里被迫复制粘贴
+/// 一遍判定代码。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn gate_command(
     session_id: Uuid,
     target: &CodingTarget,
-    _workspace_root: &str,
     auto_allow_readonly: bool,
     full_auto: bool,
-    cwd: &str,
-    env: &HashMap<String, String>,
     command: &str,
-    ssh_pool: &SshConnectionPool,
-    agent_pool: &AgentConnectionPool,
     audit: &AuditLogRepo,
     confirms: &CommandConfirmRegistry,
     permission_engine: &PermissionEngine,
     app_handle: &AppHandle,
-) -> Result<CommandExecutionResult, AppError> {
+) -> GateOutcome {
     let target_label = target_label_for(target);
     let is_windows_target = matches!(target, CodingTarget::Agent { .. });
 
@@ -1348,10 +2049,9 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
             "coding:command-blocked",
             json!({ "sessionId": session_id, "command": command }),
         );
-        return Ok(CommandExecutionResult {
-            output: format!("已拦截高危命令：{command}，如需执行请前往终端模块手动操作"),
-            exit_code: Some(126),
-        });
+        return GateOutcome::Blocked(format!(
+            "已拦截高危命令：{command}，如需执行请前往终端模块手动操作"
+        ));
     }
 
     // 权限规则引擎是叠加在黑名单之上、白名单之外的一层（REQUIREMENTS.md §3.7）：
@@ -1362,27 +2062,11 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
     match permission_engine.decide("run_command", command) {
         Some(Decision::Deny) => {
             audit.record(session_id, &target_label, command, "rejected", None);
-            return Ok(CommandExecutionResult {
-                output: format!("已按权限规则拒绝执行：{command}"),
-                exit_code: Some(126),
-            });
+            return GateOutcome::Blocked(format!("已按权限规则拒绝执行：{command}"));
         }
         Some(Decision::Allow) => {
             audit.record(session_id, &target_label, command, "auto-allow-rule", None);
-            let output =
-                run_target_command(target, cwd, env, command, ssh_pool, agent_pool).await?;
-            let summary: String = output.output.chars().take(2000).collect();
-            audit.record(
-                session_id,
-                &target_label,
-                command,
-                "executed",
-                Some(&summary),
-            );
-            return Ok(CommandExecutionResult {
-                output: output.output.chars().take(4000).collect(),
-                exit_code: output.exit_code,
-            });
+            return GateOutcome::Allowed;
         }
         _ => {}
     }
@@ -1410,12 +2094,51 @@ pub(crate) async fn run_command_gated_shared_with_status_in_context(
 
     if !allowed {
         audit.record(session_id, &target_label, command, "rejected", None);
-        return Ok(CommandExecutionResult {
-            output: format!("用户拒绝执行命令：{command}"),
-            exit_code: Some(126),
-        });
+        return GateOutcome::Blocked(format!("用户拒绝执行命令：{command}"));
     }
 
+    GateOutcome::Allowed
+}
+
+pub(crate) async fn run_command_gated_shared_with_status_in_context(
+    session_id: Uuid,
+    target: &CodingTarget,
+    _workspace_root: &str,
+    auto_allow_readonly: bool,
+    full_auto: bool,
+    cwd: &str,
+    env: &HashMap<String, String>,
+    command: &str,
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+    audit: &AuditLogRepo,
+    confirms: &CommandConfirmRegistry,
+    permission_engine: &PermissionEngine,
+    app_handle: &AppHandle,
+) -> Result<CommandExecutionResult, AppError> {
+    match gate_command(
+        session_id,
+        target,
+        auto_allow_readonly,
+        full_auto,
+        command,
+        audit,
+        confirms,
+        permission_engine,
+        app_handle,
+    )
+    .await
+    {
+        GateOutcome::Blocked(message) => {
+            return Ok(CommandExecutionResult {
+                output: message,
+                exit_code: Some(126),
+            });
+        }
+        GateOutcome::Allowed => {}
+    }
+
+    let target_label = target_label_for(target);
     let output = run_target_command(target, cwd, env, command, ssh_pool, agent_pool).await?;
     let summary: String = output.output.chars().take(2000).collect();
     audit.record(
@@ -1515,9 +2238,22 @@ fn tool_call_detail(fn_name: &str, fn_args: &str) -> Option<String> {
             let path = args["path"].as_str().unwrap_or("?");
             Some(format!("{pattern} in {path}"))
         }
-        "run_command" => args["command"]
+        "run_command" | "run_command_background" => args["command"]
             .as_str()
             .map(|s| s.chars().take(80).collect()),
+        "multi_edit" => args["path"].as_str().map(str::to_string),
+        "git_status" | "git_diff" => Some(
+            args["path"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| "整个仓库".to_string()),
+        ),
+        "git_commit" => args["message"].as_str().map(|s| s.chars().take(80).collect()),
+        "read_background_output" | "stop_background_process" => {
+            args["job_id"].as_str().map(str::to_string)
+        }
+        "find_definition" => args["symbol"].as_str().map(str::to_string),
+        "task" => args["description"].as_str().map(str::to_string),
         _ => None,
     }
 }
@@ -1533,6 +2269,13 @@ fn tool_progress_text(fn_name: &str, fn_args: &str, call_count: usize) -> String
         "write_file" => format!("为 `{target}` 准备新文件变更"),
         "edit_file" => format!("为 `{target}` 准备代码修改"),
         "run_command" => format!("运行 `{target}`，检查实际结果"),
+        "multi_edit" => format!("为 `{target}` 准备多处代码修改"),
+        "git_status" => format!("查看 {target} 的 Git 状态"),
+        "git_diff" => format!("查看 {target} 未暂存的改动"),
+        "git_commit" => format!("提交改动：{target}"),
+        "run_command_background" => format!("后台启动 `{target}`"),
+        "find_definition" => format!("查找 `{target}` 的定义"),
+        "task" => format!("委派子任务：{target}"),
         _ => format!("执行 {fn_name}，继续处理任务"),
     };
     if call_count > 1 {
@@ -1552,6 +2295,10 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
             // webfetch 会发出真实网络请求、MCP 工具无法证明是只读的，两者继续
             // 只在 Build 模式暴露（MCP 工具本身是动态拼进 `tools` 数组的，不在这个
             // 静态白名单里，天然只在 `send_message` 判断 `mode == Build` 时才会出现）。
+            // git_status/git_diff 只读不改动仓库，find_definition 只读符号索引，
+            // 同一档。task 委派子任务时内部会再调用一次 `tools_for_mode(self.mode)`
+            // 决定子代理自己能用的工具集，Plan 模式下子代理自然也只会拿到这份
+            // 只读工具列表，不会绕过 Plan 模式"不碰文件系统"的边界。
             const READ_ONLY: &[&str] = &[
                 "read_file",
                 "list_directory",
@@ -1561,6 +2308,10 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
                 "todo_write",
                 "skill",
                 "question",
+                "git_status",
+                "git_diff",
+                "find_definition",
+                "task",
             ];
             serde_json::Value::Array(
                 all.as_array()
@@ -1580,7 +2331,7 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
 /// 支持 vision 也能读），图片作为独立的 `image_url` part（需要模型支持 vision
 /// 才"看得到"，不支持的模型会按各家实现忽略或报错，这里不做能力探测，交给用户
 /// 自己判断当前 Provider 是否支持）。
-fn user_message_content(user_text: &str, attachments: &[ChatAttachment]) -> serde_json::Value {
+pub(crate) fn user_message_content(user_text: &str, attachments: &[ChatAttachment]) -> serde_json::Value {
     if attachments.is_empty() {
         return json!(user_text);
     }
@@ -1685,9 +2436,11 @@ fn windows_command_for(command: &str, default_to_powershell: bool) -> tokio::pro
     //
     // 2026-09 第二轮诊断：`cmd.exe /C` 修好双重转义之后，命令仍然"执行
     // 成功（exit 0）但输出完全是空的"——用 PowerShell 直接复现
-    // `cmd /c 'powershell -Command "a`nb"'`（`` `n `` 是真实换行符）确认：
-    // cmd.exe 的 `/C` 解析器按物理行处理语句边界，双引号包不住内嵌的换行——
-    // 换行后面的内容直接被吞掉，不报错、不进 stderr，只是"消失"。CRLF 也一样
+    // `cmd /c 'powershell -Command "a
+    // cmd.exe /C 不能可靠处理嵌入换行，直接使用 PowerShell 进程。
+    // 保留命令文本，避免额外 shell 转义。
+    // 其余行为与原有命令执行逻辑一致。
+    //
     // 吞。改用 `ProcessStartInfo` 直接起 `powershell.exe`（不经 cmd.exe）复现，
     // 同一个带换行的参数原样保留、输出正常拿到。如果 `command` 已经是"完整
     // 可执行文件路径 + 自带参数"的形式（`split_direct_shell_invocation` 识别），
@@ -1733,6 +2486,15 @@ fn unix_command_for(command: &str) -> tokio::process::Command {
     c
 }
 
+/// 本地命令统一的执行超时——`run_command`/`git_ops.rs` 内部用到的 git 命令都过
+/// 这条路径。2026-09 之前完全没有超时保护：命令一旦意外卡住（比如命令行被解析
+/// 成了带交互提示的形式、或者其实是一个不会自己退出的常驻进程），会让当前这
+/// 一轮工具调用一直挂着，只能用户手动点"停止"整个对话轮次，白白损失这一轮已经
+/// 收集到的其它进度。10 分钟覆盖绝大多数编译/安装依赖/跑测试套件的场景；真正
+/// 需要长期挂起的进程（开发服务器、watch 模式）应该用 `run_command_background`
+/// 而不是这条路径。
+const LOCAL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 async fn run_prepared_command(
     mut cmd: tokio::process::Command,
     cwd: &str,
@@ -1749,7 +2511,18 @@ async fn run_prepared_command(
     // 显式把 stdin 钉成 null，子进程读 stdin 直接拿到 EOF，不会再有这条路
     // 能把它卡住。
     cmd.stdin(std::process::Stdio::null());
-    Ok(cmd.output().await?)
+    // 超时后需要连带终止子进程，不能只是放弃等待——`kill_on_drop(true)` 让
+    // tokio 在下面这个 future 因为超时被取消、内部持有的 `Child` 随之被丢弃时
+    // 自动发送终止信号，不需要自己再拿一份 `Child` 句柄手动处理 kill。
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(LOCAL_COMMAND_TIMEOUT, cmd.output()).await {
+        Ok(result) => Ok(result?),
+        Err(_) => Err(AppError::Internal(format!(
+            "命令执行超过 {} 秒未结束，已强制终止。如果这是一个需要长期挂起的进程（比如开发服务器、\
+             watch 模式），改用 run_command_background 工具而不是 run_command。",
+            LOCAL_COMMAND_TIMEOUT.as_secs()
+        ))),
+    }
 }
 
 /// `git_ops.rs` 走的这条路径——命令是按 POSIX 规则手动转义拼好的
@@ -1788,3 +2561,9 @@ pub(super) async fn run_local_ai_command_output(
     let cmd = unix_command_for(command);
     run_prepared_command(cmd, cwd, env).await
 }
+
+
+
+
+
+

@@ -32,6 +32,17 @@ pub async fn ai_provider_delete(state: State<'_, AppState>, id: Uuid) -> Result<
     state.ai_provider_manager.delete(id).await
 }
 
+/// 拉取某个 Provider 实际支持的模型列表（2026-09 需求，见
+/// `AiProviderManager::list_models` 文档）。不缓存，前端每次调用都是一次真实
+/// HTTP 请求。
+#[tauri::command]
+pub async fn ai_provider_list_models(
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<Vec<String>, AppError> {
+    state.ai_provider_manager.list_models(id).await
+}
+
 /// 发起一次流式对话请求；命令本身立即返回 `requestId`，增量文本经
 /// `ai:chat-chunk`/`ai:chat-done`/`ai:chat-error` 事件推送（DESIGN.md §3.6）。
 #[tauri::command]

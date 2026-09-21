@@ -259,7 +259,15 @@ const evictLruIfAtLimit = (s: EditorState) => {
 export const useEditorStore = create<EditorState>((set, get) => {
   // `openPreview`（工作区内文件）和 `openStandaloneFile`（游离文件）除了读文件走
   // 哪个 backend 之外，其余"按 kind 分流"的逻辑完全一致，抽成这一个共享实现。
-  const openFromBackend = async (origin: EditorBuffer["origin"], backend: FileBackend, path: string) => {
+  const openFromBackend = async (origin: EditorBuffer["origin"], backend: FileBackend, rawPath: string) => {
+    // 统一正规化成 `/` 分隔再当 key 用——本地 Windows 工作区的 `root_path`/AI 面板
+    // 拼出来的路径是反斜杠，但 Explorer 树点开的路径来自后端 `list_dir`，早就被
+    // 正规化成正斜杠了（`fsops/local.rs` 的 `list_dir` 实现）。两种写法指向同一个
+    // 文件，但字符串不相等，`buffers` 按字面字符串做 key 的去重就失效了——从 AI
+    // 面板打开一个文件后再从 Explorer 树点同一个文件，会开出两个内容一样的标签页
+    // （2026-09 用户反馈）。Windows 上的 `std::fs` 系列调用本身就接受正斜杠路径，
+    // 正规化后传给后端读文件不受影响，不需要额外转换回去。
+    const path = rawPath.replace(/\\/g, "/");
     const existing = get().buffers[path];
     if (existing) {
       set({ activePath: path });

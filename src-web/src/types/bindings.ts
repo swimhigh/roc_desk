@@ -283,6 +283,11 @@ export interface AiProvider {
   is_local: boolean;
   wire_api: string;
   reasoning_effort: ReasoningEffort | string | null;
+  /** 这个 Provider 实际能接受的上下文窗口（估算 token 数），`null` 表示不填、
+   * 用 AI 编程助手的保守全局默认值（60_000）。填了之后编程助手的自动摘要/裁剪
+   * 会按这个值来，不会把大窗口 Provider 也按小窗口的阈值频繁压缩上下文
+   * （2026-09 需求）。 */
+  context_window_tokens: number | null;
   created_at: string;
 }
 
@@ -294,6 +299,7 @@ export interface AiProviderInput {
   is_local: boolean;
   wire_api: string;
   reasoning_effort: string | null;
+  context_window_tokens: number | null;
 }
 
 export type ChatRole = "system" | "user" | "assistant";
@@ -376,6 +382,9 @@ export interface CodingSessionInfo {
   /** "完全授权模式"：开启后 AI 提出的文件改动不再生成 Diff 等 Accept，直接落盘
    * （用户反馈"一次改 20 多个文件还要逐个确认太繁琐"）。会话级开关。 */
   full_auto: boolean;
+  /** 文件改动是否自动应用，默认 true——2026-09 用户要求默认不用逐个点"应用"，
+   * 只需要在改错时点"撤销"。关掉退回旧的"每条手动 Accept"行为。 */
+  auto_apply_changes: boolean;
   changes: FileChange[];
   todos: TodoItem[];
   project_memory_loaded: string[];
@@ -622,7 +631,7 @@ export interface ReplaceSummary {
 // SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md，src-tauri/src/sql/model.rs）
 // ---------------------------------------------------------------------------
 
-export type DbKind = "mysql" | "postgres" | "opengauss" | "sql_server" | "oracle";
+export type DbKind = "mysql" | "tdsql" | "postgres" | "opengauss" | "sql_server" | "oracle";
 
 export interface DataSourceProfile {
   id: string;

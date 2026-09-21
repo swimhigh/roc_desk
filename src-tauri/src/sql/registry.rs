@@ -10,7 +10,7 @@ use crate::sql::model::DbKind;
 /// 明确的"未实现"错误，不影响其它数据库正常使用。
 pub fn create_adapter(kind: DbKind) -> Result<Arc<dyn DatabaseAdapter>, AppError> {
     match kind {
-        DbKind::Mysql => Ok(Arc::new(MySqlAdapter)),
+        DbKind::Mysql | DbKind::Tdsql => Ok(Arc::new(MySqlAdapter)),
         DbKind::Postgres => Ok(Arc::new(PostgresAdapter { opengauss: false })),
         DbKind::Opengauss => Ok(Arc::new(PostgresAdapter { opengauss: true })),
         DbKind::SqlServer => Ok(Arc::new(SqlServerAdapter)),

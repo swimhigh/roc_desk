@@ -1,4 +1,6 @@
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use regex::Regex;
@@ -24,6 +26,7 @@ static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
 static PASSWORD_KV: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*['"]?[^\s'"]+"#).unwrap()
 });
+static WEB_SEARCH_CACHE: LazyLock<Mutex<HashMap<String, (Instant, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static SEARCH_ITEM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<item>(.*?)</item>").unwrap());
 static SEARCH_TITLE: LazyLock<Regex> =
@@ -316,6 +319,10 @@ impl AiChatClient {
 /// 供统一 AI工具的 function-calling 使用的互联网搜索入口。这里与旧版问答面板
 /// 共用 Bing RSS 抓取逻辑，避免 Coding Agent 退化成“模型自己声称无法联网”。
 pub async fn search_web_results(client: &reqwest::Client, query: &str) -> Result<String, AppError> {
+    let key = query.trim().to_ascii_lowercase();
+    if let Some((at, value)) = WEB_SEARCH_CACHE.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        if at.elapsed() < Duration::from_secs(600) { return Ok(format!("{value}\n[web_cache_hit=true]")); }
+    }
     let mut queries = vec![query.to_string()];
     // Bing RSS sometimes tokenizes this Chinese company name as only “建”.
     // Retry with its English name so the search toggle returns useful data.
@@ -377,7 +384,9 @@ pub async fn search_web_results(client: &reqwest::Client, query: &str) -> Result
     if results.is_empty() {
         return Err(AppError::Connection("互联网搜索未返回结果".into()));
     }
-    Ok(results.join("\n"))
+    let value = results.join("\n");
+    if let Ok(mut cache) = WEB_SEARCH_CACHE.lock() { cache.insert(key, (Instant::now(), value.clone())); }
+    Ok(value)
 }
 
 fn xml_text(value: &str) -> String {

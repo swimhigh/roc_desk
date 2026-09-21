@@ -27,6 +27,10 @@ export function toolLabel(tool: string): string {
     list_directory: "查看目录", search_files: "搜索代码", run_command: "执行命令",
     glob: "按文件名查找", webfetch: "抓取网页", todo_write: "更新任务清单",
     question: "向你提问", skill: "加载技能",
+    multi_edit: "批量编辑文件", git_status: "查看 Git 状态", git_diff: "查看 Git 改动",
+    git_commit: "Git 提交", run_command_background: "后台启动命令",
+    read_background_output: "查看后台输出", stop_background_process: "结束后台进程",
+    find_definition: "查找定义", task: "委派子任务",
     // sql::agent 的工具集（和 coding::tools 共用同一个标签映射/同一个组件，
     // 见 SqlAgentPanel.tsx）。
     run_query: "执行 SQL", describe_table: "查看表结构", list_objects: "列出表",
@@ -55,6 +59,12 @@ export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({
 }) => {
   const isCommand = tool === "run_command" || tool === "run_query";
   const canExpand = Boolean(done && output && onToggleOutput);
+  // Keep very large command/search results from monopolizing the browser main
+  // thread. The complete result remains in the timeline state/backend; the
+  // expanded preview is intentionally bounded for smooth scrolling.
+  const visibleOutput = output && output.length > 12000
+    ? `${output.slice(0, 12000)}\n…（结果过长，已折叠 ${output.length - 12000} 个字符）`
+    : output;
   return (
     <div>
       <div
@@ -80,8 +90,8 @@ export const ToolCallProgress: React.FC<ToolCallProgressProps> = ({
             : <ChevronRight style={{ width: 12, height: 12, color: "var(--text-secondary)", marginLeft: "auto", flexShrink: 0 }} />
         )}
       </div>
-      {expanded && output && (
-        <pre className="tool-output-pane">{output}</pre>
+      {expanded && visibleOutput && (
+        <pre className="tool-output-pane">{visibleOutput}</pre>
       )}
     </div>
   );

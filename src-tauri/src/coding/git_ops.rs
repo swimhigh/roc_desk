@@ -107,3 +107,67 @@ pub async fn commit_file(
     )
     .await
 }
+
+/// `git_commit` 工具用的多路径版本——一次 `add` 若干个显式路径再提交一次，
+/// 和 `commit_file`（AI 应用单个改动时自动提交用）各自独立，故意不复用同一个
+/// 函数：这里的路径列表由模型直接指定，语义上是"提交这几个具体文件"，不是
+/// "提交刚刚这一个改动"。
+pub async fn commit_paths(
+    target: &CodingTarget,
+    cwd: &str,
+    paths: &[String],
+    message: &str,
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+) -> Result<String, AppError> {
+    let mut add_args: Vec<&str> = vec!["add", "--"];
+    add_args.extend(paths.iter().map(|p| p.as_str()));
+    run_git(target, cwd, &add_args, ssh_pool, agent_pool).await?;
+    run_git(target, cwd, &["commit", "-m", message], ssh_pool, agent_pool).await
+}
+
+/// `git_status` 工具——`--porcelain=v1` 是固定两位状态码 + 路径的机器可读格式，
+/// 比默认人类可读输出更适合喂给模型解析，不用担心不同 git 版本/本地化语言的
+/// 提示文字变化。
+pub async fn status(
+    target: &CodingTarget,
+    cwd: &str,
+    path: Option<&str>,
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+) -> Result<String, AppError> {
+    let mut args = vec!["status", "--porcelain=v1"];
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    let out = run_git(target, cwd, &args, ssh_pool, agent_pool).await?;
+    Ok(if out.trim().is_empty() {
+        "工作区干净，没有未提交的改动".to_string()
+    } else {
+        out
+    })
+}
+
+/// `git_diff` 工具——只看未暂存的改动（不带 `--cached`），和 `git_status` 一样
+/// 支持可选 `path` 缩小范围，改动量大的仓库里避免一次性把大段无关 diff 塞进
+/// 模型上下文。
+pub async fn diff(
+    target: &CodingTarget,
+    cwd: &str,
+    path: Option<&str>,
+    ssh_pool: &SshConnectionPool,
+    agent_pool: &AgentConnectionPool,
+) -> Result<String, AppError> {
+    let mut args = vec!["diff"];
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    let out = run_git(target, cwd, &args, ssh_pool, agent_pool).await?;
+    Ok(if out.trim().is_empty() {
+        "没有未暂存的改动（可能已经全部 add 过，或者本来就没有改动）".to_string()
+    } else {
+        out
+    })
+}

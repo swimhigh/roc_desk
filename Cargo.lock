@@ -4462,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "roc_desk"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -20,7 +20,7 @@ pub enum ExecutionKind {
 
 fn dialect_for(kind: DbKind) -> Box<dyn Dialect> {
     match kind {
-        DbKind::Mysql => Box::new(MySqlDialect {}),
+        DbKind::Mysql | DbKind::Tdsql => Box::new(MySqlDialect {}),
         DbKind::Postgres | DbKind::Opengauss => Box::new(PostgreSqlDialect {}),
         // sqlparser 没有专门的 T-SQL/PL-SQL 方言实现，用通用方言做尽力而为的
         // 分类——SQL Server/Oracle 的语句类型分类（UPDATE/DELETE/DDL 这些

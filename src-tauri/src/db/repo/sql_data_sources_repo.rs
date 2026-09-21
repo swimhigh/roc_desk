@@ -12,6 +12,7 @@ pub struct SqlDataSourcesRepo {
 fn db_kind_to_str(kind: DbKind) -> &'static str {
     match kind {
         DbKind::Mysql => "mysql",
+        DbKind::Tdsql => "tdsql",
         DbKind::Postgres => "postgres",
         DbKind::Opengauss => "opengauss",
         DbKind::SqlServer => "sqlserver",
@@ -22,6 +23,7 @@ fn db_kind_to_str(kind: DbKind) -> &'static str {
 fn db_kind_from_str(s: &str) -> DbKind {
     match s {
         "mysql" => DbKind::Mysql,
+        "tdsql" => DbKind::Tdsql,
         "opengauss" => DbKind::Opengauss,
         "sqlserver" => DbKind::SqlServer,
         "oracle" => DbKind::Oracle,
