@@ -1,6 +1,7 @@
 ﻿use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -79,6 +80,15 @@ pub enum ChatAttachment {
     File {
         name: String,
         content: String,
+    },
+    /// PDF——前端不解析内容，只把原始文件读成 base64 传过来（和 `Image` 一样
+    /// "后端不碰用户本机文件系统"），真正的文本抽取在 `build_user_message_content`
+    /// 里用 `pdf_extract` 做。2026-09 用户反馈：之前非图片附件一律当纯文本读
+    /// （`FileReader.readAsText`），PDF 是二进制格式，读出来是乱码，模型完全
+    /// 看不懂——需要专门的分支。
+    Pdf {
+        name: String,
+        data_base64: String,
     },
 }
 
@@ -804,19 +814,23 @@ impl CodingSession {
     /// 有）取出并清空、按顺序追加进 `messages`。用 `workspace_id` 做 key（和
     /// `coding_cancel_tokens` 同一个键空间），不是 `self.id`——`inject_message`
     /// 命令拿到的也是 workspace_id，会话内部 id 前端根本不需要知道。
-    fn drain_pending_injections(
+    async fn drain_pending_injections(
         &mut self,
         pending_injections: &Arc<StdMutex<HashMap<Uuid, Vec<PendingInjection>>>>,
+        client: &reqwest::Client,
+        provider: &AiProvider,
+        api_key: &Option<String>,
+        app_handle: &AppHandle,
     ) {
         let injected = {
             let mut map = pending_injections.lock().unwrap();
             map.remove(&self.workspace_id).unwrap_or_default()
         };
         for inj in injected {
-            self.messages.push(json!({
-                "role": "user",
-                "content": user_message_content(&inj.text, &inj.attachments),
-            }));
+            let content =
+                build_user_message_content(&inj.text, &inj.attachments, client, provider, api_key, app_handle, self.id)
+                    .await;
+            self.messages.push(json!({ "role": "user", "content": content }));
         }
     }
 
@@ -838,17 +852,29 @@ impl CodingSession {
         pending_injections: &Arc<StdMutex<HashMap<Uuid, Vec<PendingInjection>>>>,
         symbol_indexes: &Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
     ) -> Result<String, AppError> {
+        // provider/api_key/client 提到这里最先解析——`build_user_message_content`
+        // （附件超预算时的分窗口提取）和下面的 `drain_pending_injections` 都需要
+        // 用它们发请求，原来这三行是在压完用户消息之后才解析的，2026-09 加上
+        // "附件自动分窗口"这个需求之后必须挪到前面。
+        let provider = providers.get(self.provider_id)?.ok_or_else(|| {
+            AppError::NotFound(format!("ai provider not found: {}", self.provider_id))
+        })?;
+        let api_key = providers.resolve_api_key(&provider).await?;
+        let client = reqwest::Client::new();
+
         // 先捞一遍上一轮结束后才插进来、还没来得及塞进 `messages` 的消息（如果
         // 有），再压进这次用户主动发的 `user_text`——保证时间顺序：先来的排前面。
-        self.drain_pending_injections(pending_injections);
+        self.drain_pending_injections(pending_injections, &client, &provider, &api_key, app_handle)
+            .await;
         self.current_turn_id = Uuid::new_v4();
 
-        self.messages.push(
-            json!({ "role": "user", "content": user_message_content(user_text, attachments) }),
-        );
+        let content =
+            build_user_message_content(user_text, attachments, &client, &provider, &api_key, app_handle, self.id)
+                .await;
+        self.messages.push(json!({ "role": "user", "content": content }));
         // 不在这里裁剪——下面工具循环（`loop { ... }`）第一轮一进去就会调用
-        // `limit_context`，那时候 provider/api_key/client 才解析出来，摘要请求
-        // 需要用到它们。
+        // `limit_context`，那时候才需要，摘要请求同样用得上上面已经解析好的
+        // provider/api_key/client。
         // 权限规则不在这里一次性取快照——早期版本只在这里 `PermissionEngine::load`
         // 一次、整轮工具调用循环共用同一份快照，导致用户在"确认执行命令"弹窗还开着
         // 的时候跑去权限规则管理里新增/改一条规则，当前这一轮后面的工具调用完全看
@@ -900,11 +926,6 @@ impl CodingSession {
             }),
         );
 
-        let provider = providers.get(self.provider_id)?.ok_or_else(|| {
-            AppError::NotFound(format!("ai provider not found: {}", self.provider_id))
-        })?;
-        let api_key = providers.resolve_api_key(&provider).await?;
-        let client = reqwest::Client::new();
         // 这一整轮（一条用户消息到最终给出结论）可能要跑好几次工具循环迭代，
         // 每次迭代都是一次独立的 API 请求——累加起来才是用户真正关心的"这轮
         // 对话一共花了多少 token"，单次请求的消耗只在过程中当进度参考。
@@ -927,7 +948,8 @@ impl CodingSession {
             // 每轮工具调用之间的检查点——用户在这一轮进行中插的话（`inject_message`
             // 命令，不经过这个会话外层的锁）攒到这里才被真正塞进对话上下文，供
             // 下一次模型请求看到；不是打断正在跑的这次请求，是"下一轮生效"。
-            self.drain_pending_injections(pending_injections);
+            self.drain_pending_injections(pending_injections, &client, &provider, &api_key, app_handle)
+                .await;
             self.limit_context(&client, &provider, &api_key).await;
 
             let mut tools = tools_for_mode(self.mode);
@@ -2331,16 +2353,73 @@ fn tools_for_mode(mode: CodingMode) -> serde_json::Value {
 /// 支持 vision 也能读），图片作为独立的 `image_url` part（需要模型支持 vision
 /// 才"看得到"，不支持的模型会按各家实现忽略或报错，这里不做能力探测，交给用户
 /// 自己判断当前 Provider 是否支持）。
-pub(crate) fn user_message_content(user_text: &str, attachments: &[ChatAttachment]) -> serde_json::Value {
+///
+/// 2026-09 用户明确要求"就算超预算，也应该循环处理，不是报错"：附件（PDF/
+/// 文本文件）全量拼进去的估算 token 数如果明显超出这个 Provider 的预算
+/// （`agent_llm::context_budget`——和 `call_llm_once` 发请求前那道硬性拦截用的
+/// 是同一个数字，不能各算各的），就不再直接塞全文，改成分窗口、逐窗口用一次
+/// 轻量 LLM 调用提取"和这次问题相关的内容"（`condense_attachment_text`），拼起来
+/// 代替原文——是"自动处理"而不是"报错让用户自己去缩小/拆分"。附件明显在预算
+/// 内时还是走原来的全文直塞（更快、更完整，没必要为了"可能超预算"多打一堆用
+/// 不上的请求）。这也是为什么这个函数从原来的同步函数改成了 `async fn`——分窗口
+/// 提取本身要发 HTTP 请求。
+pub(crate) async fn build_user_message_content(
+    user_text: &str,
+    attachments: &[ChatAttachment],
+    client: &reqwest::Client,
+    provider: &AiProvider,
+    api_key: &Option<String>,
+    app_handle: &AppHandle,
+    session_id: Uuid,
+) -> serde_json::Value {
     if attachments.is_empty() {
         return json!(user_text);
     }
-    let mut text = user_text.to_string();
+
+    struct ResolvedAttachment {
+        label: String,
+        text: String,
+    }
+    let mut resolved: Vec<ResolvedAttachment> = Vec::new();
     for attachment in attachments {
-        if let ChatAttachment::File { name, content } = attachment {
-            text.push_str(&format!("\n\n--- 附件文件: {name} ---\n{content}"));
+        match attachment {
+            ChatAttachment::File { name, content } => {
+                resolved.push(ResolvedAttachment { label: name.clone(), text: content.clone() });
+            }
+            ChatAttachment::Pdf { name, data_base64 } => {
+                let text = extract_pdf_text_raw(data_base64)
+                    .unwrap_or_else(|e| format!("[PDF 「{name}」解析失败：{e}——可能是加密/损坏/格式不受支持的 PDF]"));
+                resolved.push(ResolvedAttachment { label: name.clone(), text });
+            }
+            ChatAttachment::Image { .. } => {}
         }
     }
+
+    // 预算算法和 `agent_llm::context_budget` 保持一致（同一个数字）；只给附件
+    // 本身留一半预算——剩下的要留给 system 提示词/工具 schema/这句话本身/
+    // 模型的回答空间，全部吃满反而更容易在别的地方再触发一次同一个预算保护。
+    let budget = agent_llm::context_budget(provider);
+    let attachment_budget = budget / 2;
+    let total_estimate: usize = resolved.iter().map(|r| agent_llm::estimate_tokens(r.text.len())).sum();
+    let fair_share = attachment_budget / resolved.len().max(1);
+
+    let mut text = user_text.to_string();
+    if total_estimate <= attachment_budget {
+        for r in &resolved {
+            text.push_str(&format!("\n\n--- 附件文件: {} ---\n{}", r.label, r.text));
+        }
+    } else {
+        for r in &resolved {
+            let contribution = if agent_llm::estimate_tokens(r.text.len()) > fair_share {
+                condense_attachment_text(client, provider, api_key, user_text, &r.label, &r.text, app_handle, session_id)
+                    .await
+            } else {
+                r.text.clone()
+            };
+            text.push_str(&format!("\n\n--- 附件文件: {} ---\n{}", r.label, contribution));
+        }
+    }
+
     let mut parts = vec![json!({ "type": "text", "text": text })];
     for attachment in attachments {
         if let ChatAttachment::Image {
@@ -2354,6 +2433,195 @@ pub(crate) fn user_message_content(user_text: &str, attachments: &[ChatAttachmen
         }
     }
     serde_json::Value::Array(parts)
+}
+
+/// 原始提取文本超过这个字符数就先硬截断再分窗口——防止一份异常巨大的 PDF
+/// （几十万字，比如整本扫描书籍的 OCR 文字层）被切成成百上千个窗口、打出
+/// 成百上千次 LLM 请求，那不是"自动分窗口处理"想要的效果，是另一种失控。
+/// 200 万字符（约 66 万 token 估算）留了足够大的余量给正常的大文档。
+const MAX_PDF_RAW_CHARS: usize = 2_000_000;
+
+/// 解码 base64 + 用 `pdf_extract` 抽取纯文本，不做任何截断/预算判断——那是
+/// `build_user_message_content` 的职责，这里只负责"这份 PDF 里到底写了什么字"。
+/// `pdf_extract::extract_text_from_mem` 是同步、CPU 密集的调用（正则式的 PDF
+/// 内容流解析，不是网络 I/O），没有用 `spawn_blocking` 挪到阻塞线程池——对
+/// 单机单用户的桌面应用、一次几页到几十页的 PDF 来说这次阻塞可以接受，真遇到
+/// 大到明显卡顿的 PDF 属于另一个问题（考虑给 `pdf_extract` 相关调用整体挪到
+/// 阻塞线程池），不是这次"分窗口"要解决的。
+fn extract_pdf_text_raw(data_base64: &str) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(|e| format!("附件解码失败：{e}"))?;
+    let text = pdf_extract::extract_text_from_mem(&bytes).map_err(|e| e.to_string())?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("没有可提取的文本内容——可能是纯扫描图片版，没有文字层".to_string());
+    }
+    if trimmed.chars().count() > MAX_PDF_RAW_CHARS {
+        let truncated: String = trimmed.chars().take(MAX_PDF_RAW_CHARS).collect();
+        return Ok(format!("{truncated}\n...[原文档异常巨大，已先截断到前 {MAX_PDF_RAW_CHARS} 字符，超出部分没有参与后续处理]"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 单个"窗口"的目标 token 数——不是硬上限，是"这一个窗口大概能安全用掉多少
+/// 预算"的粗略目标：选一个比较保守的固定值（不是按 provider 实际预算动态算），
+/// 因为分窗口这一步本身就是为了避免"卡线"，选择"够安全"比"刚好卡线"更重要。
+const ATTACHMENT_WINDOW_TARGET_TOKENS: usize = 6_000;
+/// 单个窗口提取请求的超时——和 `CONTEXT_SUMMARY_TIMEOUT`（历史轮次摘要）同一个
+/// 量级、同一个"锦上添花不能卡死主流程"的原则：超时/失败就把这个窗口原文
+/// （截断一部分）直接保留，不阻塞整个流程。
+const ATTACHMENT_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 按行边界把一段长文本切成若干个目标大小在 `target_tokens` 附近的窗口——
+/// 尽量不在一行中间切断（PDF 抽取出来的文本经常一行就是一段话/一行表格，
+/// 从中间切开会让单个窗口看起来语义不完整）。目标字符数用
+/// `agent_llm::estimate_tokens` 反过来算的近似值（3 字节 ≈ 1 token），不是
+/// 精确的分词器切分，这里只需要"大致均匀"，不需要精确到字。
+fn split_into_windows(text: &str, target_tokens: usize) -> Vec<String> {
+    let target_chars = target_tokens.saturating_mul(3).max(1);
+    if text.chars().count() <= target_chars {
+        return vec![text.to_string()];
+    }
+    let mut windows = Vec::new();
+    let mut current = String::new();
+    let mut current_chars = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_chars = line.chars().count();
+        if current_chars + line_chars > target_chars && !current.is_empty() {
+            windows.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+        current.push_str(line);
+        current_chars += line_chars;
+    }
+    if !current.is_empty() {
+        windows.push(current);
+    }
+    windows
+}
+
+/// 附件内容太大、直接塞进消息正文会让请求超出 Provider 的上下文预算时，自动
+/// 按窗口拆分、逐窗口用一次轻量 LLM 调用提取"和用户这次问题相关的内容"，再把
+/// 所有窗口的提取结果拼起来代替原始全文。故意不用 `agent_llm::call_llm_once`
+/// （那一套完整的双协议归一化/429 重试机制）——和 `summarize_dropped_turns`
+/// （历史轮次摘要）同一个理由：这是主流程之外的辅助步骤，摘要/提取本身失败
+/// 不能变成新的卡死点，宁可退化成"保留原文的一部分"也不要因为这一步反复重试
+/// 拖住整个请求。
+///
+/// 每个窗口互相看不到彼此的内容——窗口之间没有"记忆"，这是简化设计的代价：
+/// 如果答案需要综合多个窗口的信息才能得出（比如"数一下全文一共出现了几次
+/// X"），拆分之后可能丢失跨窗口的关联。真正需要完整看一遍全文做统计类任务的
+/// 场景，这个机制帮不上忙，需要用户换个更聚焦的问题，或者直接把相关章节复制
+/// 粘贴进对话而不是整份文档当附件。
+#[allow(clippy::too_many_arguments)]
+async fn condense_attachment_text(
+    client: &reqwest::Client,
+    provider: &AiProvider,
+    api_key: &Option<String>,
+    user_text: &str,
+    attachment_name: &str,
+    full_text: &str,
+    app_handle: &AppHandle,
+    session_id: Uuid,
+) -> String {
+    let windows = split_into_windows(full_text, ATTACHMENT_WINDOW_TARGET_TOKENS);
+    if windows.len() <= 1 {
+        return full_text.to_string();
+    }
+    let _ = app_handle.emit(
+        "coding:assistant-note",
+        json!({
+            "sessionId": session_id,
+            "text": format!(
+                "附件「{attachment_name}」内容较多（约 {} 字），超出了当前 Provider 的上下文预算，\
+                 已自动拆成 {} 个窗口分别提取与你的问题相关的部分…",
+                full_text.chars().count(),
+                windows.len()
+            ),
+            "kind": "status"
+        }),
+    );
+    let window_count = windows.len();
+    let mut parts: Vec<String> = Vec::with_capacity(window_count);
+    for (i, window) in windows.iter().enumerate() {
+        match summarize_attachment_window(client, provider, api_key, user_text, attachment_name, i + 1, window_count, window)
+            .await
+        {
+            Some(extracted) if extracted.contains("此部分与问题无关") => {}
+            Some(extracted) => parts.push(format!("[第 {}/{window_count} 部分]\n{extracted}", i + 1)),
+            None => parts.push(format!(
+                "[第 {}/{window_count} 部分：自动提取超时/失败，保留原文前 2000 字符]\n{}",
+                i + 1,
+                window.chars().take(2000).collect::<String>()
+            )),
+        }
+    }
+    if parts.is_empty() {
+        return format!(
+            "（附件《{attachment_name}》内容较多，已自动分成 {window_count} 个窗口检查，但没有找到和\
+             当前问题明显相关的内容——如果确定文档里有相关信息，换一个更具体的问题描述再试，或者直接\
+             告诉我大概在文档的哪个部分）"
+        );
+    }
+    format!(
+        "（原文档较长，超出了当前上下文预算，已自动拆成 {window_count} 个窗口、分别提取与你的问题\
+         「{user_text}」相关的内容，以下是各窗口提取结果的合并，不是原文全文）\n\n{}",
+        parts.join("\n\n")
+    )
+}
+
+/// `condense_attachment_text` 的单个窗口——不走 `agent_llm::call_llm_once`
+/// 的理由见调用方文档；这里假设 Provider 是 chat/completions 协议，和
+/// `summarize_dropped_turns` 同样的简化（这个 codebase 里"锦上添花"的辅助
+/// LLM 调用目前都是这个简化，暂不支持 Responses-only 协议的 Provider 走这条
+/// 路径——那种 Provider 会退化成"保留原文片段"而不是提取失败崩溃）。
+#[allow(clippy::too_many_arguments)]
+async fn summarize_attachment_window(
+    client: &reqwest::Client,
+    provider: &AiProvider,
+    api_key: &Option<String>,
+    user_text: &str,
+    attachment_name: &str,
+    window_index: usize,
+    window_count: usize,
+    window_text: &str,
+) -> Option<String> {
+    let url = format!("{}/chat/completions", provider.api_base.trim_end_matches('/'));
+    let body = json!({
+        "model": provider.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": format!(
+                    "你在帮用户从一份过长的附件文档《{attachment_name}》里挑出和他的问题相关的内容——\
+                     这份文档太大，已经被自动切成 {window_count} 个窗口分别处理，你现在看到的是第 \
+                     {window_index}/{window_count} 部分，看不到其它部分。用户的问题是：『{user_text}』。\
+                     请从这部分内容里提取和这个问题直接相关的信息（具体的数据、表名/字段名/接口定义/\
+                     结论等，能保留原文措辞就保留，不要过度概括丢细节），无关的内容直接跳过不用提。\
+                     如果这部分内容整体上和问题没有关系，只回复\"（此部分与问题无关）\"这一句，不要\
+                     硬凑内容。直接输出提取结果，不要复述这段说明、不要说\"好的\"\"以下是\"这类开场白。"
+                )
+            },
+            { "role": "user", "content": window_text }
+        ]
+    });
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+    let resp = match tokio::time::timeout(ATTACHMENT_WINDOW_TIMEOUT, req.send()).await {
+        Ok(Ok(resp)) => resp,
+        _ => return None,
+    };
+    let body: serde_json::Value = match resp.json().await {
+        Ok(body) => body,
+        Err(_) => return None,
+    };
+    body["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// OpenAI function-calling 的工具名要求匹配 `^[a-zA-Z0-9_-]+$`，MCP 服务器/工具名

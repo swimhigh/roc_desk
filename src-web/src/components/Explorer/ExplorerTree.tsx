@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Folder, FolderOpen, File as FileIcon } from "lucide-react";
 import { useExplorerStore } from "../../stores/explorerStore";
@@ -12,6 +12,7 @@ import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { formatError } from "../../utils/error";
 import { classifyPreview } from "../../utils/previewFile";
+import { useFileTreeOperations, parentOf, baseName, flattenVisible, type FileTreeBackend } from "../../hooks/useFileTreeOperations";
 import type { FileEntry } from "../../types/bindings";
 
 /** 常见脚本类型 → 运行命令（右键"运行脚本"，DESIGN.md §3.2 终端面板复用）。
@@ -47,15 +48,6 @@ interface ExplorerTreeProps {
   onCompare: (leftPath: string, rightPath: string) => void;
 }
 
-function parentOf(path: string): string {
-  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return idx >= 0 ? path.slice(0, idx) : path;
-}
-
-function baseName(path: string): string {
-  return path.split(/[/\\]/).filter(Boolean).pop() ?? path;
-}
-
 /**
  * 工作区文件树（UI_DESIGN.md §3.3）：懒加载子目录，单击=预览态标签（复用同一个
  * 预览 Tab），双击=固定为常驻标签——`pin: true` 交给 onOpenFile 的调用方去做
@@ -73,20 +65,85 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     useExplorerStore();
   const push = useToastStore((s) => s.push);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry | null; depth: number } | null>(null);
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  // "新建文件"/"新建文件夹"（2026-09-03 需求）：和重命名同一种"内联输入框"交互
-  // （参考 VS Code），但没有现成的 FileEntry 可以套，所以单独一份状态——
-  // `parentPath` 决定新建在哪个目录下、`depth` 只用来算缩进对齐，`isDir` 决定
-  // 提交时走 `createDir` 还是 `writeFile`。
-  const [creating, setCreating] = useState<{ parentPath: string; depth: number; isDir: boolean } | null>(null);
-  const [createValue, setCreateValue] = useState("");
   const createRowRef = useRef<HTMLDivElement>(null);
   const treeContainerRef = useRef<HTMLDivElement>(null);
-  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
-  const [clipboard, setClipboard] = useState<{ path: string; name: string; isDir: boolean; mode: "cut" | "copy" } | null>(null);
   const [dragPath, setDragPath] = useState<string | null>(null);
   const [dropPath, setDropPath] = useState<string | null>(null);
+
+  const rootEntries = children[rootPath] ?? [];
+
+  // 重命名/新建/删除/剪切复制粘贴/多选/按名过滤——这套逻辑和编辑器模块左侧的
+  // 本地文件树（`LocalFileTree.tsx`）共用同一份实现（2026-09 用户要求"真正
+  // 合并成一份共用实现"，不是照抄一遍）。拖拽移动（`dragPath`/`dropPath`）和
+  // 上面的 `menu`/右键菜单结构两边差异较大，留在各自组件里。
+  const backend: FileTreeBackend = useMemo(
+    () => ({
+      deleteFile: (path, isDir) => fsService.deleteFile(workspaceId, path, isDir),
+      rename: (from, to) => fsService.rename(workspaceId, from, to),
+      copy: (from, to, isDir) => fsService.copy(workspaceId, from, to, isDir),
+      createDir: (path) => fsService.createDir(workspaceId, path),
+      writeFile: (path, content) => fsService.writeFile(workspaceId, path, content, null).then(() => undefined),
+    }),
+    [workspaceId],
+  );
+  const ops = useFileTreeOperations({
+    backend,
+    // `parentOf(entry.path)` 用的是后端统一正规化过的 `/` 分隔符，`rootPath`
+    // （原生目录选择器选出来的）可能是系统原样的 `\`——不做这层归一化比较，
+    // "重命名/新建/删除根目录下的一级文件"算出来的 parent 和 `rootPath` 是
+    // 两个不同的字符串，会当成一个从没请求过的新目录去 reloadDir，根目录本身
+    // 反而没刷新（2026-09 之前 `commitRename` 专门为这个额外重载一次 rootPath
+    // 的写法就是绕开这个问题，这里直接在归一化层面修掉，新建/删除/粘贴也一并
+    // 受益，不用再各自重载两次）。
+    reloadDir: (path) => {
+      const normalized = path.replace(/\\/g, "/").replace(/\/$/, "");
+      const normalizedRoot = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+      const target = path === "" || normalized.toLowerCase() === normalizedRoot.toLowerCase() ? rootPath : path;
+      return reloadDir(workspaceId, target);
+    },
+    select,
+    getFlattenedVisible: () => flattenVisible(rootEntries, children, expanded),
+    childrenOf: (parentPath) => children[parentPath],
+    onOpenFile,
+    onFileDeleted: (path) => {
+      if (useEditorStore.getState().buffers[path]) useEditorStore.getState().close(path);
+    },
+  });
+  const {
+    renamingPath,
+    renameValue,
+    setRenameValue,
+    startRename,
+    cancelRename,
+    commitRename,
+    creating,
+    createValue,
+    setCreateValue,
+    cancelCreate,
+    commitCreate,
+    deleteTargets,
+    requestDelete,
+    cancelDelete,
+    confirmDelete,
+    clipboard,
+    setClipboard,
+    pasteInto,
+    multiSelected,
+    handleItemClick,
+    handleContextMenuSelect,
+    clearSelection,
+    batchMenuItems,
+  } = ops;
+
+  /** 对着目录新建要先保证它已展开（懒加载的子目录列表还没拉过时，`children[parentPath]`
+   * 是 undefined，输入框无处挂载）——这一步是 explorerStore 懒加载特有的，通用 hook
+   * 不关心"目录展开"这个概念，包一层。 */
+  const startCreate = async (parentPath: string, depth: number, isDir: boolean) => {
+    if (!expanded.has(parentPath)) {
+      await toggleDir(workspaceId, parentPath);
+    }
+    ops.startCreate(parentPath, depth, isDir);
+  };
 
   useEffect(() => {
     loadRoot(workspaceId, rootPath);
@@ -155,89 +212,28 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     el?.scrollIntoView({ block: "nearest" });
   }, [selectedPath]);
 
-  const startRename = (entry: FileEntry) => {
-    setRenamingPath(entry.path);
-    setRenameValue(entry.name);
-  };
-
-  const commitRename = async (entry: FileEntry) => {
-    const newName = renameValue.trim();
-    setRenamingPath(null);
-    if (!newName || newName === entry.name) return;
-    const parent = parentOf(entry.path);
-    const to = `${parent}/${newName}`;
-    try {
-      await fsService.rename(workspaceId, entry.path, to);
-      await reloadDir(workspaceId, parent === rootPath || parent === "" ? rootPath : parent);
-      if (parent !== rootPath) await reloadDir(workspaceId, parent);
-    } catch (e) {
-      push("error", `重命名失败：${formatError(e)}`);
-    }
-  };
-
-  /** "新建文件"/"新建文件夹"（2026-09-03 需求，参考 VS Code）：先保证目标目录已展开
-   * （懒加载的子目录列表还没拉过时，`children[parentPath]` 是 undefined，输入框无处
-   * 挂载），再进入内联输入态。`toggleDir` 是"切换"语义，只有还没展开时才调用，
-   * 不然对着已展开的目录新建文件反而会把它折叠起来。 */
-  const startCreate = async (parentPath: string, depth: number, isDir: boolean) => {
-    if (!expanded.has(parentPath)) {
-      await toggleDir(workspaceId, parentPath);
-    }
-    setCreateValue("");
-    setCreating({ parentPath, depth, isDir });
-  };
-
-  const cancelCreate = () => setCreating(null);
-
-  const commitCreate = async () => {
-    if (!creating) return;
-    const { parentPath, isDir } = creating;
-    const name = createValue.trim();
-    setCreating(null);
-    if (!name) return;
-    // 客户端先查一遍重名——`fs_write_file` 在 `expected_mtime: null` 时是"新建
-    // 或覆盖"语义（保存冲突检测的既有约定），`create_dir` 对已存在目录也不报错，
-    // 两者都不会自然地给出"已存在"提示，这里主动拦一下，避免用户以为在新建、
-    // 实际上悄悄覆盖/合并了一个同名文件/目录。
-    if ((children[parentPath] ?? []).some((e) => e.name === name)) {
-      push("error", `${name} 已存在`);
-      return;
-    }
-    const path = `${parentPath}/${name}`;
-    try {
-      if (isDir) {
-        await fsService.createDir(workspaceId, path);
-      } else {
-        await fsService.writeFile(workspaceId, path, "", null);
-      }
-      await reloadDir(workspaceId, parentPath);
-      select(path);
-      if (!isDir) onOpenFile(path, { pin: true });
-    } catch (e) {
-      push("error", `新建${isDir ? "文件夹" : "文件"}失败：${formatError(e)}`);
-    }
-  };
-
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    const entry = deleteTarget;
-    setDeleteTarget(null);
-    try {
-      await fsService.deleteFile(workspaceId, entry.path, entry.is_dir);
-      const parent = parentOf(entry.path);
-      await reloadDir(workspaceId, parent);
-      if (!entry.is_dir && useEditorStore.getState().buffers[entry.path]) {
-        useEditorStore.getState().close(entry.path);
-      }
-      push("success", `已删除 ${entry.name}`);
-    } catch (e) {
-      push("error", `删除失败：${formatError(e)}`);
-    }
-  };
-
   const runScript = async (entry: FileEntry) => {
     const current = useWorkspaceStore.getState().current;
     if (!current) return;
+    // .exe 不走终端——2026-09 用户反馈："右键 EXE 运行时，需要类似本地 Windows
+    // 下双击 EXE 程序，而不是把命令放终端里"。脚本类型（.py/.sh/.ps1/...）
+    // 放进终端是对的（用户往往想看交互输出、能继续在终端里敲下一条命令），但
+    // 编译好的可执行文件更多是"启动一个独立程序"，用户期望的是它弹出自己的
+    // 窗口（控制台程序自己的控制台/GUI 程序自己的窗口），不是把它的 stdio
+    // 接进 roc_desk 自带的终端面板——那样体验和双击完全不一样，还会因为
+    // 终端换了别的用途被误杀。复用已有的"外部程序打开"命令
+    // （`fs_open_externally`，Tauri opener 插件的 `open_path`）——对可执行
+    // 文件来说，"用系统默认方式打开"就是"启动这个进程"，效果就是双击；远程
+    // 工作区会先下载到本地临时目录再打开，和这个命令打开其它文件类型时的
+    // 既有行为一致，不是这里专门加的特殊分支。
+    if (entry.path.split(".").pop()?.toLowerCase() === "exe") {
+      try {
+        await fsService.openExternally(workspaceId, entry.path);
+      } catch (e) {
+        push("error", `运行失败：${formatError(e)}`);
+      }
+      return;
+    }
     const remote = current.kind === "remote";
     const cmd = runCommandFor(entry.path, remote);
     if (!cmd) return;
@@ -280,26 +276,6 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
       }
     } catch (e) {
       push("error", `导入失败：${formatError(e)}`);
-    }
-  };
-
-  /** 剪切=记下来源+等粘贴时挪过去（复用 rename）；复制=复用 `FileOps::copy`
-   * （文件/目录都支持，目录会在后端递归复制）。 */
-  const pasteInto = async (targetDir: string) => {
-    if (!clipboard) return;
-    const dest = `${targetDir}/${clipboard.name}`;
-    try {
-      if (clipboard.mode === "cut") {
-        await fsService.rename(workspaceId, clipboard.path, dest);
-        setClipboard(null);
-      } else {
-        await fsService.copy(workspaceId, clipboard.path, dest, clipboard.isDir);
-      }
-      await reloadDir(workspaceId, targetDir);
-      const srcParent = parentOf(clipboard.path);
-      if (clipboard.mode === "cut" && srcParent !== targetDir) await reloadDir(workspaceId, srcParent);
-    } catch (e) {
-      push("error", `粘贴失败：${formatError(e)}`);
     }
   };
 
@@ -365,16 +341,16 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     }
     items.push(
       { label: "重命名", onClick: () => startRename(entry), separatorBefore: !entry.is_dir },
-      { label: "删除", onClick: () => setDeleteTarget(entry), danger: true },
+      { label: "删除", onClick: () => requestDelete([entry]), danger: true },
       {
         label: "剪切",
-        onClick: () => setClipboard({ path: entry.path, name: entry.name, isDir: entry.is_dir, mode: "cut" }),
+        onClick: () => setClipboard({ items: [{ path: entry.path, name: entry.name, isDir: entry.is_dir }], mode: "cut" }),
         separatorBefore: true,
       },
     );
     items.push({
       label: "复制",
-      onClick: () => setClipboard({ path: entry.path, name: entry.name, isDir: entry.is_dir, mode: "copy" }),
+      onClick: () => setClipboard({ items: [{ path: entry.path, name: entry.name, isDir: entry.is_dir }], mode: "copy" }),
     });
     if (clipboard) {
       items.push({ label: "粘贴", onClick: () => pasteInto(entry.is_dir ? entry.path : parentOf(entry.path)) });
@@ -401,18 +377,19 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     return (
       <React.Fragment key={entry.path}>
         <div
-          className={`tree-item ${selectedPath === entry.path ? "active" : ""} ${dropPath === entry.path ? "drop-target" : ""}`}
+          className={`tree-item ${selectedPath === entry.path ? "active" : ""} ${multiSelected.has(entry.path) ? "multi-selected" : ""} ${dropPath === entry.path ? "drop-target" : ""}`}
           draggable
           style={{ paddingLeft: 8 + depth * 16 }}
           data-path={entry.path}
-          onClick={() => {
+          onClick={(e) => {
             if (isRenaming) return;
-            select(entry.path);
-            if (entry.is_dir) {
-              toggleDir(workspaceId, entry.path);
-            } else {
-              onOpenFile(entry.path);
-            }
+            handleItemClick(e, entry, (target) => {
+              if (target.is_dir) {
+                toggleDir(workspaceId, target.path);
+              } else {
+                onOpenFile(target.path);
+              }
+            });
           }}
           onDoubleClick={() => {
             if (!entry.is_dir && !isRenaming) {
@@ -422,7 +399,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            select(entry.path);
+            handleContextMenuSelect(entry);
             setMenu({ x: e.clientX, y: e.clientY, entry, depth });
           }}
           onDragStart={(e) => {
@@ -468,7 +445,7 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
               onBlur={() => commitRename(entry)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitRename(entry);
-                if (e.key === "Escape") setRenamingPath(null);
+                if (e.key === "Escape") cancelRename();
               }}
             />
           ) : (
@@ -505,8 +482,6 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
     );
   };
 
-  const rootEntries = children[rootPath] ?? [];
-
   return (
     <div
       ref={treeContainerRef}
@@ -523,6 +498,11 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
       onDrop={(e) => {
         e.preventDefault();
         if (e.target === e.currentTarget) void moveDraggedInto(rootPath);
+      }}
+      onClick={(e) => {
+        // 点到空白背景（没冒泡自某一行）——清空多选，和资源管理器一致；单个
+        // `selectedPath` 故意保留，点空白不应该连"当前焦点在哪一行"都清掉。
+        if (e.target === e.currentTarget) clearSelection();
       }}
       onContextMenu={(e) => {
         // 只在真正点到空白背景（没冒泡自某一行，那些行已经 stopPropagation 了）时
@@ -556,7 +536,9 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
           y={menu.y}
           items={
             menu.entry
-              ? menuItems(menu.entry, menu.depth)
+              ? multiSelected.size > 1 && multiSelected.has(menu.entry.path)
+                ? batchMenuItems(flattenVisible(rootEntries, children, expanded).filter((e) => multiSelected.has(e.path)))
+                : menuItems(menu.entry, menu.depth)
               : [
                   { label: "新建文件", onClick: () => startCreate(rootPath, 0, false) },
                   { label: "新建文件夹", onClick: () => startCreate(rootPath, 0, true) },
@@ -568,16 +550,16 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
         />
       )}
 
-      {deleteTarget && (
+      {deleteTargets.length > 0 && (
         <ConfirmDialog
           open
           severity="danger"
           icon="🗑"
           title="确认删除"
-          onDismiss={() => setDeleteTarget(null)}
+          onDismiss={cancelDelete}
           actions={
             <>
-              <button className="btn ghost sm" onClick={() => setDeleteTarget(null)}>
+              <button className="btn ghost sm" onClick={cancelDelete}>
                 取消
               </button>
               <button className="btn danger-strong sm" onClick={confirmDelete}>
@@ -586,9 +568,15 @@ export const ExplorerTree: React.FC<ExplorerTreeProps> = ({ workspaceId, rootPat
             </>
           }
         >
-          <p>
-            确定要删除{deleteTarget.is_dir ? "目录" : "文件"} <strong>{deleteTarget.name}</strong> 吗？此操作不可撤销。
-          </p>
+          {deleteTargets.length === 1 ? (
+            <p>
+              确定要删除{deleteTargets[0].is_dir ? "目录" : "文件"} <strong>{deleteTargets[0].name}</strong> 吗？此操作不可撤销。
+            </p>
+          ) : (
+            <p>
+              确定要删除选中的 <strong>{deleteTargets.length}</strong> 项吗？此操作不可撤销。
+            </p>
+          )}
         </ConfirmDialog>
       )}
     </div>

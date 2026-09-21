@@ -120,7 +120,11 @@ export const DataSourceManager: React.FC = () => {
         ) : (
           dataSources.map((d) => (
             <div key={d.id} className="file-row" style={{ gridTemplateColumns: "1fr auto auto auto", alignItems: "center" }}>
-              <span onClick={() => void selectDataSource(d.id)} style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <span
+                onClick={() => void selectDataSource(d.id)}
+                title={`${d.name}（${d.db_kind}@${d.host}${d.environment === "prod" ? " · 生产" : ""}）`}
+                style={{ cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+              >
                 {d.name}
                 <span style={{ color: "var(--text-secondary)", fontSize: 11, marginLeft: 6 }}>
                   {d.db_kind}@{d.host}

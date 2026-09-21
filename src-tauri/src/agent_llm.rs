@@ -37,9 +37,46 @@ pub fn is_retryable_http_status(status: reqwest::StatusCode) -> bool {
 /// 兜底扫一遍响应体文本里的关键词。只做英文关键词匹配，不做多语言穷举。
 pub fn is_retryable_error_text(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
-    ["overloaded", "at capacity", "rate limit", "try again", "temporarily unavailable"]
+    ["overloaded", "at capacity", "rate limit", "temporarily unavailable"]
         .iter()
         .any(|keyword| lower.contains(keyword))
+}
+
+fn is_context_length_error(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    ["context_too_large", "context_length_exceeded", "exceeds the context window", "maximum context length"]
+        .iter().any(|keyword| lower.contains(keyword))
+}
+
+fn should_retry(status: Option<reqwest::StatusCode>, body: &str) -> bool {
+    if is_context_length_error(body) {
+        return false;
+    }
+    match status {
+        None => true,
+        Some(status) => is_retryable_http_status(status)
+            || (status == reqwest::StatusCode::BAD_REQUEST && is_retryable_error_text(body)),
+    }
+}
+
+pub fn context_budget(provider: &AiProvider) -> usize {
+    provider.context_window_tokens.map(|n| n as usize / 10 * 8).unwrap_or(60_000)
+}
+
+/// Conservative estimate, not a model tokenizer. Images consume visual tokens, not
+/// one text token per base64 substring; reserve 8192 tokens per image instead.
+pub fn estimate_value_tokens(value: &Value) -> usize {
+    match value {
+        Value::Object(map) if matches!(value["type"].as_str(), Some("image_url" | "input_image")) => 8192 + map.len(),
+        Value::Object(map) => 2 + map.iter().map(|(k, v)| estimate_tokens(k.len()) + estimate_value_tokens(v) + 2).sum::<usize>(),
+        Value::Array(items) => 2 + items.iter().map(estimate_value_tokens).sum::<usize>(),
+        Value::String(s) => estimate_tokens(s.len()) + 2,
+        _ => 2,
+    }
+}
+
+pub fn context_limit_detail(estimated: usize, budget: usize) -> String {
+    format!("输入超过本地上下文预算：估算 {estimated} tokens，预算 {budget} tokens（已预留回答空间）。请缩小或拆分附件、只提交相关片段，或新建会话；并核对 Provider 的上下文窗口配置。文件正文没有被自动截断。")
 }
 
 /// 单条工具结果的字符数上限——不做限制的话，读到一个很大的结果集/文件会在一次
@@ -141,8 +178,9 @@ pub fn messages_to_responses_input(messages: &[Value]) -> (String, Vec<Value>) {
     (instructions, input)
 }
 
-/// `user_message_content` 生成的要么是纯字符串、要么是 OpenAI 风格的多模态 parts
-/// 数组，转成 Responses API 对应的 `input_text`/`input_image` item。
+/// `coding::session::build_user_message_content` 生成的要么是纯字符串、要么是
+/// OpenAI 风格的多模态 parts 数组，转成 Responses API 对应的 `input_text`/
+/// `input_image` item。
 fn content_to_responses_input_parts(content: &Value) -> Vec<Value> {
     match content {
         Value::String(text) => vec![json!({ "type": "input_text", "text": text })],
@@ -315,6 +353,34 @@ pub async fn call_llm_once(
         }
     }
 
+    let estimated_tokens = estimate_value_tokens(&body);
+    let budget = context_budget(provider);
+    tracing::info!(
+        target: "ai_request",
+        session_id = %session_id,
+        event_prefix,
+        provider_id = %provider.id,
+        model = %provider.model,
+        wire_api = %provider.wire_api,
+        messages = messages.len(),
+        tools = tools.map(|v| v.as_array().map_or(0, Vec::len)).unwrap_or(0),
+        estimated_tokens,
+        context_budget = budget,
+        request_bytes = body.to_string().len(),
+        "AI 请求已构造"
+    );
+    if estimated_tokens > budget {
+        let detail = context_limit_detail(estimated_tokens, budget);
+        tracing::warn!(
+            target: "ai_request",
+            session_id = %session_id,
+            estimated_tokens,
+            context_budget = budget,
+            "AI 请求在发送前被拦截：上下文过大"
+        );
+        return Err(LlmCallError::RequestFailed(detail));
+    }
+
     let mut retry_count = 0u32;
     let (resp, body_text) = loop {
         let mut req = client.post(&url).json(&body);
@@ -330,14 +396,24 @@ pub async fn call_llm_once(
             Ok(resp) if resp.status().is_success() => break (Some(resp), String::new()),
             Ok(resp) => {
                 let status = resp.status();
-                (Some(status), resp.text().await.unwrap_or_default())
+                let body = resp.text().await.unwrap_or_default();
+                tracing::warn!(
+                    target: "ai_request",
+                    session_id = %session_id,
+                    provider_id = %provider.id,
+                    status = %status,
+                    response_bytes = body.len(),
+                    response_preview = %body.chars().take(1000).collect::<String>(),
+                    "AI Provider 返回错误"
+                );
+                (Some(status), body)
             }
-            Err(e) => (None, e.to_string()),
+            Err(e) => {
+                tracing::warn!(target: "ai_request", session_id = %session_id, provider_id = %provider.id, error = %e, "AI Provider 请求失败");
+                (None, e.to_string())
+            }
         };
-        let retryable = match status {
-            Some(status) => is_retryable_http_status(status),
-            None => true,
-        } || is_retryable_error_text(&body_text);
+        let retryable = should_retry(status, &body_text);
         if retryable && retry_count < MAX_HTTP_RETRIES {
             retry_count += 1;
             let _ = app_handle.emit(

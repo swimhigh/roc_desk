@@ -25,6 +25,40 @@ pub use jar_info::{JarEntryInfo, JarInfo, ManifestAttribute};
 /// （'cancelled' vs 'failed'），两边对不上这条消息就会误判成失败。
 pub const TRANSFER_CANCELLED_MESSAGE: &str = "传输已取消";
 
+/// "用系统默认程序打开"（`commands::fs::fs_open_externally`/
+/// `commands::local_fs::local_open_externally` 共用）——大多数文件类型直接
+/// 交给 Tauri opener 插件的 `open_path`（本质是 `ShellExecuteW`），但可执行
+/// 文件（.exe）单独处理：`open_path` 不会把子进程的工作目录设成这个 exe 自己
+/// 所在的文件夹（`lpDirectory` 传的是 null，子进程继承的是 roc_desk 自己的
+/// 工作目录，不是资源管理器双击时会设置的那个），很多程序（尤其是读同目录
+/// 下配置文件的老程序）因此找不到自己的配置——2026-09 用户真实复现：
+/// `KESBPerftest.exe` 双击后读不到同目录的 `KESBPerftest.ini`。直接 spawn
+/// 这个 exe、显式把工作目录设成它自己的父目录，效果才是真正"和双击一样"；
+/// 不设 `kill_on_drop`/隐藏窗口标志——这是用户主动启动的一个独立程序，不是
+/// 内部工具调用的子进程，理应有自己完整的生命周期和窗口（控制台程序弹出
+/// 自己的控制台窗口正是双击的预期效果，不是要隐藏的东西）。
+pub fn open_path_or_launch_exe(app_handle: &AppHandle, path: &str) -> Result<(), AppError> {
+    let is_exe = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false);
+    if is_exe {
+        let mut cmd = std::process::Command::new(path);
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            cmd.current_dir(dir);
+        }
+        cmd.spawn()
+            .map_err(|e| AppError::Internal(format!("启动进程失败：{e}")))?;
+        return Ok(());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app_handle
+        .opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
 /// 全文搜索/替换单个目录内跳过的噪音目录名（构建产物/依赖/VCS 元数据），
 /// 和常见二进制文件扩展名——不进这些目录、不读这些扩展名的文件，避免把
 /// node_modules 里几万个文件也扫一遍，或者把图片/压缩包当文本读出乱码。

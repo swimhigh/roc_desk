@@ -328,6 +328,25 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
     setSearchQuery("");
   };
 
+  // Ctrl+滚轮缩放（2026-09 用户需求）——故意不用 React 的 `onWheel`：React 17+
+  // 把 `wheel` 事件的合成监听器注册成被动（passive）的，被动监听器里调
+  // `preventDefault()` 会被浏览器直接忽略（控制台报 "Unable to preventDefault
+  // inside passive event listener"），拦不住 WebView2 自己的整个窗口缩放。
+  // 改成 `addEventListener("wheel", ..., { passive: false })` 手动挂一个非被动
+  // 的原生监听器，才能真正拦住默认行为、只缩放这个 PDF 预览区域。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   if (error) {
     return (
       <div style={{ display: visible ? "block" : "none", padding: 16, fontSize: 12, color: "var(--danger)" }}>

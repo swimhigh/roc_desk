@@ -57,6 +57,15 @@ enum PendingKind {
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// `exec`/`exec_argv`（`run_command`/AI 编程助手在 Agent 目标上跑命令、git 操作）
+/// 专用的更宽松超时——文件元数据类请求（ListDir/Stat/...）用 30 秒预算是合理的，
+/// 但编译/装依赖/跑测试这类命令经常需要几分钟，用同一个 30 秒预算会在命令还没
+/// 跑完时客户端就先判定超时（2026-09 用户反馈）。和远程 Agent 自己的
+/// `LimitsConfig::exec_timeout_secs`（默认同样调到了 600）、本地命令执行的
+/// `LOCAL_COMMAND_TIMEOUT` 保持同一个量级——三层超时（客户端等待/Agent 自己的
+/// 执行上限/本地命令）各自独立，但不应该有一层明显比其它两层短，不然那一层
+/// 会先于命令本身跑完就被打断。
+const EXEC_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct AgentSession {
     out_tx: OutSender,
@@ -255,8 +264,18 @@ impl AgentSession {
     }
 
     /// 一问一答的 RPC（`ListDir`/`Stat`/`Delete`/`Rename`/`CreateDir`/`ListRoots`/
-    /// `Exec`/`SearchContent`/`SearchFileName`/`Handshake`）。
+    /// `Exec`/`SearchContent`/`SearchFileName`/`Handshake`）。默认预算见
+    /// `REQUEST_TIMEOUT`；`exec_argv` 走 `request_with_timeout` 用更宽松的
+    /// `EXEC_TIMEOUT`，其它调用方不受影响。
     pub async fn request(&self, request: Request) -> Result<Response, AppError> {
+        self.request_with_timeout(request, REQUEST_TIMEOUT).await
+    }
+
+    async fn request_with_timeout(
+        &self,
+        request: Request,
+        timeout: Duration,
+    ) -> Result<Response, AppError> {
         let stream_id = self.alloc_stream_id();
         let (tx, rx) = oneshot::channel();
         self.pending
@@ -267,7 +286,7 @@ impl AgentSession {
             self.pending.lock().await.remove(&stream_id);
             return Err(e);
         }
-        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => Err(AppError::Connection("Agent 连接已断开".into())),
             Err(_) => {
@@ -362,9 +381,14 @@ impl AgentSession {
             command: command.to_string(),
             args: args.to_vec(),
             cwd: cwd.to_string(),
+            // 0 表示"没有比 Agent 自己配置的上限更短的要求"，交给远端
+            // `LimitsConfig::exec_timeout_secs` 决定实际执行超时——单一数据源，
+            // 不在客户端重复维护一份可能和远端配置对不上的数字。客户端这边
+            // （`request_with_timeout` 用 `EXEC_TIMEOUT`）只负责"愿意等多久"，
+            // 两层各管各的。
             timeout_secs: 0,
         };
-        match self.request(request).await? {
+        match self.request_with_timeout(request, EXEC_TIMEOUT).await? {
             Response::Ok(ResponseBody::ExecResult { output, .. }) => Ok(output),
             Response::Error { message, .. } => Err(AppError::Internal(message)),
             _ => Err(AppError::Internal("Agent 返回了意外的响应类型".into())),

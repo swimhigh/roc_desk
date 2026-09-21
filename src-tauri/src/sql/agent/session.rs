@@ -26,6 +26,7 @@ const FORCE_CONCLUDE_LAST_N: usize = 3;
 /// 短得多，且每条工具结果已经被 `agent_llm::cap_tool_result` 限制了大小，
 /// 真正会撞上这个上限的场景应该很少；触发时直接整轮丢弃、不摘要。
 const MAX_CONTEXT_MESSAGES: usize = 60;
+const DEFAULT_SQL_CONTEXT_BUDGET: usize = 48_000;
 
 /// SQL Desktop 的多轮 Agent 会话——和 `coding::CodingSession` 是同一种"多轮
 /// 工具调用"架构（共用 `agent_llm` 里协议无关的那部分：请求构建/重试/
@@ -74,8 +75,10 @@ impl SqlAgentSession {
         }
     }
 
-    fn limit_context(&mut self) {
-        while self.messages.len() > MAX_CONTEXT_MESSAGES {
+    fn limit_context(&mut self, budget: usize) {
+        while self.messages.len() > MAX_CONTEXT_MESSAGES
+            || agent_llm::estimate_value_tokens(&serde_json::Value::Array(self.messages.clone())) > budget
+        {
             let Some(end) = self
                 .messages
                 .iter()
@@ -103,14 +106,29 @@ impl SqlAgentSession {
         app_handle: &AppHandle,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<String, AppError> {
-        self.messages.push(json!({ "role": "user", "content": crate::coding::session::user_message_content(user_text, attachments) }));
-        self.limit_context();
-
         let provider = providers
             .get(self.provider_id)?
             .ok_or_else(|| AppError::NotFound(format!("ai provider not found: {}", self.provider_id)))?;
         let api_key = providers.resolve_api_key(&provider).await?;
         let client = reqwest::Client::new();
+
+        // 附件（PDF/文本文件）太大、直接塞全文会让请求超出上下文预算时，
+        // `build_user_message_content` 会自动分窗口提取相关内容代替原文——
+        // 和 `coding::session` 共用同一份实现（同一个预算算法
+        // `agent_llm::context_budget`，不是这里下面 `budget`/
+        // `DEFAULT_SQL_CONTEXT_BUDGET` 那个专门给 `limit_context` 裁剪历史
+        // 消息用的、默认值不同的预算——两个预算数字服务不同的目的，不需要
+        // 对齐）。
+        let content =
+            crate::coding::session::build_user_message_content(user_text, attachments, &client, &provider, &api_key, app_handle, self.id)
+                .await;
+        self.messages.push(json!({ "role": "user", "content": content }));
+
+        let budget = provider
+            .context_window_tokens
+            .map(|n| n as usize / 10 * 8)
+            .unwrap_or(DEFAULT_SQL_CONTEXT_BUDGET);
+        self.limit_context(budget);
         let mut turn_usage = agent_llm::TurnUsage::default();
         let session_id = self.id;
         let tools = tools::tool_schema();
@@ -129,6 +147,10 @@ impl SqlAgentSession {
                                  请直接基于目前已经了解到的内容给出结论/总结，不要说\"我需要再看看\"这类话。"
                 }));
             }
+
+            // Tool output can grow the current round after the initial history trim.
+            // Re-apply the message-count/token guard before every provider request.
+            self.limit_context(budget);
 
             let round = match agent_llm::call_llm_once(
                 &client,

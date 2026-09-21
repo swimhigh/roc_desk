@@ -4,6 +4,7 @@ import { codingService } from "../services/codingService";
 import { permissionRuleService } from "../services/permissionRuleService";
 import { mcpServerService } from "../services/mcpServerService";
 import { skillService } from "../services/skillService";
+import { localFileService } from "../services/fsService";
 import { formatError } from "../utils/error";
 import { useAiChatStore } from "./aiChatStore";
 import { useEditorStore } from "./editorStore";
@@ -36,7 +37,7 @@ import type {
  * `data_base64` 传给后端（见 `toChatAttachment`）。 */
 export interface PendingAttachment {
   id: string;
-  kind: "image" | "file";
+  kind: "image" | "file" | "pdf";
   name: string;
   size: number;
   mime?: string;
@@ -57,7 +58,7 @@ export interface CommandConfirmRequest {
 }
 
 export interface TimelineAttachment {
-  kind: "image" | "file";
+  kind: "image" | "file" | "pdf";
   name: string;
   previewUrl?: string;
 }
@@ -164,6 +165,9 @@ interface CodingState {
    * `sending`/`error` 状态。 */
   cancelTurn: () => Promise<void>;
   addAttachments: (files: File[]) => Promise<void>;
+  /** Tauri 原生拖拽（`useExternalFileDrop`）专用——拿到的是磁盘绝对路径，不是
+   * 浏览器 `File` 对象，读取方式和 `addAttachments` 不一样，见 `readAttachmentFromPath`。 */
+  addAttachmentsFromPaths: (paths: string[]) => Promise<void>;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
   /** 调用当前 Provider 把 `text` 改写成更清晰的提示词并返回改写结果，不修改
@@ -359,6 +363,13 @@ export const useCodingStore = create<CodingState>((set, get) => ({
 
   addAttachments: async (files) => {
     const read = await Promise.all(files.map(readAttachment));
+    const valid = read.filter((a): a is PendingAttachment => a !== null);
+    if (valid.length === 0) return;
+    set((s) => ({ attachments: [...s.attachments, ...valid].slice(0, MAX_ATTACHMENTS) }));
+  },
+
+  addAttachmentsFromPaths: async (paths) => {
+    const read = await Promise.all(paths.map(readAttachmentFromPath));
     const valid = read.filter((a): a is PendingAttachment => a !== null);
     if (valid.length === 0) return;
     set((s) => ({ attachments: [...s.attachments, ...valid].slice(0, MAX_ATTACHMENTS) }));
@@ -762,11 +773,25 @@ const MAX_TEXT_ATTACHMENT_CHARS = 200_000;
 // 上限会在编码后变成约 10.7MB，并且每轮工具调用都重复序列化一次，足以把 AI
 // 子进程/渲染进程推到 OOM。512KB 对截图提问仍足够，超过时请先压缩图片。
 const MAX_IMAGE_BYTES = 512 * 1024;
+/** PDF 原始文件大小上限——和图片同一个"重复序列化会 OOM"的顾虑（PDF 也是整份
+ * base64 塞进 `self.messages`，每轮工具调用都要重新发一遍），但 2026-09 用户
+ * 明确反馈"本地的 PDF 文件不该被限制大小"（此前 SQL Agent 那边误设成了 2MB，
+ * 常见的技术文档随便就超）——这里给一个宽松得多的安全上限，不是完全不设限：
+ * 真实文档很少会到这个量级，这只是防止意外拖进一个几百 MB 文件把渲染进程
+ * 拖死，不是想卡住正常使用。20MB 留给未来"按页/分窗口读取"（
+ * `pdf_extract::extract_text_from_mem_by_pages` 已经支持，见后端
+ * `extract_pdf_text` 的注释）之外，这一步先保证"能加得进去"。 */
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
 
 function readAttachment(file: File): Promise<PendingAttachment | null> {
   return new Promise((resolve) => {
     const isImage = file.type.startsWith("image/");
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
     if (isImage && file.size > MAX_IMAGE_BYTES) {
+      resolve(null);
+      return;
+    }
+    if (isPdf && file.size > MAX_PDF_BYTES) {
       resolve(null);
       return;
     }
@@ -791,6 +816,27 @@ function readAttachment(file: File): Promise<PendingAttachment | null> {
         });
       };
       reader.readAsDataURL(file);
+    } else if (isPdf) {
+      // PDF 是二进制格式，不能像普通文本文件那样 `readAsText`（会读出乱码）——
+      // 原样读成 base64 传给后端，真正的文本抽取（`pdf_extract`）在后端做，
+      // 见 `coding::session::extract_pdf_text` 的文档。
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === "string" ? reader.result : "";
+        const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+        if (!base64) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          id: nextId(),
+          kind: "pdf",
+          name: file.name,
+          size: file.size,
+          mime: file.type || "application/pdf",
+          base64,
+        });
+      };
+      reader.readAsDataURL(file);
     } else {
       reader.onload = () => {
         const text = typeof reader.result === "string" ? reader.result : "";
@@ -808,9 +854,68 @@ function readAttachment(file: File): Promise<PendingAttachment | null> {
   });
 }
 
+function pathBasename(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized;
+}
+
+function imageMimeForPath(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "image/png";
+}
+
+/** `useExternalFileDrop`（Tauri 原生拖拽）拿到的是磁盘绝对路径，不是浏览器
+ * `File` 对象——不能走 `FileReader`，改成调后端的 `localFileService`。图片/
+ * PDF 走 `readBinaryPreview`（base64，后端 `read_binary_for_preview` 有 30MB
+ * 硬上限，出错会抛清晰的"文件过大"提示，不在这里再叠一层前端预检查——拖拽
+ * 场景比点击选择器更随手，没必要为了统一而重复一遍同样的检查）；纯文本文件
+ * 走 `readFile` 复用编辑器同一套读取逻辑（带编码探测），按同样的字符数上限
+ * 截断。没有 `File.size`，`PendingAttachment.size` 字段填 0——目前只在
+ * `readAttachment`（选择器/粘贴路径）里用于展示，拖拽路径进来的附件没有这个
+ * 数字也不影响功能。 */
+async function readAttachmentFromPath(path: string): Promise<PendingAttachment | null> {
+  const name = pathBasename(path);
+  const lower = path.toLowerCase();
+  const isImage = /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lower);
+  const isPdf = lower.endsWith(".pdf");
+  try {
+    if (isImage) {
+      const base64 = await localFileService.readBinaryPreview(path);
+      const mime = imageMimeForPath(path);
+      return { id: nextId(), kind: "image", name, size: 0, mime, previewUrl: `data:${mime};base64,${base64}`, base64 };
+    }
+    if (isPdf) {
+      const base64 = await localFileService.readBinaryPreview(path);
+      return { id: nextId(), kind: "pdf", name, size: 0, mime: "application/pdf", base64 };
+    }
+    const file = await localFileService.readFile(path);
+    const text = file.text;
+    const truncated = text.length > MAX_TEXT_ATTACHMENT_CHARS;
+    return {
+      id: nextId(),
+      kind: "file",
+      name,
+      size: 0,
+      content: truncated ? `${text.slice(0, MAX_TEXT_ATTACHMENT_CHARS)}\n...[内容过长，已截断]` : text,
+    };
+  } catch (e) {
+    console.error("读取拖拽文件失败", path, e);
+    return null;
+  }
+}
+
 function toChatAttachment(attachment: PendingAttachment): ChatAttachment {
   if (attachment.kind === "image") {
     return { kind: "image", name: attachment.name, mime: attachment.mime ?? "image/png", data_base64: attachment.base64 ?? "" };
+  }
+  if (attachment.kind === "pdf") {
+    return { kind: "pdf", name: attachment.name, data_base64: attachment.base64 ?? "" };
   }
   return { kind: "file", name: attachment.name, content: attachment.content ?? "" };
 }

@@ -472,6 +472,28 @@ export const LocalExplorerScreen: React.FC = () => {
       void openLocalFile(entry);
       return;
     }
+    // 远程（SSH/Agent）文件——2026-09 用户真实反馈：之前不管什么文件类型
+    // 一律走 `dispatchOpenExternally`（下载到本地临时目录再用系统默认程序
+    // 打开），文本/代码这类"roc_desk 编辑器能处理"的文件如果 roc_desk 自己
+    // 注册成了这个扩展名的默认打开程序，"系统默认程序"其实就是 roc_desk 自己
+    // ——看起来和正常在编辑器里打开一模一样，实际编辑的是下载下来、和远程
+    // 完全断开的一份临时文件，保存了也不会传回远程主机，用户完全看不出来，
+    // 是一个真实的数据丢失陷阱。这里改成和本地文件同一套分类：只有 Office
+    // 文档/可执行文件这类本来就该交给外部程序处理的类型才走"下载+外部程序
+    // 打开"（这类场景用户本来就知道是在用外部程序、不会误以为是"在 roc_desk
+    // 里编辑远程文件"）；文本/代码类文件直接提示"暂不支持"，不生成任何会
+    // 误导用户的临时文件。真正支持远程文件编辑需要把这类文件接到"工作区"
+    // 那一套远程 FileOps 上（当前工作区的 CodeEditor 已经原生支持 SSH/Agent
+    // 远程工作区），不是这个独立的双栏浏览器窗口能力范围内的事，这次先堵住
+    // 误导性的临时文件缺口。
+    const external = OPEN_EXTERNALLY_KINDS.has(classifyPreview(entry.path)) || WINDOWS_RUNNABLE_EXTENSIONS.has(extensionOf(entry.path));
+    if (!external) {
+      push(
+        "error",
+        `暂不支持直接在编辑器里打开远程文件「${entry.name}」——请通过"工作区"功能连接这台主机后再编辑，或者先复制到本地。`,
+      );
+      return;
+    }
     void withBusyCursor(() => dispatchOpenExternally(tab, entry)).catch((e) => push("error", `打开失败：${formatError(e)}`));
   };
 

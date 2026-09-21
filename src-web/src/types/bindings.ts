@@ -334,7 +334,8 @@ export type ChangeStatus = "pending" | "applied" | "rejected" | "undone";
 
 export type ChatAttachment =
   | { kind: "image"; name: string; mime: string; data_base64: string }
-  | { kind: "file"; name: string; content: string };
+  | { kind: "file"; name: string; content: string }
+  | { kind: "pdf"; name: string; data_base64: string };
 
 export interface DiffLine {
   sign: "+" | "-" | " ";

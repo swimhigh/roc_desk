@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -194,10 +193,7 @@ pub async fn fs_open_externally(
         local_path.to_string_lossy().to_string()
     };
 
-    app_handle
-        .opener()
-        .open_path(target, None::<&str>)
-        .map_err(|e| AppError::Internal(e.to_string()))
+    crate::fsops::open_path_or_launch_exe(&app_handle, &target)
 }
 
 /// 旧版二进制 Office 文档（.doc/.xls/.ppt 等）没有轻量级纯 JS 库能解析——不像

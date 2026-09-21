@@ -28,8 +28,11 @@ pub async fn exec(
     let child = cmd
         .spawn()
         .map_err(|e| (ErrorCode::Internal, format!("启动进程失败: {e}")))?;
+    // 正常情况下 `server.rs` 已经把 0 解析成 `LimitsConfig::exec_timeout_secs`
+    // 传进来，这里的 600 只是防御性兜底（配置文件被手改成 0 之类的极端情况），
+    // 和 `LimitsConfig` 的默认值保持同一个量级，不单独维护一个更短的数字。
     let timeout = Duration::from_secs(if timeout_secs == 0 {
-        120
+        600
     } else {
         timeout_secs as u64
     });

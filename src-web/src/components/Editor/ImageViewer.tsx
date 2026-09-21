@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
+import { FileText, Copy, LoaderCircle } from "lucide-react";
+import { recognizeImage, type OcrResult } from "../../services/ocrService";
 
 interface ImageViewerProps {
   src: string;
@@ -21,15 +23,55 @@ const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
  */
 export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  const [ocr, setOcr] = useState<OcrResult | null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [imageBox, setImageBox] = useState({ left: 0, top: 0, width: 0, height: 0 });
   const dragStateRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
   useEffect(() => {
     setScale(1);
     setOffset({ x: 0, y: 0 });
+    setOcr(null);
+    setOcrError(null);
   }, [src]);
+
+  const syncImageBox = useCallback(() => {
+    const container = containerRef.current;
+    const image = imageRef.current;
+    if (!container || !image) return;
+    const c = container.getBoundingClientRect();
+    const r = image.getBoundingClientRect();
+    setImageBox({ left: r.left - c.left, top: r.top - c.top, width: r.width, height: r.height });
+  }, []);
+
+  useEffect(() => {
+    syncImageBox();
+    const observer = new ResizeObserver(syncImageBox);
+    if (containerRef.current) observer.observe(containerRef.current);
+    if (imageRef.current) observer.observe(imageRef.current);
+    return () => observer.disconnect();
+  }, [syncImageBox, src, scale, offset]);
+
+  const recognize = async () => {
+    const comma = src.indexOf(",");
+    if (comma < 0) { setOcrError("图片数据格式不支持 OCR"); return; }
+    setOcrBusy(true); setOcrError(null);
+    try {
+      setOcr(await recognizeImage(src.slice(comma + 1)));
+      requestAnimationFrame(syncImageBox);
+    } catch (e) {
+      setOcrError(String(e));
+    } finally { setOcrBusy(false); }
+  };
+
+  const copyOcrText = async () => {
+    if (ocr?.text) await navigator.clipboard.writeText(ocr.text);
+  };
 
   const zoomAt = useCallback((factor: number, clientX?: number, clientY?: number) => {
     setScale((prev) => {
@@ -115,6 +157,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt }) => {
       }}
     >
       <img
+        ref={imageRef}
         src={src}
         alt={alt}
         draggable={false}
@@ -130,6 +173,20 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt }) => {
           userSelect: "none",
         }}
       />
+      {ocr && imageBox.width > 0 && (
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+          {ocr.lines.flatMap((line) => line.words).map((word, index) => (
+            <span key={`${index}-${word.left}-${word.top}`} style={{
+              position: "absolute", left: imageBox.left + word.left / ocr.width * imageBox.width,
+              top: imageBox.top + word.top / ocr.height * imageBox.height,
+              width: word.width / ocr.width * imageBox.width,
+              height: word.height / ocr.height * imageBox.height,
+              color: "transparent", cursor: "text", userSelect: "text", pointerEvents: "auto",
+              whiteSpace: "nowrap", overflow: "hidden", lineHeight: 1,
+            }}>{word.text}</span>
+          ))}
+        </div>
+      )}
       <div
         style={{
           position: "absolute",
@@ -156,7 +213,12 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, alt }) => {
         <button className="btn ghost sm" onClick={reset} title="重置缩放" disabled={scale === 1}>
           <RotateCcw style={{ width: 14, height: 14 }} />
         </button>
+        <button className="btn ghost sm" onClick={() => void recognize()} title="使用 Windows OCR 识别图片文字" disabled={ocrBusy}>
+          {ocrBusy ? <LoaderCircle className="spin" style={{ width: 14, height: 14 }} /> : <FileText style={{ width: 14, height: 14 }} />} OCR
+        </button>
+        {ocr && <button className="btn ghost sm" onClick={() => void copyOcrText()} title="复制全部识别文字"><Copy style={{ width: 14, height: 14 }} /> 复制</button>}
       </div>
+      {ocrError && <div style={{ position: "absolute", bottom: 52, right: 12, maxWidth: 320, color: "var(--danger)", fontSize: 11, background: "var(--bg-elevated)", padding: "4px 7px", borderRadius: 4 }}>{ocrError}</div>}
     </div>
   );
 };

@@ -1,6 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Settings, History, Plus, ShieldCheck, Plug, Blocks, BookOpen, CircleDot, CircleCheck, Circle, Paperclip, Wand2, X, Square } from "lucide-react";
-import { useCodingStore } from "../../stores/codingStore";
+import { useCodingStore, type TimelineEntry } from "../../stores/codingStore";
+import { useExternalFileDrop } from "../../hooks/useExternalFileDrop";
+import { formatTokenCount } from "../../utils/formatTokens";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { detectLanguage } from "../../utils/language";
@@ -22,13 +24,78 @@ import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
 import type { CodingTarget, FileChange, TodoStatus } from "../../types/bindings";
 
-/** 过去轮次里"可以折叠"的条目种类——工具调用/思考过程/进度提示/token 用量都是
- * 过程细节，不是用户问题或 AI 最终答复本身，见 `expandedRounds` 的文档。
- * 2026-09 用户反馈：第一版漏了 "usage"（"本次请求消耗 tokens"/"本轮对话共消耗
- * tokens" 这两行）——长会话里每一轮至少留一两行 usage，几十轮下来所有工具调用
- * 明细都折叠没了、就剩一长串连续的 token 用量数字，看起来像是画面卡死/重复
- * 渲染的 bug，其实是这一类条目当时没被计入"可折叠"范围。 */
-const COLLAPSIBLE_KINDS = new Set(["tool", "note", "progress", "usage"]);
+/** 截断预览文字用——折叠行/表格视图里只需要看个大概，完整内容在弹框详情里。 */
+function truncatePreview(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** 一轮对话（从一条 "user" 条目到下一条 "user" 条目之前）的摘要——折叠行/表格
+ * 视图用它渲染"用户问的什么、AI 最后说了什么、这一轮有多少工具调用/文件改动"，
+ * 不需要展开整轮明细就能看出这一轮大致做了什么。 */
+function summarizeRound(items: { entry: TimelineEntry }[]): {
+  userPreview: string;
+  answerPreview: string;
+  toolCount: number;
+  changeCount: number;
+  totalTokens: number | null;
+} {
+  let userText = "";
+  let lastAssistantText = "";
+  let lastNoteText = "";
+  let toolCount = 0;
+  let changeCount = 0;
+  let blockedCount = 0;
+  let totalTokens: number | null = null;
+  for (const { entry } of items) {
+    if (entry.kind === "user") userText = entry.text;
+    else if (entry.kind === "assistant") lastAssistantText = entry.text;
+    else if (entry.kind === "note") lastNoteText = entry.text;
+    else if (entry.kind === "tool") toolCount += 1;
+    else if (entry.kind === "change") changeCount += 1;
+    else if (entry.kind === "blocked") blockedCount += 1;
+    // 折叠行只展示"这一轮总共花了多少"，不是每次请求各自的消耗——同一轮里
+    // 工具循环可能打好几次请求，每次都会有一条非 isTurnTotal 的 usage 条目，
+    // 只有 isTurnTotal 那一条才是整轮的合计（2026-09 用户需求：每一轮完成后
+    // 显示这一轮消耗的 token 数）。
+    else if (entry.kind === "usage" && entry.isTurnTotal) totalTokens = entry.totalTokens;
+  }
+  const answerSource = lastAssistantText || lastNoteText || (blockedCount > 0 ? "命令被拦截" : "");
+  return {
+    userPreview: userText ? truncatePreview(userText, 60) : "（无文字，仅附件）",
+    answerPreview: answerSource ? truncatePreview(answerSource, 80) : "（进行中或没有文字回复）",
+    toolCount,
+    changeCount,
+    totalTokens,
+  };
+}
+
+/** 折叠行的批量操作条要展示的数据——按后端真实的 `turn_id` 分组（不是按前端
+ * 的"轮次"，见 `roundGroups` 的文档：插话消息可能让一轮里出现多个 `turn_id`
+ * 之外的情况反过来也存在），一个 `turn_id` 通常就对应这一行看到的这一轮，但
+ * 遇到插话的边界情况时可能对应不止一组——挨个渲染，不假设只有一组。 */
+function computeTurnBatches(
+  items: { entry: TimelineEntry }[],
+  changesById: Record<string, FileChange>,
+  turnStats: Map<string, { changeIds: string[]; lastEntryId: string }>,
+): Array<{ turnId: string; pendingInTurn: FileChange[]; appliedInTurn: FileChange[] }> {
+  const seenTurnIds = new Set<string>();
+  const batches: Array<{ turnId: string; pendingInTurn: FileChange[]; appliedInTurn: FileChange[] }> = [];
+  for (const { entry } of items) {
+    if (entry.kind !== "change") continue;
+    const change = changesById[entry.changeId];
+    if (!change || seenTurnIds.has(change.turn_id)) continue;
+    seenTurnIds.add(change.turn_id);
+    const stat = turnStats.get(change.turn_id);
+    const turnChanges = (stat?.changeIds ?? []).map((id) => changesById[id]).filter((c): c is FileChange => Boolean(c));
+    batches.push({
+      turnId: change.turn_id,
+      pendingInTurn: turnChanges.filter((c) => c.status === "pending"),
+      appliedInTurn: turnChanges.filter((c) => c.status === "applied"),
+    });
+  }
+  return batches;
+}
 
 function todoIcon(status: TodoStatus) {
   if (status === "completed") return <CircleCheck style={{ width: 13, height: 13, color: "var(--accent)" }} />;
@@ -97,6 +164,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     cancelTurn,
     attachments,
     addAttachments,
+    addAttachmentsFromPaths,
     removeAttachment,
     optimizing,
     optimizePrompt,
@@ -136,17 +204,25 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   const [showPermissionRules, setShowPermissionRules] = useState(false);
   const [showMcpServers, setShowMcpServers] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
-  // 2026-09 用户反馈："多轮后拉得太长了"——过去每一轮的工具调用/思考过程明细
-  // 永远铺开显示，会话轮次一多，时间线变成一堵墙。默认只有"当前/最新这一轮"
-  // 展开明细，更早的轮次自动折叠成一行摘要，只保留用户问题和 AI 最终答复这些
-  // "关键结果"；这个集合记的是用户手动点开过的、要保持展开的历史轮次序号。
-  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
+  // 2026-09 用户反馈："多轮后拉得太长了"/"折叠了也没法再收起来"/"每一轮的问答
+  // 结果也应该默认折叠，不止是工具调用细节"——默认只有"当前/最新这一轮"完整
+  // 展开（用户问题 + 过程 + AI 最终答复），更早的轮次统一折叠成一行摘要（表格
+  // 式的一行：轮次号 + 用户问题预览 + AI 答复预览 + 工具/改动计数），点这一行
+  // 用弹框看完整明细，不再有"点开之后没法收回去"的中间态需要管理。
+  const [detailRound, setDetailRound] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const shouldFollowBottomRef = useRef(true);
   const stableScrollTopRef = useRef(0);
   const suppressScrollEventRef = useRef(false);
+  const scrollingRef = useRef(false);
+  const scrollEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showJumpBottom, setShowJumpBottom] = useState(false);
+  const showJumpBottomRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const { isDragOver: draggingAttachments } = useExternalFileDrop(composerRef, (paths) => {
+    void addAttachmentsFromPaths(paths);
+  });
 
   // 用户反馈"看不出来 AI 还有没有在运行"——工具调用之间（模型正在琢磨下一步、
   // 还没吐出新的事件）时间线上什么新条目都不会出现，界面看起来和"已经彻底
@@ -210,37 +286,85 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
+    const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
     if (shouldFollowBottomRef.current) {
       suppressScrollEventRef.current = true;
-      list.scrollTop = list.scrollHeight;
+      list.scrollTop = maxScrollTop;
       stableScrollTopRef.current = list.scrollTop;
       requestAnimationFrame(() => { suppressScrollEventRef.current = false; });
-    } else {
-      // 时间线只会在底部追加，但 flex/markdown 重排可能让浏览器自动修正
-      // scrollTop。恢复用户最近一次明确看到的位置，避免旧消息阅读点漂移。
-      list.scrollTop = stableScrollTopRef.current;
+    } else if (list.scrollTop > maxScrollTop) {
+      // The timeline may shrink when a session is restored or old steps collapse.
+      // Clamp stale scrollTop instead of leaving a blank viewport past the content.
+      list.scrollTop = maxScrollTop;
+      stableScrollTopRef.current = maxScrollTop;
     }
   }, [timeline]);
+
+  // Markdown/图片布局可能在 React 提交后继续改变高度。只有用户明确停在底部时
+  // 才跟随这些变化；阅读旧消息时绝不重设 scrollTop，避免新内容把阅读位置抢走。
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    let frame = 0;
+    const target = list.querySelector<HTMLElement>(".agent-timeline-content") ?? list;
+    const observer = new ResizeObserver(() => {
+      if (!shouldFollowBottomRef.current || scrollingRef.current) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        list.scrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+      });
+    });
+    observer.observe(target);
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, []);
 
   const handleTimelineScroll = () => {
     const list = listRef.current;
     if (!list) return;
     if (suppressScrollEventRef.current) return;
+    scrollingRef.current = true;
+    if (scrollEndTimerRef.current) clearTimeout(scrollEndTimerRef.current);
+    scrollEndTimerRef.current = setTimeout(() => {
+      scrollingRef.current = false;
+      if (shouldFollowBottomRef.current && listRef.current) {
+        listRef.current.scrollTop = Math.max(0, listRef.current.scrollHeight - listRef.current.clientHeight);
+      }
+    }, 120);
     const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
     // 只有已经在底部附近才跟随流式输出。用户向上滚动超过阈值后，
     // 新的工具事件不会再改变当前阅读位置。
     const follow = distance <= 48;
     shouldFollowBottomRef.current = follow;
     stableScrollTopRef.current = list.scrollTop;
-    setShowJumpBottom(!follow);
+    const nextShowJump = !follow;
+    if (showJumpBottomRef.current !== nextShowJump) {
+      showJumpBottomRef.current = nextShowJump;
+      setShowJumpBottom(nextShowJump);
+    }
   };
 
   const scrollTimelineToBottom = () => {
     const list = listRef.current;
     if (!list) return;
     shouldFollowBottomRef.current = true;
+    showJumpBottomRef.current = false;
     setShowJumpBottom(false);
-    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+    // `behavior: "smooth"` 的滚动动画本身会连续触发一串中间态 scroll 事件；
+    // `handleTimelineScroll` 如果照常处理这些事件，会在动画还没真正到底部时
+    // 就按"距离底部还有 48px 以上"判定成"用户自己划走了"，把刚设的
+    // `shouldFollowBottomRef`/`showJumpBottom` 都翻回去——这正是"点了按钮却
+    // 没有下压到最新"的根因：这次滚动是按钮自己触发的，不该被它自己触发的
+    // 滚动事件反过来判定成"用户手动离开了底部"。用 `suppressScrollEventRef`
+    // 盖住整段动画期间的 scroll 事件，动画结束（`scrollend`，不支持的浏览器
+    // 退回一个覆盖动画时长的定时器）后再放开。
+    suppressScrollEventRef.current = true;
+    list.scrollTo({ top: Math.max(0, list.scrollHeight - list.clientHeight), behavior: "smooth" });
+    const clearSuppress = () => { suppressScrollEventRef.current = false; };
+    if ("onscrollend" in list) {
+      list.addEventListener("scrollend", clearSuppress, { once: true });
+    } else {
+      setTimeout(clearSuppress, 500);
+    }
   };
 
   // 按 `turn_id`（同一条用户消息触发的一轮工具调用）给 FileChangeCard 分组——
@@ -261,9 +385,24 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
   }, [timeline]);
   const currentRound = roundOfIndex.length > 0 ? roundOfIndex[roundOfIndex.length - 1] : -1;
 
-  // 新一轮开始后，历史轮次默认保持收起；用户手动展开的轮次仍保留。
-  // 提供一个显式入口，长会话中可以迅速恢复“只看最近一轮”的紧凑视图。
-  const collapseHistoryRounds = () => setExpandedRounds(new Set());
+  // 按 `roundOfIndex` 把时间线切成一段一段——只用来决定"这一轮要不要默认
+  // 展开"，不是按后端 `turn_id` 分组（那是 `turnStats` 的职责，两者概念不同：
+  // 插话消息插进正在跑的轮次时，前端会多出一条新的 "user" 气泡、多算一轮，
+  // 但后端可能仍然算同一个 `turn_id`——批量操作按钮因此继续按 `turnStats`
+  // 计算，不能直接假设"一轮"就对应"一个 turn_id"）。
+  const roundGroups = React.useMemo(() => {
+    const groups: { round: number; items: { entry: TimelineEntry; index: number }[] }[] = [];
+    timeline.forEach((entry, index) => {
+      const round = roundOfIndex[index];
+      const last = groups[groups.length - 1];
+      if (last && last.round === round) {
+        last.items.push({ entry, index });
+      } else {
+        groups.push({ round, items: [{ entry, index }] });
+      }
+    });
+    return groups;
+  }, [timeline, roundOfIndex]);
 
   const turnStats = React.useMemo(() => {
     const stats = new Map<string, { changeIds: string[]; lastEntryId: string }>();
@@ -281,6 +420,21 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     }
     return stats;
   }, [timeline, changesById]);
+
+  // 切工作区/切历史会话时关掉还开着的轮次详情弹框——round 编号在新的时间线里
+  // 完全是另一回事，留着旧的 `detailRound` 可能凑巧命中一个无关的轮次。
+  useEffect(() => {
+    setDetailRound(null);
+  }, [workspaceId, viewingHistoryId]);
+
+  useEffect(() => {
+    if (detailRound === null) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDetailRound(null);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [detailRound]);
 
   const handleStart = () => {
     if (!selectedProviderId) return;
@@ -406,7 +560,164 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     : "AI 正在处理…";
   // 本轮进行中的 token 用量——原地跟着这条状态一起展示，不再各自插一条时间线
   // 消息（见 `liveTokenUsage` 字段文档，2026-09 用户反馈）。
-  const liveTokenText = sending && liveTokenUsage ? `已用 ${liveTokenUsage.totalTokens} tokens` : null;
+  const liveTokenText = sending && liveTokenUsage ? `已用 ${formatTokenCount(liveTokenUsage.totalTokens)} tokens` : null;
+
+  // 单条时间线条目的渲染——当前这一轮内联展开、和轮次详情弹框共用同一份逻辑
+  // （不重复维护两套 JSX）。"change" 分支的批量操作条仍然按 `turnStats`（真实
+  // 的后端 turn_id）判断，只在这个 turn_id 最后一张卡片后面出现一次，逻辑和
+  // 改动前完全一样，只是从"整条时间线的 .map"里搬出来成了一个独立函数。
+  const renderEntry = (entry: TimelineEntry): React.ReactNode => {
+    if (entry.kind === "user" || entry.kind === "assistant") {
+      return (
+        <div key={entry.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <div
+            style={{
+              width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: entry.kind === "user" ? "var(--bg-hover)" : "var(--accent-dim)",
+              color: entry.kind === "user" ? "var(--text-secondary)" : "var(--accent)",
+            }}
+          >
+            {entry.kind === "user" ? <User style={{ width: 13, height: 13 }} /> : <Bot style={{ width: 13, height: 13 }} />}
+          </div>
+          <div className={`agent-message ${entry.kind}`}>
+            {entry.kind === "assistant" ? (
+              <AgentMarkdown content={entry.text} onOpenFile={onOpenFile} />
+            ) : (
+              <>
+                {entry.text && <div className="agent-user-text">{entry.text}</div>}
+                {entry.attachments && entry.attachments.length > 0 && (
+                  <div className="agent-attachment-list">
+                    {entry.attachments.map((att, idx) =>
+                      att.kind === "image" && att.previewUrl ? (
+                        <img key={idx} src={att.previewUrl} alt={att.name} className="agent-attachment-thumb" title={att.name} />
+                      ) : (
+                        <span key={idx} className="agent-attachment-chip" title={att.name}>
+                          <Paperclip style={{ width: 11, height: 11 }} /> {att.name}
+                        </span>
+                      )
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+    if (entry.kind === "tool") {
+      const hasFileTarget = ["read_file", "write_file", "edit_file", "list_directory", "multi_edit"].includes(entry.tool);
+      return (
+        <ToolCallProgress
+          key={entry.id}
+          tool={entry.tool}
+          elapsedMs={entry.running && entry.startedAt ? Date.now() - entry.startedAt : 0}
+          done={!entry.running}
+          detail={entry.detail}
+          onOpenFile={hasFileTarget && entry.detail && onOpenFile ? () => onOpenFile(entry.detail!) : undefined}
+          output={entry.output}
+          expanded={entry.expanded}
+          onToggleOutput={() => toggleToolOutput(entry.id)}
+        />
+      );
+    }
+    if (entry.kind === "note") {
+      // 工具调用之间模型顺带写的说明文字，不是最终答案——样式上比正式回复
+      // 弱化（更小字号、次要文字色、无头像），提示"这是过程中的想法"。
+      return <ThinkingBlock key={entry.id} text={entry.text} active={sending && entry.id === activeThinkingId} onOpenFile={onOpenFile} />;
+    }
+    if (entry.kind === "progress") {
+      return <div key={entry.id} className="agent-progress-note"><Sparkles /><span>{entry.text}</span></div>;
+    }
+    if (entry.kind === "blocked") {
+      return <BlockedCommandMessage key={entry.id} command={entry.command} />;
+    }
+    if (entry.kind === "git") {
+      return (
+        <div key={entry.id} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <GitCommitHorizontal style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <div>Git 提交 {entry.path}</div>
+            <pre style={{ margin: 0, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", fontSize: 11 }}>{entry.output}</pre>
+          </div>
+        </div>
+      );
+    }
+    if (entry.kind === "usage") {
+      return entry.isTurnTotal ? (
+        <div key={entry.id} style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600, padding: "2px 0" }}>
+          本轮对话共消耗 tokens：输入 {formatTokenCount(entry.promptTokens)} · 输出 {formatTokenCount(entry.completionTokens)} · 合计{" "}
+          {formatTokenCount(entry.totalTokens)}
+        </div>
+      ) : (
+        <div key={entry.id} style={{ fontSize: 11, color: "var(--text-secondary)", opacity: 0.65 }}>
+          本次请求消耗 tokens：输入 {formatTokenCount(entry.promptTokens)} · 输出 {formatTokenCount(entry.completionTokens)} · 合计{" "}
+          {formatTokenCount(entry.totalTokens)}
+        </div>
+      );
+    }
+    const change = changesById[entry.changeId];
+    if (!change) return null;
+    const diff: CardDiffLine[] = change.diff.map((l) => ({ sign: l.sign, content: l.content }));
+    const status = change.status === "undone" ? "rejected" : change.status;
+    const stat = turnStats.get(change.turn_id);
+    const turnChanges = (stat?.changeIds ?? []).map((id) => changesById[id]).filter((c): c is FileChange => Boolean(c));
+    const pendingInTurn = turnChanges.filter((c) => c.status === "pending");
+    const appliedInTurn = turnChanges.filter((c) => c.status === "applied");
+    // 单文件改动同样是一轮完整的 AI 操作，必须提供"撤销本轮"入口；之前
+    // 误加了 `turnChanges.length > 1`，导致最常见的单文件修改只能看到卡片
+    // 级操作，无法按轮回退，也让端到端"改功能后回退"流程无法完成。
+    const showBatchActions = !viewingHistoryId && stat?.lastEntryId === entry.id
+      && (pendingInTurn.length > 0 || appliedInTurn.length > 0);
+    return (
+      <React.Fragment key={entry.id}>
+        <FileChangeCard
+          path={change.path}
+          status={status}
+          diff={diff}
+          onViewDiff={() =>
+            useEditorStore.getState().openDiffContent(
+              `${change.path}（改动前）`,
+              change.old_content,
+              `${change.path}（改动后）`,
+              change.new_content,
+              detectLanguage(change.path),
+            )
+          }
+          onAccept={viewingHistoryId ? undefined : () => acceptChange(change.id)}
+          onReject={viewingHistoryId ? undefined : () => rejectChange(change.id)}
+          onUndo={viewingHistoryId ? undefined : () => undoChange(change.id)}
+        />
+        {showBatchActions && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {pendingInTurn.length > 0 && (
+              <>
+                <button
+                  className="btn ghost sm"
+                  onClick={() => void runBatch(pendingInTurn, acceptChange, "应用")}
+                >
+                  全部应用（{pendingInTurn.length}）
+                </button>
+                <button
+                  className="btn ghost sm"
+                  onClick={() => void runBatch(pendingInTurn, rejectChange, "拒绝")}
+                >
+                  全部拒绝（{pendingInTurn.length}）
+                </button>
+              </>
+            )}
+            {appliedInTurn.length > 0 && (
+              <button className="btn ghost sm" onClick={() => void revertTurn(change.turn_id)}>
+                撤销本轮全部改动（{appliedInTurn.length}）
+              </button>
+            )}
+          </div>
+        )}
+      </React.Fragment>
+    );
+  };
+
+  const detailGroup = detailRound !== null ? roundGroups.find((g) => g.round === detailRound) ?? null : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -425,6 +736,15 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
       <div
         ref={listRef}
         onScroll={handleTimelineScroll}
+        // `overflow-anchor: none`（`.agent-timeline-scroll`，和 SqlAgentPanel 的
+        // 同款滚动容器一致）——浏览器默认的"滚动锚定"会在视口上方内容发生布局
+        // 变化时自作聪明地帮你调整 scrollTop，想保持"锚点元素看起来没动"，但这
+        // 和这里自己维护的 `shouldFollowBottomRef`/`handleTimelineScroll` 手动
+        // 跟随逻辑直接打架：2026-09 用户反馈"AI 没在跑的时候，把滚动条手动拖到
+        // 最下面，它会自动弹上去"——正是浏览器自己的滚动锚定在跟用户的手动
+        // 拖拽较劲，不是这里哪段 JS 逻辑写错了。这个类原本只加在 SqlAgentPanel
+        // 那份拷贝上，这边漏掉了。
+        className="agent-timeline-scroll"
         style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", position: "relative" }}
       >
       <div className="editor-toolbar" style={{ gap: 12, flexWrap: "wrap", height: "auto", minHeight: 32 }}>
@@ -546,193 +866,104 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         <button className="btn primary sm" onClick={() => newSession(activeProvider?.id ?? selectedProviderId ?? sessionInfo.provider_id)}>返回新会话</button>
       </div>}
 
-      <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {timeline.length > 0 && currentRound > 0 && (
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -4 }}>
-            <button className="btn ghost sm" onClick={collapseHistoryRounds} title="收起历史轮次的工具和思考过程">
-              收起历史过程
-            </button>
-          </div>
-        )}
+      <div className="agent-timeline-content" style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
         {timeline.length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 13, marginTop: 24 }}>
             {sessionInfo.mode === "plan" ? "直接提问或描述任务；Plan 模式不会修改文件" : "提问，或描述你想做的改动"}
           </div>
         ) : (
-          timeline.map((entry, index) => {
-            // 早于当前轮次、且属于"过程细节"种类的条目，默认折叠成每轮一行摘要——
-            // 只在这个轮次里第一个可折叠条目的位置渲染一次摘要，同一轮后续的可
-            // 折叠条目直接跳过（返回 null），不影响下面 user/assistant/change/
-            // git/usage/blocked 各分支的渲染逻辑和它们依赖的 turnStats。
-            if (COLLAPSIBLE_KINDS.has(entry.kind)) {
-              const round = roundOfIndex[index];
-              if (round !== currentRound && !expandedRounds.has(round)) {
-                const isFirstInRound = !timeline
-                  .slice(0, index)
-                  .some((e, i) => roundOfIndex[i] === round && COLLAPSIBLE_KINDS.has(e.kind));
-                if (!isFirstInRound) return null;
-                const count = timeline.filter((e, i) => roundOfIndex[i] === round && COLLAPSIBLE_KINDS.has(e.kind)).length;
-                return (
-                  <button
-                    key={`round-collapse-${round}`}
-                    className="agent-round-collapse-toggle"
-                    onClick={() => setExpandedRounds((s) => new Set(s).add(round))}
-                  >
-                    <ChevronRight style={{ width: 12, height: 12 }} /> 已折叠 {count} 个过程步骤，点击展开
-                  </button>
-                );
-              }
-            }
-            if (entry.kind === "user" || entry.kind === "assistant") {
+          roundGroups.map((group) => {
+            // 只有最新这一轮内联完整展开（用户问题 + 过程 + AI 最终答复）；
+            // 更早的轮次统一收成一行摘要（网格式布局：轮次号 + 用户问题预览 +
+            // AI 答复预览 + 计数），点这一行用弹框看完整明细——不再有"展开了
+            // 却没法收回去"的中间态需要维护（2026-09 用户反馈）。
+            if (group.round === currentRound) {
               return (
-                <div key={entry.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                  <div
-                    style={{
-                      width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      background: entry.kind === "user" ? "var(--bg-hover)" : "var(--accent-dim)",
-                      color: entry.kind === "user" ? "var(--text-secondary)" : "var(--accent)",
-                    }}
-                  >
-                    {entry.kind === "user" ? <User style={{ width: 13, height: 13 }} /> : <Bot style={{ width: 13, height: 13 }} />}
+                <div key={`round-${group.round}`} className="agent-round-current">
+                  <div className="agent-round-current-label">
+                    第 {group.round + 1} 轮{sending ? " · 进行中" : ""}
                   </div>
-                  <div className={`agent-message ${entry.kind}`}>
-                    {entry.kind === "assistant" ? (
-                      <AgentMarkdown content={entry.text} onOpenFile={onOpenFile} />
-                    ) : (
-                      <>
-                        {entry.text && <div className="agent-user-text">{entry.text}</div>}
-                        {entry.attachments && entry.attachments.length > 0 && (
-                          <div className="agent-attachment-list">
-                            {entry.attachments.map((att, idx) =>
-                              att.kind === "image" && att.previewUrl ? (
-                                <img key={idx} src={att.previewUrl} alt={att.name} className="agent-attachment-thumb" title={att.name} />
-                              ) : (
-                                <span key={idx} className="agent-attachment-chip" title={att.name}>
-                                  <Paperclip style={{ width: 11, height: 11 }} /> {att.name}
-                                </span>
-                              )
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  {group.items.map(({ entry }) => renderEntry(entry))}
                 </div>
               );
             }
-            if (entry.kind === "tool") {
-              const hasFileTarget = ["read_file", "write_file", "edit_file", "list_directory", "multi_edit"].includes(entry.tool);
-              return (
-                <ToolCallProgress
-                  key={entry.id}
-                  tool={entry.tool}
-                  elapsedMs={entry.running && entry.startedAt ? Date.now() - entry.startedAt : 0}
-                  done={!entry.running}
-                  detail={entry.detail}
-                  onOpenFile={hasFileTarget && entry.detail && onOpenFile ? () => onOpenFile(entry.detail!) : undefined}
-                  output={entry.output}
-                  expanded={entry.expanded}
-                  onToggleOutput={() => toggleToolOutput(entry.id)}
-                />
-              );
-            }
-            if (entry.kind === "note") {
-              // 工具调用之间模型顺带写的说明文字，不是最终答案——样式上比正式回复
-              // 弱化（更小字号、次要文字色、无头像），提示"这是过程中的想法"。
-              return <ThinkingBlock key={entry.id} text={entry.text} active={sending && entry.id === activeThinkingId} onOpenFile={onOpenFile} />;
-            }
-            if (entry.kind === "progress") {
-              return <div key={entry.id} className="agent-progress-note"><Sparkles /><span>{entry.text}</span></div>;
-            }
-            if (entry.kind === "blocked") {
-              return <BlockedCommandMessage key={entry.id} command={entry.command} />;
-            }
-            if (entry.kind === "git") {
-              return (
-                <div key={entry.id} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 6, alignItems: "flex-start" }}>
-                  <GitCommitHorizontal style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }} />
-                  <div>
-                    <div>Git 提交 {entry.path}</div>
-                    <pre style={{ margin: 0, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", fontSize: 11 }}>{entry.output}</pre>
-                  </div>
-                </div>
-              );
-            }
-            if (entry.kind === "usage") {
-              return entry.isTurnTotal ? (
-                <div key={entry.id} style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600, padding: "2px 0" }}>
-                  本轮对话共消耗 tokens：输入 {entry.promptTokens} · 输出 {entry.completionTokens} · 合计 {entry.totalTokens}
-                </div>
-              ) : (
-                <div key={entry.id} style={{ fontSize: 11, color: "var(--text-secondary)", opacity: 0.65 }}>
-                  本次请求消耗 tokens：输入 {entry.promptTokens} · 输出 {entry.completionTokens} · 合计 {entry.totalTokens}
-                </div>
-              );
-            }
-            const change = changesById[entry.changeId];
-            if (!change) return null;
-            const diff: CardDiffLine[] = change.diff.map((l) => ({ sign: l.sign, content: l.content }));
-            const status = change.status === "undone" ? "rejected" : change.status;
-            const stat = turnStats.get(change.turn_id);
-            const turnChanges = (stat?.changeIds ?? []).map((id) => changesById[id]).filter((c): c is FileChange => Boolean(c));
-            const pendingInTurn = turnChanges.filter((c) => c.status === "pending");
-            const appliedInTurn = turnChanges.filter((c) => c.status === "applied");
-            // 单文件改动同样是一轮完整的 AI 操作，必须提供“撤销本轮”入口；之前
-            // 误加了 `turnChanges.length > 1`，导致最常见的单文件修改只能看到卡片
-            // 级操作，无法按轮回退，也让端到端“改功能后回退”流程无法完成。
-            const showBatchActions = !viewingHistoryId && stat?.lastEntryId === entry.id
-              && (pendingInTurn.length > 0 || appliedInTurn.length > 0);
+            const summary = summarizeRound(group.items);
+            const batches = computeTurnBatches(group.items, changesById, turnStats);
+            const hasBatchActions = !viewingHistoryId
+              && batches.some((b) => b.pendingInTurn.length > 0 || b.appliedInTurn.length > 0);
             return (
-              <React.Fragment key={entry.id}>
-                <FileChangeCard
-                  path={change.path}
-                  status={status}
-                  diff={diff}
-                  onViewDiff={() =>
-                    useEditorStore.getState().openDiffContent(
-                      `${change.path}（改动前）`,
-                      change.old_content,
-                      `${change.path}（改动后）`,
-                      change.new_content,
-                      detectLanguage(change.path),
-                    )
+              <div
+                key={`round-${group.round}`}
+                className="agent-round-row"
+                role="button"
+                tabIndex={0}
+                onClick={() => setDetailRound(group.round)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setDetailRound(group.round);
                   }
-                  onAccept={viewingHistoryId ? undefined : () => acceptChange(change.id)}
-                  onReject={viewingHistoryId ? undefined : () => rejectChange(change.id)}
-                  onUndo={viewingHistoryId ? undefined : () => undoChange(change.id)}
-                />
-                {showBatchActions && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {pendingInTurn.length > 0 && (
-                      <>
-                        <button
-                          className="btn ghost sm"
-                          onClick={() => void runBatch(pendingInTurn, acceptChange, "应用")}
-                        >
-                          全部应用（{pendingInTurn.length}）
-                        </button>
-                        <button
-                          className="btn ghost sm"
-                          onClick={() => void runBatch(pendingInTurn, rejectChange, "拒绝")}
-                        >
-                          全部拒绝（{pendingInTurn.length}）
-                        </button>
-                      </>
-                    )}
-                    {appliedInTurn.length > 0 && (
-                      <button className="btn ghost sm" onClick={() => void revertTurn(change.turn_id)}>
-                        撤销本轮全部改动（{appliedInTurn.length}）
-                      </button>
-                    )}
+                }}
+                title="点击查看这一轮的完整过程"
+              >
+                <span className="agent-round-row-index">#{group.round + 1}</span>
+                <div className="agent-round-row-texts">
+                  <div className="agent-round-row-user"><User style={{ width: 11, height: 11 }} /> {summary.userPreview}</div>
+                  <div className="agent-round-row-answer"><Bot style={{ width: 11, height: 11 }} /> {summary.answerPreview}</div>
+                </div>
+                <div className="agent-round-row-meta">
+                  {summary.toolCount > 0 && <span className="agent-round-row-badge">{summary.toolCount} 个工具</span>}
+                  {summary.changeCount > 0 && <span className="agent-round-row-badge">{summary.changeCount} 处改动</span>}
+                  {summary.totalTokens !== null && (
+                    <span className="agent-round-row-badge">{formatTokenCount(summary.totalTokens)} tokens</span>
+                  )}
+                </div>
+                {hasBatchActions && (
+                  <div className="agent-round-row-actions" onClick={(e) => e.stopPropagation()}>
+                    {batches.map((b) => (
+                      <React.Fragment key={b.turnId}>
+                        {b.pendingInTurn.length > 0 && (
+                          <>
+                            <button className="btn ghost sm" onClick={() => void runBatch(b.pendingInTurn, acceptChange, "应用")}>
+                              应用（{b.pendingInTurn.length}）
+                            </button>
+                            <button className="btn ghost sm" onClick={() => void runBatch(b.pendingInTurn, rejectChange, "拒绝")}>
+                              拒绝（{b.pendingInTurn.length}）
+                            </button>
+                          </>
+                        )}
+                        {b.appliedInTurn.length > 0 && (
+                          <button className="btn ghost sm" onClick={() => void revertTurn(b.turnId)}>
+                            撤销（{b.appliedInTurn.length}）
+                          </button>
+                        )}
+                      </React.Fragment>
+                    ))}
                   </div>
                 )}
-              </React.Fragment>
+                <ChevronRight style={{ width: 14, height: 14, color: "var(--text-secondary)", flexShrink: 0 }} />
+              </div>
             );
           })
         )}
       </div>
       </div>
+
+      {detailGroup && (
+        <div className="agent-round-detail-overlay" onClick={() => setDetailRound(null)}>
+          <div className="agent-round-detail-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="agent-round-detail-header">
+              <span>第 {detailGroup.round + 1} 轮详情</span>
+              <button className="agent-round-detail-close" onClick={() => setDetailRound(null)} title="关闭（Esc）">
+                <X style={{ width: 14, height: 14 }} />
+              </button>
+            </div>
+            <div className="agent-round-detail-body">
+              {detailGroup.items.map(({ entry }) => renderEntry(entry))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {liveStatusText && (
         <div className="agent-live-status" key={liveTick}>
@@ -744,7 +975,10 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
 
       {error && <div style={{ padding: "4px 12px", fontSize: 12, color: "var(--danger)" }}>{error}</div>}
 
-      <div className="agent-composer">
+      <div
+        ref={composerRef}
+        className={`agent-composer ${draggingAttachments ? "agent-composer-dragging" : ""}`}
+      >
         {attachments.length > 0 && (
           <div className="agent-pending-attachments">
             {attachments.map((att) => (
@@ -836,7 +1070,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*,.txt,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.css,.html,.yaml,.yml,.toml,.csv,.log,.sh"
+            accept="image/*,.pdf,application/pdf,.txt,.md,.json,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.css,.html,.yaml,.yml,.toml,.csv,.log,.sh"
             style={{ display: "none" }}
             onChange={(e) => handleFilesSelected(e.target.files)}
           />

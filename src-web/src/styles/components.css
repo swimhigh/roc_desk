@@ -307,6 +307,9 @@
 }
 .tree-item:hover { background: var(--bg-hover); }
 .tree-item.active { background: var(--bg-selected); }
+/* Shift/Ctrl 多选（2026-09 需求）——和 `.active`（当前焦点项）同一个底色，
+   资源管理器里所有被选中的行本来就是同一种高亮，不需要区分"哪个是焦点"。 */
+.tree-item.multi-selected { background: var(--bg-selected); }
 .tree-item.drop-target { background: color-mix(in srgb, var(--accent) 22%, var(--bg-hover)); outline: 1px dashed var(--accent); outline-offset: -1px; }
 .tree-item .tree-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary); }
 .tree-item .tree-icon.is-dir { color: #dcb67a; } /* 文件夹用暖色区分，VS Code 惯例 */
@@ -1201,9 +1204,22 @@
   font-size: 13px;
   line-height: 1.65;
   word-break: break-word;
-  content-visibility: auto;
-  contain-intrinsic-size: 0 80px;
+  padding: 7px 11px;
+  border-radius: var(--radius-md);
+  /* Do not virtualize individual messages. Their height is dynamic (Markdown,
+     code blocks and diffs); content-visibility:auto can leave a blank viewport
+     while the scroll container is being dragged and makes scrollHeight stale. */
 }
+/* 用户问题和 AI 答复本来只靠头像颜色区分，正文本身样式完全一样——2026-09
+   用户反馈"想要更明显的界限、不同颜色和字体"：这里给两种气泡分别上底色/
+   左边框，一眼就能分清哪段是用户说的、哪段是 AI 说的，不需要盯着头像看。 */
+.agent-message.user { background: var(--bg-hover); }
+.agent-message.assistant {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left: 2px solid var(--accent);
+}
+.agent-timeline-scroll { overflow-anchor: none; }
+.agent-timeline-content { min-height: max-content; }
 .agent-user-text { white-space: pre-wrap; }
 .agent-markdown { color: var(--text-primary); }
 .agent-markdown > :first-child { margin-top: 0; }
@@ -1302,6 +1318,7 @@
    挤扁或被 .ai-tools-dock 的 overflow:hidden 切掉底部的发送按钮。 */
 .agent-composer { margin: 8px; flex-shrink: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface); box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
 .agent-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
+.agent-composer-dragging { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--bg-surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
 /* 面板纵向空间紧张时，先压缩/滚动输入框，footer（含发送按钮）用 flex-shrink:0 常驻可见——
    之前输入框和 footer 是普通块级堆叠，空间不够时 footer 会被 .ai-tools-dock 的 overflow:hidden 整段裁掉。 */
 .agent-composer-input { display: block; width: 100%; flex: 1; min-height: 64px; max-height: 260px; padding: 12px 14px 6px; resize: vertical; overflow-y: auto; border: none; outline: none; background: transparent; color: var(--text-primary); font: inherit; line-height: 1.55; }
@@ -1346,22 +1363,113 @@
 .coding-history-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-default); background: var(--accent-dim); color: var(--text-primary); font-size: 12px; }
 .agent-composer-input:disabled { cursor: not-allowed; opacity: .62; }
 .agent-progress-note { display: flex; align-items: flex-start; gap: 7px; max-width: 760px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 4px 8px 8px 4px; background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
-/* 早于当前轮次的工具调用/思考过程折叠摘要（2026-09 用户反馈"多轮后拉得太长
-   了"）——刻意比 .agent-progress-note 更低调（灰底、无强调色左边框），提示
-   "这是可以忽略的历史细节"，不是需要注意的内容。 */
-.agent-round-collapse-toggle {
-  display: inline-flex;
+/* 当前/最新这一轮的完整展开容器——左边框+淡底色给出一个明确的"这是正在看的
+   这一轮"边界（2026-09 用户反馈"每一轮应该有明显的界限"），和下面折叠成一行
+   的历史轮次视觉上分得清清楚楚。 */
+.agent-round-current {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+}
+.agent-round-current-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* 历史轮次折叠成的一行摘要（2026-09 用户反馈"历史轮次的问答结果也该默认
+   折叠、只展开最后一轮"，取代了旧版"折叠工具调用细节但仍整段展示问答文字"
+   的方案）——布局上刻意做成表格一行的样子（固定宽度的序号列 + 弹性的文字列 +
+   固定宽度的计数/操作列），点击整行打开弹框看完整过程，不需要内联展开/收起
+   状态。 */
+.agent-round-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  cursor: pointer;
+  font-size: 12px;
+}
+.agent-round-row:hover { background: var(--bg-hover); border-color: var(--border-default); }
+.agent-round-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.agent-round-row-index { flex-shrink: 0; width: 26px; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.agent-round-row-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.agent-round-row-user, .agent-round-row-answer {
+  display: flex;
   align-items: center;
   gap: 5px;
-  align-self: flex-start;
-  padding: 4px 8px;
-  border: 1px dashed var(--border-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-round-row-user { color: var(--text-primary); }
+.agent-round-row-user svg { color: var(--text-secondary); flex-shrink: 0; }
+.agent-round-row-answer { color: var(--text-secondary); }
+.agent-round-row-answer svg { color: var(--accent); flex-shrink: 0; }
+.agent-round-row-meta { flex-shrink: 0; display: flex; gap: 4px; }
+.agent-round-row-badge { padding: 2px 6px; border-radius: 999px; background: var(--bg-hover); color: var(--text-secondary); font-size: 10px; white-space: nowrap; }
+.agent-round-row-actions { flex-shrink: 0; display: flex; gap: 4px; }
+
+/* 轮次详情弹框——比全局通用的 `.dialog`（给命令确认这类小弹窗用，最大宽度只有
+   480px）宽松得多：一轮完整明细可能包含长输出/Diff/Markdown，需要更多横向
+   空间和一个内部可滚动区域，不适合硬塞进那套窄弹窗模板。 */
+.agent-round-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.agent-round-detail-dialog {
+  width: min(760px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface-raised);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.agent-round-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.agent-round-detail-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11px;
 }
-.agent-round-collapse-toggle:hover { background: var(--bg-hover); color: var(--text-primary); border-style: solid; }
+.agent-round-detail-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.agent-round-detail-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
 /* 固定在消息列表底部、composer 上方的"AI 是否还在运行"状态条——不随滚动
    消失，覆盖两个后端事件之间的空档期（见 CodingAgentPanel 里 liveStatusText
@@ -1486,6 +1594,12 @@
 
 .pdf-page-wrapper { position: relative; margin: 0 auto 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
 .textLayer { position: absolute; top: 0; left: 0; overflow: clip; line-height: 1; opacity: 1; text-align: initial; -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 1; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor, 1) * var(--min-font-size)); }
+/* 显式声明 `user-select: text`（2026-09 用户反馈"PDF 应该能选择/复制文本"）——
+   `cursor: text` 只是视觉提示，真正决定"能不能选中"的是 `user-select`；这层
+   本来就是透明文字叠在画布上用来承载选择/搜索高亮的，不显式声明的话一旦被
+   某个外层容器的 `user-select: none` 级联下来就会选不中，属于"看起来能选、
+   实际选不中"的隐蔽坑，显式声明能避免这层脆弱的隐式依赖。 */
+.textLayer, .textLayer span, .textLayer br { user-select: text; }
 .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
 .textLayer .markedContent { display: contents; }
 .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { font-size: calc(var(--text-scale-factor) * var(--font-height)); }

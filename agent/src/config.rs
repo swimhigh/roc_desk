@@ -51,7 +51,13 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_concurrent_connections: 8,
-            exec_timeout_secs: 120,
+            // 2026-09 用户反馈：远程 Windows 工作区（Agent 目标）跑编译/装依赖/
+            // 跑测试这类命令经常超过 2 分钟，会被这个超时打断——调到 10 分钟，
+            // 和本地命令执行的超时（`coding::session::LOCAL_COMMAND_TIMEOUT`）
+            // 同一个量级。已经生成过 `agent.toml` 的部署不会自动应用这个新默认值
+            // （文件里已经显式写了旧的 120），需要手动编辑那份配置文件或删除后
+            // 重新生成。
+            exec_timeout_secs: 600,
         }
     }
 }

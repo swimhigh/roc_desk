@@ -9,6 +9,7 @@ pub mod fs;
 pub mod http_desk;
 pub mod launcher;
 pub mod local_fs;
+pub mod ocr;
 pub mod log_search;
 pub mod pty;
 pub mod rdp;

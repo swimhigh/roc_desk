@@ -1,6 +1,5 @@
 use base64::Engine;
 use tauri::{AppHandle, State};
-use tauri_plugin_opener::OpenerExt;
 
 use crate::error::AppError;
 use crate::fsops::local::LocalFileOps;
@@ -168,10 +167,7 @@ pub async fn local_read_binary_preview(path: String) -> Result<String, AppError>
 
 #[tauri::command]
 pub async fn local_open_externally(app_handle: AppHandle, path: String) -> Result<(), AppError> {
-    app_handle
-        .opener()
-        .open_path(path, None::<&str>)
-        .map_err(|e| AppError::Internal(e.to_string()))
+    crate::fsops::open_path_or_launch_exe(&app_handle, &path)
 }
 
 #[tauri::command]
