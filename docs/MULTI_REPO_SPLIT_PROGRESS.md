@@ -236,7 +236,51 @@ its standalone Tauri host.
   that haven't been extracted into `roc_desk-common`'s `ui-core` package yet
   (currently just a bindings stub, not real components).
 
-- **Known cross-tool dependency-graph quirk**: the host currently pulls
+## HTTP 测试工作台：host wiring done (2026-09-22)
+
+- `roc_desk-http`'s command layer was a dead file (`http_desk_commands.rs`,
+  never `mod`-declared, still referencing host-only `AppState`/
+  `WorkspaceHandle`). Rewrote it as root-path-keyed (`root: String` instead
+  of `workspace_id: Uuid`, mirroring `roc_desk-editor`'s `editor_symbols_*`
+  precedent) inside `lib.rs`'s `pub mod cmd`, backed by a self-contained
+  `HttpAppState` (its own SQLite file for request history/tabs, built on
+  `roc_desk_core::db`). Also fixed real encoding corruption in
+  `export.rs`/`service.rs` (bare `\r` bytes inside doc comments broke
+  rustc's doc-comment parser and silently merged adjacent logical lines —
+  not a cosmetic issue, an actual `fn` declaration had gotten spliced onto
+  the end of a doc comment) by restoring clean copies from the host and
+  reapplying the two import-path changes. Tagged **`v0.2.0`**, pushed.
+- **Host wiring done**: `src-tauri/Cargo.toml` depends on `roc_desk_http`
+  (`v0.2.0`). `commands/http_desk.rs`, `http_desk/` (the whole module),
+  `db/repo/http_request_history_repo.rs`, and
+  `db/repo/http_workspace_tabs_repo.rs` are deleted; the 28 commands are
+  registered as `roc_desk_http::cmd::*`; `AppState` no longer carries
+  `http_workspace_tabs`/`http_request_history` (those two tables were
+  FK'd to `workspaces(id)` — the new `HttpAppState` has no such FK, it's
+  keyed by `root: String` directly, so it gets its own SQLite file
+  `<app_data_dir>/http_desk.db` instead of sharing `workspaces_pool`).
+  Existing rows in the old FK'd tables are orphaned (not deleted, just
+  unread going forward) — acceptable, this is disposable request-history
+  cache data, not credentials or connection profiles.
+  `cargo check --release` and a full `build-portable.ps1` run both pass;
+  smoke-tested by launching `bin/roc_desk.exe` (stayed up, no crash).
+- **Environment note for future verification passes**: `cargo check`
+  (debug profile) on this host is currently blocked by 360 Security
+  quarantining a freshly-compiled `num-bigint-dig` build script
+  (`拒绝访问`/os error 5) every time `build/debug` doesn't already have a
+  trusted copy — this is unrelated to any of this session's code changes
+  (it's a transitive dependency of the SSH/RSA stack). Retrying doesn't
+  help (confirmed identical failure across 6 attempts with 20s waits).
+  **Workaround that does work**: `cargo check --release` (or any
+  `--release` build) reuses `build/release`, which already has a
+  360-trusted copy from an earlier successful `build-portable.ps1` run —
+  use that instead of plain `cargo check` until someone adds a proper 360
+  exclusion for `F:\code\wuyou\roc_desk\build\` (or wherever
+  `CARGO_TARGET_DIR` points).
+
+## Known cross-tool dependency-graph quirk
+
+- the host currently pulls
   *two different commits* of `roc_desk_core`/`roc_desk_common` into the same
   build — one directly (pinned to `common-v0.3.1`), one transitively via
   `roc_desk-explorer` (pinned to `common-v0.3.0`) and another via

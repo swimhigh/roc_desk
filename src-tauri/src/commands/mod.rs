@@ -6,7 +6,6 @@ pub mod connection;
 pub mod connection_group;
 pub mod diagnostics;
 pub mod fs;
-pub mod http_desk;
 pub mod launcher;
 pub mod local_fs;
 pub mod log_search;

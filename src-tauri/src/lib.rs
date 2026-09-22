@@ -8,7 +8,6 @@ pub mod connection;
 pub mod credential;
 pub mod db;
 pub mod fsops;
-pub mod http_desk;
 pub mod log;
 pub mod mcp;
 pub mod pty;
@@ -43,8 +42,6 @@ use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::ai_evidence_repo::AiEvidenceRepo;
 use db::repo::connection_groups_repo::ConnectionGroupsRepo;
 use db::repo::connections_repo::ConnectionsRepo;
-use db::repo::http_request_history_repo::HttpRequestHistoryRepo;
-use db::repo::http_workspace_tabs_repo::HttpWorkspaceTabsRepo;
 use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
@@ -323,12 +320,14 @@ pub fn run() {
                 workspaces_dir,
             ));
 
-            // HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md §5）：两张表都 FK 引用
-            // `workspaces(id)`，必须和 `workspace_repo` 用同一个 `workspaces_pool`
-            // 数据库文件，不能挂到主库 `pool` 上。
-            let http_workspace_tabs = Arc::new(HttpWorkspaceTabsRepo::new(workspaces_pool.clone()));
-            let http_request_history = Arc::new(HttpRequestHistoryRepo::new(workspaces_pool.clone()));
             let workspace_module_links = Arc::new(WorkspaceModuleLinksRepo::new(workspaces_pool.clone()));
+
+            // HTTP 桌面（roc_desk-http，见 docs/MULTI_REPO_SPLIT_PROGRESS.md）：
+            // 自带一份 SQLite 文件（请求历史/标签页元数据），不再挂在
+            // `workspaces_pool` 上——命令层已经从 workspace_id 改成 root: String，
+            // 不需要 FK 到 `workspaces(id)`。
+            let http_app_state = roc_desk_http::HttpAppState::new(&app_data_dir.join("http_desk.db"))
+                .expect("初始化 HTTP 桌面存储失败");
 
             let log_engine = Arc::new(LogSearchEngine::new(pool.clone()));
             let log_importer = Arc::new(LogImporter::new(
@@ -441,9 +440,8 @@ pub fn run() {
                 sql_agent_cancel_tokens: Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
-                http_workspace_tabs,
-                http_request_history,
             });
+            app.manage(http_app_state);
 
             Ok(())
         })
@@ -687,34 +685,34 @@ pub fn run() {
             commands::sql::sql_reject_change,
             commands::sql::sql_undo_change,
             commands::sql::sql_revert_turn,
-            commands::http_desk::http_list_collections,
-            commands::http_desk::http_create_collection,
-            commands::http_desk::http_rename_collection,
-            commands::http_desk::http_delete_collection,
-            commands::http_desk::http_list_requests,
-            commands::http_desk::http_get_request,
-            commands::http_desk::http_create_request,
-            commands::http_desk::http_save_request,
-            commands::http_desk::http_delete_request,
-            commands::http_desk::http_list_environments,
-            commands::http_desk::http_save_environment,
-            commands::http_desk::http_delete_environment,
-            commands::http_desk::http_get_global_variables,
-            commands::http_desk::http_save_global_variables,
-            commands::http_desk::http_get_collection_meta,
-            commands::http_desk::http_save_collection_meta,
-            commands::http_desk::http_send_request,
-            commands::http_desk::http_import_curl,
-            commands::http_desk::http_import_postman,
-            commands::http_desk::http_import_openapi,
-            commands::http_desk::http_export_postman,
-            commands::http_desk::http_list_history,
-            commands::http_desk::http_get_history_detail,
-            commands::http_desk::http_delete_history,
-            commands::http_desk::http_clear_history,
-            commands::http_desk::http_list_tabs,
-            commands::http_desk::http_open_tab,
-            commands::http_desk::http_close_tab,
+            roc_desk_http::cmd::http_list_collections,
+            roc_desk_http::cmd::http_create_collection,
+            roc_desk_http::cmd::http_rename_collection,
+            roc_desk_http::cmd::http_delete_collection,
+            roc_desk_http::cmd::http_list_requests,
+            roc_desk_http::cmd::http_get_request,
+            roc_desk_http::cmd::http_create_request,
+            roc_desk_http::cmd::http_save_request,
+            roc_desk_http::cmd::http_delete_request,
+            roc_desk_http::cmd::http_list_environments,
+            roc_desk_http::cmd::http_save_environment,
+            roc_desk_http::cmd::http_delete_environment,
+            roc_desk_http::cmd::http_get_global_variables,
+            roc_desk_http::cmd::http_save_global_variables,
+            roc_desk_http::cmd::http_get_collection_meta,
+            roc_desk_http::cmd::http_save_collection_meta,
+            roc_desk_http::cmd::http_send_request,
+            roc_desk_http::cmd::http_import_curl,
+            roc_desk_http::cmd::http_import_postman,
+            roc_desk_http::cmd::http_import_openapi,
+            roc_desk_http::cmd::http_export_postman,
+            roc_desk_http::cmd::http_list_history,
+            roc_desk_http::cmd::http_get_history_detail,
+            roc_desk_http::cmd::http_delete_history,
+            roc_desk_http::cmd::http_clear_history,
+            roc_desk_http::cmd::http_list_tabs,
+            roc_desk_http::cmd::http_open_tab,
+            roc_desk_http::cmd::http_close_tab,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

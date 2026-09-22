@@ -180,10 +180,6 @@ pub struct AppState {
     /// 同样的独立锁模式（不能卡在等 `sql_agent_sessions` 那把锁）。
     pub sql_agent_cancel_tokens: Arc<StdMutex<HashMap<Uuid, tokio_util::sync::CancellationToken>>>,
 
-    // --- HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md）。没有单独的 session/handle 概念——
-    // 集合/环境/请求直接借用 `workspace_manager`/`workspaces` 已经打开的
-    // `WorkspaceHandle`（同一个工作区目录，见 `commands::http_desk::get_handle`），
-    // 这里只需要两张纯 UI/审计状态表的仓库，不需要额外的连接池/会话注册表。
-    pub http_workspace_tabs: Arc<crate::db::repo::http_workspace_tabs_repo::HttpWorkspaceTabsRepo>,
-    pub http_request_history: Arc<crate::db::repo::http_request_history_repo::HttpRequestHistoryRepo>,
+    // HTTP 桌面已迁到 roc_desk-http（roc_desk_http::HttpAppState，单独 manage，
+    // 见 lib.rs::run），不再是 AppState 的字段。
 }

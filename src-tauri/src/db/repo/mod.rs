@@ -6,8 +6,6 @@ pub mod browser_history_repo;
 pub mod coding_history_repo;
 pub mod connection_groups_repo;
 pub mod connections_repo;
-pub mod http_request_history_repo;
-pub mod http_workspace_tabs_repo;
 pub mod known_hosts_repo;
 pub mod mcp_servers_repo;
 pub mod permission_rules_repo;
