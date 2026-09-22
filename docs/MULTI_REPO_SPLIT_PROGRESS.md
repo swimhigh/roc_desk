@@ -180,6 +180,62 @@ its standalone Tauri host.
   (e.g. retro-tag the true chronology as `v0.5.0`) before it causes real
   confusion, not urgent since both tags still resolve to valid, buildable
   commits.
+## SQL 工作台：tool-repo side done, host wiring deliberately deferred (2026-09-22)
+
+- `roc_desk-common` gained `roc_desk_core::credential` (`CredentialStore` +
+  `KeyringStore`) and `roc_desk_core::db` (`DbPool`/`create_pool`/
+  `apply_migrations`), tagged `common-v0.3.1` (see the tag-ordering note
+  above — this is the true latest, not `v0.4.0`).
+- `roc_desk-sql` (tag `v0.2.0`) has all 35 non-AI commands
+  (`sql_list_data_sources` ... `sql_write_text_file`, matching the host's
+  `commands/sql.rs` registration list exactly) ported to `roc_desk_sql::cmd`,
+  backed by a self-contained `SqlAppState` (data source service, session
+  manager, executor, query history, workspace tabs, workspace cache,
+  transfer manager — all newly built for this crate, no host `AppState`
+  precedent existed since explorer's commands are stateless). MySQL/
+  PostgreSQL/SQL Server adapters compile and are wired (Oracle stays
+  "not implemented", matching the host). `cargo check`/`build --release`
+  both pass; a smoke-test integration test does a real insert/select round
+  trip against the tool's own SQLite metadata file.
+- **Deliberately NOT ported**: the SQL Agent AI chat loop
+  (`sql::agent`/`commands/sql_agent.rs`) and the one-shot AI assist panel
+  (`sql::ai_assistant`/`sql_ai_*`/`sql_accept_change`/etc.) — both need
+  host-only `crate::ai`/`crate::agent_llm`/`crate::coding::ChangeStore`
+  infrastructure that has no `roc_desk_core` equivalent yet.
+- **Host wiring NOT done — this is a real blocker, not just unfinished
+  busywork, read before attempting it**: unlike explorer/editor, the 35
+  ported commands **cannot** simply be pointed at `roc_desk_sql::SqlAppState`
+  while leaving host's own `AppState.sql_data_source_service`/
+  `sql_session_manager`/`sql_query_history` fields in place, because
+  `commands/sql_agent.rs` (which stays in the host — the multi-turn AI Agent
+  chat, 13 usages concentrated in `sql/agent/session.rs` +
+  `commands/sql_agent.rs`) reads those exact host-typed fields. Swapping
+  only the 35 commands over would silently split "data sources visible in
+  the SQL workbench UI" from "data sources visible to the SQL Agent chat"
+  into two independent registries backed by two different SQLite files —
+  a user's newly-added data source would work in the workbench but be
+  invisible to the AI Agent. That is a functional regression, not a
+  refactor, so it was not done.
+  **The correct fix** (scoped follow-up, not attempted this pass): point
+  `roc_desk_sql::SqlAppState::new` at the host's *existing*
+  `sql_data_sources.db`/main pool path (no data migration needed, same
+  file) rather than a separate file, register it as the single source of
+  truth, then update `sql/agent/session.rs` and `commands/sql_agent.rs`
+  (13 usages) to read `State<'_, roc_desk_sql::SqlAppState>` fields instead
+  of `state.sql_data_source_service`/`sql_session_manager`/
+  `sql_query_history` — after which host's own `sql/service.rs`,
+  `db/repo/sql_data_sources_repo.rs`, `db/repo/sql_query_history_repo.rs`,
+  `db/repo/sql_workspace_tabs_repo.rs`, `sql/executor.rs`,
+  `sql/workspace_cache.rs`, `sql/transfer.rs`, and the 35 handlers in
+  `commands/sql.rs` can be deleted. `sql/agent/`, `sql/ai_assistant.rs`, and
+  the AI-only command handlers in `commands/sql.rs` stay in the host
+  regardless, until `roc_desk_core::ai` exists for them to be ported onto.
+- **Frontend**: not started, same blocker explorer/SQL both hit — the SQL
+  frontend imports heavily from host-only shared components (`ResultPanel`,
+  `CodingAgent/*`, `AiChat/*`, `shared/Toast|ContextMenu|ConfirmDialog`)
+  that haven't been extracted into `roc_desk-common`'s `ui-core` package yet
+  (currently just a bindings stub, not real components).
+
 - **Known cross-tool dependency-graph quirk**: the host currently pulls
   *two different commits* of `roc_desk_core`/`roc_desk_common` into the same
   build — one directly (pinned to `common-v0.3.1`), one transitively via
