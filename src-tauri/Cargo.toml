@@ -17,8 +17,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 
 [dependencies]
+tauri = { version = "2", features = ["unstable"] }
 roc_desk_core = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_core", tag = "common-v0.2.2" }
 roc_desk_common = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_common", tag = "common-v0.2.2" }
 # "unstable" 鐢ㄤ簬 browser 妯″潡鐨勫唴宓屽瓙 WebView锛坄Window::add_child`/`Manager::get_webview`/
