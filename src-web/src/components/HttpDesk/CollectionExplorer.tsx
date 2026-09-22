@@ -1,9 +1,11 @@
 import React, { useState } from "react";
-import { FilePlus2, Folder, FolderPlus, Trash2 } from "lucide-react";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { FilePlus2, Folder, FolderPlus, Trash2, FileJson, FileCode2, Download } from "lucide-react";
 import { useHttpDeskStore } from "../../stores/httpDeskStore";
 import { useToastStore } from "../shared/Toast";
 import { formatError } from "../../utils/error";
 import { httpMethodClass } from "../../utils/httpMethod";
+import { localFileService } from "../../services/fsService";
 import type { RequestSummary } from "../../types/bindings";
 
 /** 左栏：集合选择 + 当前集合的请求树（docs/HTTP_DESKTOP_PLAN.md §3.3）。文件夹
@@ -22,12 +24,69 @@ export const CollectionExplorer: React.FC = () => {
   const openRequestTab = useHttpDeskStore((s) => s.openRequestTab);
   const activeTabId = useHttpDeskStore((s) => s.activeTabId);
   const tabs = useHttpDeskStore((s) => s.tabs);
+  const importPostmanCollection = useHttpDeskStore((s) => s.importPostmanCollection);
+  const importOpenApiSpec = useHttpDeskStore((s) => s.importOpenApiSpec);
+  const exportCurrentCollection = useHttpDeskStore((s) => s.exportCurrentCollection);
   const push = useToastStore((s) => s.push);
 
   const [newCollectionName, setNewCollectionName] = useState("");
   const [showNewCollection, setShowNewCollection] = useState(false);
   const [newRequestName, setNewRequestName] = useState("");
   const [showNewRequest, setShowNewRequest] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const activeCollectionName = collections.find((c) => c.slug === activeSlug)?.name ?? "collection";
+
+  const handleImportPostman = async () => {
+    const path = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "Postman Collection (.json)", extensions: ["json"] }],
+    });
+    if (!path || Array.isArray(path)) return;
+    setImporting(true);
+    try {
+      const content = await localFileService.readFile(path);
+      await importPostmanCollection(content.text);
+      push("success", "Postman 集合导入成功");
+    } catch (e) {
+      push("error", `导入失败：${formatError(e)}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleImportOpenApi = async () => {
+    const path = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "OpenAPI (.json/.yaml/.yml)", extensions: ["json", "yaml", "yml"] }],
+    });
+    if (!path || Array.isArray(path)) return;
+    setImporting(true);
+    try {
+      const content = await localFileService.readFile(path);
+      await importOpenApiSpec(content.text);
+      push("success", "OpenAPI 规范导入成功");
+    } catch (e) {
+      push("error", `导入失败：${formatError(e)}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleExportPostman = async () => {
+    try {
+      const json = await exportCurrentCollection();
+      const path = await saveFileDialog({
+        defaultPath: `${activeCollectionName}.postman_collection.json`,
+        filters: [{ name: "Postman Collection (.json)", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await localFileService.writeFile(path, json, null);
+      push("success", `已导出到 ${path}`);
+    } catch (e) {
+      push("error", `导出失败：${formatError(e)}`);
+    }
+  };
 
   const activeRequestId = tabs.find((t) => t.id === activeTabId)?.request_id;
 
@@ -64,6 +123,17 @@ export const CollectionExplorer: React.FC = () => {
         <button className="btn ghost sm" title="新建集合" onClick={() => setShowNewCollection(true)}>
           <FolderPlus size={14} />
         </button>
+        <button className="btn ghost sm" title="从 Postman Collection (.json) 导入为新集合" disabled={importing} onClick={() => void handleImportPostman()}>
+          <FileJson size={14} />
+        </button>
+        <button className="btn ghost sm" title="从 OpenAPI 规范 (.json/.yaml) 导入为新集合" disabled={importing} onClick={() => void handleImportOpenApi()}>
+          <FileCode2 size={14} />
+        </button>
+        {activeSlug && (
+          <button className="btn ghost sm" title="导出当前集合为 Postman Collection" onClick={() => void handleExportPostman()}>
+            <Download size={14} />
+          </button>
+        )}
         {activeSlug && (
           <button
             className="btn ghost sm"

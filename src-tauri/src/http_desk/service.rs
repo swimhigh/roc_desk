@@ -402,6 +402,72 @@ pub async fn delete_request(
     file_ops.delete(&path, false).await
 }
 
+/// 把 `import::parse_postman_collection`/`parse_openapi` 解析出来的
+/// `ImportedCollection` 落盘成一个新集合——新建集合（含 slug 去重，和
+/// `create_collection` 同一套逻辑）+ 写集合元数据（名字/描述/变量）+ 逐个请求
+/// 直接写最终内容（不走"先建空模板再保存"两步，导入场景一次性给了完整内容，
+/// 没必要拆成两次写盘）。整个导入没有部分失败时的回滚——某个请求写失败会让
+/// 这次调用直接报错返回，前面已经写成功的文件和目录留在原地（比如权限问题
+/// 导致某个请求写不进去）；调用方看到的是"导入失败"提示，可以清理这个半成的
+/// 集合后重试，不做更复杂的"全有或全无"事务语义，导入是一次性操作，代价可接受。
+pub async fn import_collection(
+    file_ops: &dyn FileOps,
+    workspace_root: &str,
+    imported: super::import::ImportedCollection,
+) -> Result<HttpCollectionSummary, AppError> {
+    let base_slug = slugify(&imported.name);
+    let existing = list_collections(file_ops, workspace_root).await?;
+    let mut slug = base_slug.clone();
+    let mut n = 2;
+    while existing.iter().any(|c| c.slug == slug) {
+        slug = format!("{base_slug}-{n}");
+        n += 1;
+    }
+    file_ops.create_dir(&requests_dir(workspace_root, &slug)).await?;
+    file_ops
+        .create_dir(&environments_dir(workspace_root, &slug))
+        .await?;
+    let meta = HttpCollectionMeta {
+        name: imported.name.clone(),
+        description: imported.description.clone(),
+        auth: AuthConfig::None,
+        variables: imported.variables,
+    };
+    write_yaml(file_ops, &collection_meta_path(workspace_root, &slug), &meta).await?;
+    let default_env = EnvironmentDef::new(Uuid::new_v4().to_string(), "默认环境".to_string());
+    write_yaml(
+        file_ops,
+        &environment_path(workspace_root, &slug, &default_env.id),
+        &default_env,
+    )
+    .await?;
+
+    let mut request_count = 0usize;
+    for imported_req in imported.requests {
+        let id = Uuid::new_v4().to_string();
+        let req = RequestDef {
+            id: id.clone(),
+            name: imported_req.name,
+            method: imported_req.method,
+            url: imported_req.url,
+            params: imported_req.params,
+            headers: imported_req.headers,
+            auth: imported_req.auth,
+            body: imported_req.body,
+        };
+        let path = request_path(workspace_root, &slug, &imported_req.folder, &id);
+        write_yaml(file_ops, &path, &req).await?;
+        request_count += 1;
+    }
+
+    Ok(HttpCollectionSummary {
+        slug,
+        name: meta.name,
+        description: meta.description,
+        request_count,
+    })
+}
+
 /// 上层（`client.rs`）需要的完整变量上下文——把集合/全局两层拼好交给调用方，
 /// 环境那一层由调用方按当前选中的 `environment_id` 单独读（避免这里重复扫
 /// 环境列表）。

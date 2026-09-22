@@ -188,6 +188,47 @@ roc_desk（曾用名 DevHub）是面向运维/开发人员的桌面工具，目�
   - 跨栏复制/移动按"两侧协议组合"分流：本地↔本地直接文件操作；本地↔远程走已有的 SFTP/Agent 上传下载命令（"移动"=传输成功后删源）；同一远程连接内部只能"移动"（远程 rename，SFTP/Agent 协议都没有暴露"服务器内复制"的原语，不是这里新引入的限制，§3.3/AGENT_DESIGN.md 的双栏浏览器本来就没有这个能力）；不同连接/协议之间的远程互传不支持，给出明确提示而不是静默失败或报错。
   - 已知不做：远程新建文件夹（SFTP/Agent 命令本来就没有 mkdir）、拖拽（用工具栏按钮代替，符合用户原话"简洁易用为主，后续使用中再加功能"）。
 
+### 3.14 HTTP 测试工作台（类似 Postman/Apifox）
+
+- **需求**：见 [docs/HTTP_DESKTOP_PLAN.md](docs/HTTP_DESKTOP_PLAN.md) 的完整分期方案。
+  这一节此前一直缺失——功能已经实现并且可以从首页点开使用，但从未补进本文档，README
+  也一直把它错误地标成"后续规划"（2026-09-22 核实后已一并订正）。
+- **已实现（对应方案的阶段 0 + 阶段 1，2026-09-22 补齐了 Postman/OpenAPI 导入导出）**：
+  集合/环境管理（`http_desk/{mod,model,service}.rs`，基于 `FileOps`，本地/SSH/Agent
+  工作区都能用）；请求编辑（Params/Headers/Auth/Body 四个 Tab，
+  `RequestEditor.tsx`/`KeyValueTable.tsx`）；真实发起请求（`http_desk/client.rs`，
+  `reqwest`）+ 响应查看（`ResponsePanel.tsx`）；请求历史落库（`http_request_history_repo.rs`，
+  敏感信息按 `commands/http_desk.rs::redact()` 脱敏后再存）；环境/集合/全局三层变量替换
+  + 少量动态值（`http_desk/vars.rs`，有单元测试）；curl / Postman Collection v2.x /
+  OpenAPI 3.x 三种导入，均整份文件一次性落成一个新集合（不是逐条拼）；导出当前集合为
+  Postman Collection v2.1（`http_desk/{import,export}.rs`，均有单元测试；前端
+  `CollectionExplorer.tsx` 三个工具栏按钮 + 文件选择/保存对话框，`localFileService`
+  读写文件内容）。后端命令全部注册进 `lib.rs` 的 `generate_handler!`；首页
+  `HomeDashboard.tsx` 的 `DEFAULT_MODULE_ORDER` 里有独立入口卡片，`App.tsx` 按
+  `mode === "http"` 路由到 `HttpDeskShell.tsx`——是可以直接点开使用的真实功能，不是
+  隐藏/半成品代码。
+  - **导入的已知简化**：OpenAPI 导入只看 operation 级 + path 级 `parameters`/
+    `security`，不处理 `$ref` 引用（schema 里的 `$ref` 不会被解开，示例 body 生成
+    会拿到空对象而不是报错）；`securitySchemes` 映射出来的 `AuthConfig` 只是"类型
+    对了"，没有真实凭据（规范本身不带凭据，需要用户手动填）；Postman `formdata` 里
+    的文件字段导入后变成一行禁用状态的占位（roc_desk 本来就不支持表单文件上传）；
+    GraphQL body 降级成原始文本，`variables` 部分丢失。
+  - **导出的已知简化**：只导出成 Postman Collection v2.1，没有 OpenCollection YAML；
+    集合级 Auth（`HttpCollectionMeta.auth`）没有导出（Postman 集合级 auth 语义和
+    roc_desk 目前"集合级 Auth 字段存在但请求执行时不生效"这个已知缺口是一回事，等
+    补上集合级 Auth 真正生效再一起导出）。
+- **明确未做（对应方案阶段 2 及以后）**：前置/后置脚本与断言（无 QuickJS/`rquickjs`
+  沙箱、无 `pm.*` API、无 Tests 面板，`RequestDef` 目前没有脚本字段）；HAR 导入
+  （只记录已发生的请求/响应，不是"导入成可编辑集合"的天然格式，优先级低）；
+  AI 辅助生成/解释请求（没有接 `ChangeStore`）；批量 Runner（跑一个文件夹下所有请求）、
+  `http_cancel_request`、Mock Server；变量作用域只有环境/集合/全局三层，请求级/文件夹级
+  两层缺失（依赖尚不存在的脚本引擎/"文件夹即实体"概念，当前文件夹只是路径前缀）；
+  请求执行是每次新建 `reqwest::Client`（没有按集合复用连接池/Cookie Jar），超时固定
+  30 秒、重定向固定 10 次、响应体读满 5MB 截断（`client.rs`），均不可配置；无代理/自定义
+  CA/mTLS；Form-data 只支持文本字段，不支持文件上传；无"生产环境二次确认"防呆、无
+  按环境单独开关 TLS 校验；界面没有 Cookies 面板。
+- **优先级由用户后续决定**：上面这批缺口哪个先补，取决于实际使用场景，没有默认排期。
+
 ## 4. 非功能需求
 
 - **权限与自主性**：用户明确授权在本项目目录下的绝大多数操作（构建、跑测试、杀掉本项目自己的旧调试进程、文件编辑等）无需逐次确认，唯一例外是"删除工作区外的文件"（多次会话重申，最近一次原文："只要不删除工作区外的文件，我授权你所有操作，不需要我人工确认"）。

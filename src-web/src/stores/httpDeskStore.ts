@@ -74,6 +74,13 @@ interface HttpDeskState {
 
   loadHistory: () => Promise<void>;
   importCurl: (command: string) => Promise<void>;
+  /** Postman/OpenAPI 导入整份文件内容为一个新集合——和 `importCurl`（只解析出单个
+   * 请求塞进当前集合）不一样，落地成功后直接切到新建出来的集合。 */
+  importPostmanCollection: (content: string) => Promise<void>;
+  importOpenApiSpec: (content: string) => Promise<void>;
+  /** 导出当前选中集合为 Postman Collection v2.1 JSON 字符串，写盘交给调用方
+   * （文件选择对话框那一层，见 CollectionExplorer.tsx）。 */
+  exportCurrentCollection: () => Promise<string>;
 }
 
 export const useHttpDeskStore = create<HttpDeskState>((set, get) => ({
@@ -336,5 +343,27 @@ export const useHttpDeskStore = create<HttpDeskState>((set, get) => ({
     await httpDeskService.saveRequest(workspaceId, activeSlug, merged);
     await get().loadRequests();
     await get().openRequestTab(created.id, name);
+  },
+
+  importPostmanCollection: async (content) => {
+    const { workspaceId } = get();
+    if (!workspaceId) return;
+    const collection = await httpDeskService.importPostman(workspaceId, content);
+    await get().loadCollections();
+    await get().selectCollection(collection.slug);
+  },
+
+  importOpenApiSpec: async (content) => {
+    const { workspaceId } = get();
+    if (!workspaceId) return;
+    const collection = await httpDeskService.importOpenApi(workspaceId, content);
+    await get().loadCollections();
+    await get().selectCollection(collection.slug);
+  },
+
+  exportCurrentCollection: async () => {
+    const { workspaceId, activeSlug } = get();
+    if (!workspaceId || !activeSlug) throw new Error("请先选择一个集合");
+    return httpDeskService.exportPostman(workspaceId, activeSlug);
   },
 }));

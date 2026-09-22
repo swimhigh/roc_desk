@@ -6,7 +6,7 @@ use crate::db::repo::http_request_history_repo::NewHistoryEntry;
 use crate::error::AppError;
 use crate::fsops::FileOps;
 use crate::http_desk::model::*;
-use crate::http_desk::{client, import, service};
+use crate::http_desk::{client, export, import, service};
 use crate::http_desk::vars::VarContext;
 use crate::state::AppState;
 use crate::workspace::WorkspaceHandle;
@@ -345,6 +345,42 @@ pub async fn http_send_request(
 #[tauri::command]
 pub fn http_import_curl(command: String) -> Result<RequestDef, AppError> {
     import::parse_curl(&command)
+}
+
+/// Postman/OpenAPI 导入整份文件内容后直接落成一个新集合（不是像 `http_import_curl`
+/// 那样只解析出单个请求交给前端再手动建），因为源文件本来就是"一整份集合"的粒度，
+/// 拆成"前端逐个调用 create_request"会引入没必要的中间态（一半导入成功、用户中途
+/// 关掉对话框）。前端负责用文件选择器读出文件内容传进来，这里只管解析+落盘。
+#[tauri::command]
+pub async fn http_import_postman(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    content: String,
+) -> Result<HttpCollectionSummary, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    let imported = import::parse_postman_collection(&content)?;
+    service::import_collection(handle.file_ops.as_ref(), &handle.profile.root_path, imported).await
+}
+
+#[tauri::command]
+pub async fn http_import_openapi(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    content: String,
+) -> Result<HttpCollectionSummary, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    let imported = import::parse_openapi(&content)?;
+    service::import_collection(handle.file_ops.as_ref(), &handle.profile.root_path, imported).await
+}
+
+#[tauri::command]
+pub async fn http_export_postman(
+    state: State<'_, AppState>,
+    workspace_id: Uuid,
+    slug: String,
+) -> Result<String, AppError> {
+    let handle = get_handle(&state, workspace_id).await?;
+    export::to_postman_collection(handle.file_ops.as_ref(), &handle.profile.root_path, &slug).await
 }
 
 #[tauri::command]

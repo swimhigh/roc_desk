@@ -78,6 +78,15 @@ export const httpDeskService = {
   importCurl(command: string): Promise<RequestDef> {
     return invoke("http_import_curl", { command });
   },
+  importPostman(workspaceId: string, content: string): Promise<HttpCollectionSummary> {
+    return invoke("http_import_postman", { workspaceId, content });
+  },
+  importOpenApi(workspaceId: string, content: string): Promise<HttpCollectionSummary> {
+    return invoke("http_import_openapi", { workspaceId, content });
+  },
+  exportPostman(workspaceId: string, slug: string): Promise<string> {
+    return invoke("http_export_postman", { workspaceId, slug });
+  },
 
   listHistory(workspaceId: string, limit = 200): Promise<HttpRequestHistoryEntry[]> {
     return invoke("http_list_history", { workspaceId, limit });

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask, TextLayer as PdfTextLayer } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
-import { ChevronDown, ChevronRight, ChevronUp, List, Search, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, List, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -120,6 +120,8 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
   const [searchQuery, setSearchQuery] = useState("");
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [currentMatch, setCurrentMatch] = useState(0);
+  const [copyDone, setCopyDone] = useState(false);
+  const [textReady, setTextReady] = useState(0);
 
   useEffect(() => {
     searchQueryRef.current = searchQuery;
@@ -137,6 +139,8 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
     setSearchQuery("");
     setMatches([]);
     setCurrentMatch(0);
+    setCopyDone(false);
+    setTextReady(0);
 
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -272,7 +276,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
         }
       }
 
-      if (!cancelled) runSearch();
+      if (!cancelled) {
+        setTextReady(textIndexRef.current.size);
+        runSearch();
+      }
     })();
 
     return () => {
@@ -326,6 +333,33 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
   const closeSearch = () => {
     setSearchOpen(false);
     setSearchQuery("");
+  };
+
+  const copyAllText = async () => {
+    const text = Array.from(textIndexRef.current.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, idx]) => idx.divs.map((div) => div.textContent ?? "").join(""))
+      .filter(Boolean)
+      .join("\n\n");
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        if (!document.execCommand("copy")) throw new Error("copy command failed");
+        textarea.remove();
+      }
+      setCopyDone(true);
+      window.setTimeout(() => setCopyDone(false), 1800);
+    } catch {
+      setCopyDone(false);
+    }
   };
 
   // Ctrl+滚轮缩放（2026-09 用户需求）——故意不用 React 的 `onWheel`：React 17+
@@ -405,6 +439,15 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
             <Search style={{ width: 14, height: 14 }} /> 搜索
           </button>
         )}
+        <button
+          className="btn primary sm"
+          onClick={() => void copyAllText()}
+          disabled={!textReady}
+          title={textReady ? "复制 PDF 全部文字" : "此 PDF 尚未发现可复制文字"}
+        >
+          {copyDone ? <Check style={{ width: 14, height: 14 }} /> : <Copy style={{ width: 14, height: 14 }} />}
+          {copyDone ? "已复制" : "复制全文"}
+        </button>
       </div>
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
         {outlineOpen && (
@@ -425,6 +468,11 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ base64, visible = true }
               互不干扰。 */}
           {pageCount === 0 && <div style={{ padding: 16, fontSize: 12, color: "var(--text-secondary)" }}>加载中…</div>}
           <div ref={pagesContainerRef} style={{ padding: 16 }} />
+          {pageCount > 0 && textReady === 0 && (
+            <div style={{ padding: "0 16px 16px", fontSize: 12, color: "var(--text-secondary)" }}>
+              此 PDF 没有可提取的文字，可能是扫描图片；请使用 OCR 后再复制。
+            </div>
+          )}
         </div>
       </div>
     </div>

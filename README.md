@@ -32,8 +32,11 @@
 - **SQL 工作桌面**：类似 DBeaver，管理多个数据库连接（openGauss/MySQL 等），对象树浏览、多标签 SQL 编辑与执行、查询历史、AI 辅助生成/解释/优化/修复 SQL。
 - **AI 工具**：统一问答与编程能力，Plan/Build 模式、工具执行过程展示、Diff 接受/拒绝/撤销、历史会话。
 - **网页浏览**：应用内嵌浏览器，支持多标签页。
-
-后续规划：HTTP 测试桌面（类似 Postman/Apifox 的接口调试工具）。
+- **HTTP 测试工作台**：类似 Postman/Apifox，集合/环境管理、Params/Headers/Auth/Body 编辑、
+  真实发起请求查看响应、请求历史（敏感信息自动脱敏）、多层变量替换、curl/Postman
+  Collection/OpenAPI 导入、导出为 Postman Collection。已实现 MVP（详见
+  [docs/HTTP_DESKTOP_PLAN.md](docs/HTTP_DESKTOP_PLAN.md) 的阶段划分），暂不含前置/后置
+  脚本断言、批量 Runner、Mock Server、AI 辅助。
 
 ## 目录结构
 

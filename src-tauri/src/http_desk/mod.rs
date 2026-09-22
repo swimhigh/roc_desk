@@ -7,15 +7,17 @@
 //! 核心闭环，Phase 2/3 里最有性价比的一小块，其余明确留作后续任务）：
 //!
 //! - 已实现：工作区级集合/环境/请求 CRUD（`service.rs`）、变量插值与内置动态值
-//!   （`vars.rs`）、请求执行引擎（`client.rs`）、curl 导入（`import.rs`）、
-//!   请求历史（`history.rs`）、工作区标签页元数据（`db/repo/http_workspace_tabs_repo.rs`）。
+//!   （`vars.rs`）、请求执行引擎（`client.rs`）、curl/Postman Collection v2.x/
+//!   OpenAPI 3.x 导入 + Postman Collection v2.1 导出（`import.rs`/`export.rs`，
+//!   2026-09-22 补齐后两种）、请求历史（`history.rs`）、工作区标签页元数据
+//!   （`db/repo/http_workspace_tabs_repo.rs`）。
 //! - **未实现，明确留作后续任务**：
 //!   - 前置/后置脚本引擎（方案 §4.3 的 QuickJS/`rquickjs` 沙箱）——`RequestDef`
 //!     目前没有 script 字段，Auth/Body 之外的"脚本改写请求/断言响应"能力本轮
 //!     完全没有落地。这是范围缩减最大的一块，因为要做对（沙箱边界、`pm.*` API、
 //!     执行超时）本身工作量接近本轮其余部分之和。
-//!   - Postman Collection/OpenAPI/HAR 导入、Postman/OpenCollection YAML 导出
-//!     （方案 §4.7）——只做了 curl 导入。
+//!   - HAR 导入、OpenCollection YAML 导出——HAR 只记录"已发生的请求/响应"，不是
+//!     给别的工具当集合导入用的格式，暂不是优先级。
 //!   - AI 面板（方案 §8）——没有接入 `ChangeStore`/AI provider，请求文件的改动
 //!     目前只能通过 UI 手工编辑。
 //!   - Mock 服务（方案 §9，本来就标注 Phase 3+）。
@@ -27,6 +29,7 @@
 //! 完整覆盖方案里所有 Phase 的最终形态。
 
 pub mod client;
+pub mod export;
 pub mod import;
 pub mod model;
 pub mod service;
