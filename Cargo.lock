@@ -4666,7 +4666,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_common"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.2#c919a5f193db9504ef887de9877424019f7b435a"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.4#0b074109cb7ee3fd7a25b1242cf7d90df93a43fb"
 dependencies = [
  "async-trait",
  "roc_desk_core",
@@ -4676,7 +4676,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_core"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.2#c919a5f193db9504ef887de9877424019f7b435a"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.4#0b074109cb7ee3fd7a25b1242cf7d90df93a43fb"
 dependencies = [
  "r2d2",
  "reqwest 0.12.28",
