@@ -7,7 +7,6 @@ pub mod commands;
 pub mod connection;
 pub mod credential;
 pub mod db;
-pub mod error;
 pub mod fsops;
 pub mod http_desk;
 pub mod log;
@@ -20,6 +19,10 @@ pub mod state;
 pub mod symbols;
 pub mod windows_context_menu;
 pub mod workspace;
+
+// Compatibility re-export while modules are migrated into roc_desk_core.
+// New tool crates should import `roc_desk_core::error::AppError` directly.
+pub use roc_desk_core::error;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -538,25 +541,25 @@ pub fn run() {
             commands::sftp::sftp_rename,
             commands::sftp::sftp_download_entry,
             commands::sftp::sftp_upload_entry,
-            commands::local_fs::local_list_dir,
-            commands::local_fs::local_home_dir,
-            commands::local_fs::local_list_drives,
-            commands::local_fs::local_is_dir,
-            commands::local_fs::local_read_file,
-            commands::local_fs::local_write_file,
-            commands::local_fs::local_read_file_with_encoding,
-            commands::local_fs::local_write_file_with_encoding,
-            commands::local_fs::local_read_binary_preview,
-            commands::local_fs::local_open_externally,
-            commands::local_fs::local_convert_legacy_office_to_pdf,
-            commands::local_fs::local_inspect_binary,
-            commands::local_fs::local_peek_is_binary,
-            commands::local_fs::local_inspect_jar,
-            commands::local_fs::local_delete,
-            commands::local_fs::local_rename,
-            commands::local_fs::local_copy,
-            commands::local_fs::local_create_dir,
-            commands::local_fs::local_move,
+            roc_desk_explorer::cmd::local_list_dir,
+            roc_desk_explorer::cmd::local_home_dir,
+            roc_desk_explorer::cmd::local_list_drives,
+            roc_desk_explorer::cmd::local_is_dir,
+            roc_desk_explorer::cmd::local_read_file,
+            roc_desk_explorer::cmd::local_write_file,
+            roc_desk_explorer::cmd::local_read_file_with_encoding,
+            roc_desk_explorer::cmd::local_write_file_with_encoding,
+            roc_desk_explorer::cmd::local_read_binary_preview,
+            roc_desk_explorer::cmd::local_open_externally,
+            roc_desk_explorer::cmd::local_convert_legacy_office_to_pdf,
+            roc_desk_explorer::cmd::local_inspect_binary,
+            roc_desk_explorer::cmd::local_peek_is_binary,
+            roc_desk_explorer::cmd::local_inspect_jar,
+            roc_desk_explorer::cmd::local_delete,
+            roc_desk_explorer::cmd::local_rename,
+            roc_desk_explorer::cmd::local_copy,
+            roc_desk_explorer::cmd::local_create_dir,
+            roc_desk_explorer::cmd::local_move,
             commands::local_fs::take_pending_open_paths,
             commands::transfer::transfer_cancel,
             commands::transfer::transfer_log_list,
