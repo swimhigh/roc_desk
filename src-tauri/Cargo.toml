@@ -115,13 +115,13 @@ deadpool-postgres = "0.14"
 
 # MySQL锛歚mysql_async` 鏄ぞ鍖虹淮鎶ゆ渶娲昏穬鐨勫紓姝?MySQL 椹卞姩锛岃嚜甯﹁繛鎺ユ睜
 # 锛坄mysql_async::Pool`锛夛紝TLS 鍚屾牱閫?ring provider锛坄default-rustls-ring`
-# feature 缁勫悎锛夛紝涓嶉渶瑕侀澶栧紩鍏ヨ繛鎺ユ睜 crate銆?mysql_async = { version = "0.37", default-features = false, features = [
+mysql_async = { version = "0.37", default-features = false, features = [
     "default-rustls-ring",
     "chrono",
 ] }
 
 # SQL Server锛氱函 Rust 瀹炵幇鐨?TDS 鍗忚瀹㈡埛绔紝涓嶄緷璧栫郴缁熻 ODBC/FreeTDS銆?# `tiberius::Client::connect` 鍚冭８ `tokio::net::TcpStream`锛岃鐢?`tokio_util::
-# compat` 鎶婂畠閫傞厤鎴?tiberius 渚濊禆鐨?futures-io 椋庢牸 AsyncRead/AsyncWrite鈥斺€?# 涓婇潰 `tokio-util` 宸茬粡鍔犱簡 "compat" feature锛屼笉闇€瑕佸啀鍗曠嫭寮曚竴浠姐€?tiberius = { version = "0.12", default-features = false, features = [
+tiberius = { version = "0.12", default-features = false, features = [
     "rustls",
     "chrono",
     "tds73",
