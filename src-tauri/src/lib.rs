@@ -480,7 +480,7 @@ pub fn run() {
             commands::fs::fs_inspect_binary,
             commands::fs::fs_peek_is_binary,
             commands::fs::fs_inspect_jar,
-            commands::ocr::editor_ocr_image,
+            roc_desk_editor::ocr::editor_ocr_image,
             commands::symbols::symbols_build_index,
             commands::symbols::symbols_go_to_definition,
             commands::symbols::symbols_reindex_file,

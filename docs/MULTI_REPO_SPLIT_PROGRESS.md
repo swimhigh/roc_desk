@@ -119,3 +119,76 @@ its standalone Tauri host.
   commands (currently still in the host, `commands/sftp.rs` /
   `commands/agent.rs`) need to be resolved together with the `roc_desk-ssh`
   migration, since they overlap.
+- Follow-up (2026-09-22): `roc_desk-explorer` shipped a real standalone
+  frontend (tag `v0.2.1`) replacing the placeholder `dist/index.html` — a
+  self-contained single-pane local file manager (navigate/drives/CRUD/open),
+  not a copy of the host's `LocalExplorerScreen.tsx` (which pulls in SFTP/
+  Agent/terminal/shared-UI dependencies that don't exist in this repo yet).
+
+## Editor (编辑器)：OCR + symbol-index-for-standalone-mode migrated (2026-09-22)
+
+- `roc_desk-common` (tag `common-v0.3.1`, the current head — supersedes
+  `common-v0.4.0`, which is an earlier commit on the same branch; both exist
+  as tags because two migrations tagged in parallel, see "known tag-ordering
+  quirk" below) gained `roc_desk_core::credential` (`CredentialStore` +
+  `KeyringStore`), `roc_desk_core::db` (`DbPool`/`create_pool`/
+  `apply_migrations`), and `roc_desk_common::symbols` (the regex-based
+  per-language symbol scanner, ported from the host's `symbols/mod.rs`).
+- `roc_desk-editor` (tag `v0.2.1`) now owns two genuinely editor-specific
+  command groups: `ocr::editor_ocr_image` (Windows `Media.Ocr`, ported 1:1)
+  and `symbols::editor_symbols_*` (a **new**, root-path-keyed variant of
+  symbol indexing for standalone/loose-folder editing — the host's existing
+  `commands/symbols.rs` is `workspace_id`-keyed and stays host-side, see
+  below). Local file I/O is not reimplemented — `roc_desk-editor` depends on
+  `roc_desk-explorer` and re-exports it. A missing `src-web` build scaffold
+  was filled in (package.json/vite/tsconfig) and `vite.config.ts`'s
+  `build.outDir` was pointed at `../standalone/dist` so `npm run build`
+  actually feeds the Tauri shell instead of leaving the placeholder in
+  place; `<EditorPane/>` + `useEditorStore` are exported from
+  `src-web/src/index.ts` for `roc_desk-workspace` to depend on later.
+- **Host wiring done**: `src-tauri/Cargo.toml` now depends on
+  `roc_desk_editor` (`v0.2.1`); `lib.rs` registers
+  `roc_desk_editor::ocr::editor_ocr_image` in place of the deleted
+  `commands/ocr.rs`. `cargo check --workspace` and a full
+  `build-portable.ps1` run both pass; smoke-tested by launching
+  `bin/roc_desk.exe` (stayed up, no crash).
+- **Host wiring NOT done, intentionally**: the host's `commands/symbols.rs`
+  (`symbols_build_index`/`symbols_go_to_definition`/`symbols_reindex_file`)
+  was **not** switched to call `roc_desk_common::symbols::build_index`. The
+  host's `WorkspaceHandle.file_ops` is `Arc<dyn crate::fsops::FileOps>` —
+  the host's own trait, which has one more method (`replace_text`) than
+  `roc_desk_common::fsops::FileOps` and is therefore a *different, nominally
+  incompatible* trait object even though most methods match structurally.
+  Passing `handle.file_ops.as_ref()` into `roc_desk_common::symbols::
+  build_index` (which expects `&dyn roc_desk_common::fsops::FileOps`) does
+  not type-check. Unifying the two traits (e.g. making host's `FileOps`
+  re-export/extend `roc_desk_common`'s, or moving `replace_text` out to a
+  separate extension trait) is real work belonging to a future pass — likely
+  when `roc_desk-workspace` (which owns the *actual* caller of these
+  workspace-keyed commands) gets migrated, since that's when the host's
+  remote/local `fsops` split needs to be resolved anyway. Host's local
+  `symbols/mod.rs` (360 lines) was therefore **not deleted** — it's now a
+  duplicate of `roc_desk_common::symbols`, left in place deliberately.
+- **Known tag-ordering quirk**: `roc_desk-common`'s semver tags are not in
+  chronological order — `common-v0.4.0` (editor's parallel push, adds only
+  `symbols`) was tagged *before* `common-v0.3.1` (SQL's parallel push, adds
+  `credential`+`db` on top of `symbols`) landed and was tagged with a lower
+  number. `common-v0.3.1` is the actual latest/superset commit; the host and
+  any future work should treat `common-v0.3.1` as current, not `v0.4.0`.
+  This was caused by two tool migrations running concurrently and each
+  tagging from their own vantage point — worth renumbering
+  (e.g. retro-tag the true chronology as `v0.5.0`) before it causes real
+  confusion, not urgent since both tags still resolve to valid, buildable
+  commits.
+- **Known cross-tool dependency-graph quirk**: the host currently pulls
+  *two different commits* of `roc_desk_core`/`roc_desk_common` into the same
+  build — one directly (pinned to `common-v0.3.1`), one transitively via
+  `roc_desk-explorer` (pinned to `common-v0.3.0`) and another via
+  `roc_desk-editor` (pinned to `common-v0.4.0`). This compiles today because
+  no code currently passes a value of one instantiation's types (e.g.
+  `AppError`) across a boundary that expects the other instantiation's
+  types — each tool crate's commands are self-contained and only meet the
+  host via Tauri's serde-serialized IPC boundary, not shared Rust type
+  identity. It is still fragile and should be cleaned up by bumping
+  `roc_desk-explorer`/`roc_desk-editor` to both pin `common-v0.3.1` next
+  time either is touched, rather than left to accumulate further.
