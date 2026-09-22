@@ -278,6 +278,86 @@ its standalone Tauri host.
   exclusion for `F:\code\wuyou\roc_desk\build\` (or wherever
   `CARGO_TARGET_DIR` points).
 
+## SSH/SFTP/RDP/Agent：tool-repo side done, host wiring deliberately deferred (2026-09-22)
+
+- `roc_desk-ssh` (tag `v0.3.0`) has SSH terminal (connect/auth/PTY/TOFU),
+  SFTP (list/read/write/transfer/preview), Windows remote Agent (TLS+pairing
+  auth, cert TOFU, terminal, file browsing), and RDP (launches `wfreerdp.exe`,
+  embeds its window via Win32 APIs) all fully ported and wired as ~55
+  commands in `roc_desk_ssh::cmd`, backed by its own `RocDeskSshAppState`
+  (self-contained SQLite file for connection profiles/known-hosts/transfer
+  log — does not depend on `roc_desk_core::workspace`, since that's still a
+  placeholder). Verified via a debug build that boots and initializes its
+  state layer correctly; release build blocked by the same 360 AV issue
+  documented above (debug/`cargo check --release` workaround applies here
+  too, not yet exercised for this specific repo).
+- **Host wiring NOT done — same class of blocker as SQL, read before
+  attempting it**: host's `AppState.connection_manager`/`ssh_pool`/
+  `agent_pool`/`trust_prompts`/`agent_trust_prompts`/`rdp_sessions`/
+  `connection_group_manager` are read not just by `commands/ssh.rs`/
+  `sftp.rs`/`rdp.rs`/`agent.rs`/`connection.rs`/`connection_group.rs` (the
+  ones that would be fully replaced by `roc_desk-ssh`), but also by
+  `commands/sql.rs` (3 sites), `commands/coding.rs` (7 sites), and
+  `commands/log_search.rs` (2 sites) — none of which have been migrated.
+  Swapping the connection-management fields over would break those three
+  files' still-host-resident commands the same way the SQL Agent chat would
+  have broken if the 35 SQL commands had been swapped without it.
+  **The correct fix** (future pass): audit exactly what `sql.rs`/`coding.rs`/
+  `log_search.rs` need from `connection_manager`/`ssh_pool`/etc.
+  (almost certainly: resolving a connection profile by id, and/or reusing an
+  already-open SSH tunnel for a remote data source or remote workspace),
+  point `roc_desk-ssh`'s `RocDeskSshAppState` at the same underlying data
+  (or have host construct it and read the *same* instance from both old and
+  new call sites), update those three files' call sites, then swap+delete.
+  This likely wants to happen together with the `roc_desk-workspace` host
+  wiring below, since `coding.rs` is the connective tissue between them.
+
+## 编程工作区：tool-repo side partially done, host wiring deliberately deferred (2026-09-22)
+
+- `roc_desk-common` gained `roc_desk_core::workspace` (tag `common-v0.5.0`)
+  — the "open a local folder, remember it in a recent list" concept,
+  **local-only** (the host's original also supports SSH/Agent remote
+  workspaces, intentionally not replicated yet since that needs
+  `roc_desk-ssh`'s connection pools, which this pass didn't wire together).
+- `roc_desk-workspace` (tag `v0.1.0`) has: the workspace concept (via
+  `roc_desk_core::workspace`), local terminal PTY, a local-only Git panel
+  (status/diff/log/commit via `git` argv), all wired as commands and
+  **actually smoke-tested through WebView2's CDP debug port** (opened a
+  real git repo, verified `git_status`/`git_log` against ground truth,
+  spawned a real `powershell.exe` PTY and streamed output) — this is the
+  most thoroughly runtime-verified of any tool in this migration so far,
+  including finding and fixing a real bug (missing `core:event:default`
+  capability, which would have silently broken terminal output).
+  Symbol indexing is not reimplemented here — it depends on
+  `roc_desk-editor`'s `editor_symbols_*` (root-path-keyed, already a
+  working precedent).
+- **Explicitly NOT ported** (see the tool's own README/`lib.rs` module docs
+  for the full reasoning): the AI coding agent loop (`coding::session`/
+  `coding::tools`, ~3500 lines) and the file-change staging it drives
+  (`coding::changes`/`diff`) — both depend on `crate::ai`/`crate::agent_llm`,
+  which (same as the SQL Agent) has no `roc_desk_core` home yet. `skills`
+  (Skills zip import) and `webfetch` were skipped for the same reason
+  (undetermined `roc_desk-common` `common` package dependencies). The
+  embeddable `<EditorPane/>` integration (plan §9/§10) was evaluated and
+  deliberately skipped this pass — its own dependency tree (Monaco/pdfjs/
+  mammoth/xlsx) plus cross-repo npm-via-git wiring was judged not worth the
+  risk; the standalone shell has its own plain-textarea editor instead.
+- **Host wiring NOT done — same blocker as SSH, and they're entangled**:
+  host's `AppState.workspaces` (the open-workspace registry) is read by
+  `commands/workspace.rs` (open/close — would be replaced),
+  `commands/coding.rs` (15 sites — the AI Agent commands that stay in host,
+  since Agent wasn't ported), and `commands/symbols.rs` (the workspace-keyed
+  symbol commands, deliberately left in host, see the Editor section above).
+  Swapping `roc_desk_core::workspace` in for `state.workspaces` without
+  updating `coding.rs`/`symbols.rs` would split "workspaces open in the file
+  tree" from "workspaces the AI Agent and symbol index know about" into two
+  registries — the exact SQL-style regression, not attempted.
+  **The correct fix** (future pass, likely combined with SSH's): once
+  `roc_desk_core::ai`/`agent_llm` exist and the AI Agent is portable, migrate
+  `coding.rs`'s Agent commands and `symbols.rs` together, at which point
+  `state.workspaces` can be deleted from `AppState` entirely in favor of
+  `roc_desk_core::workspace`'s registry, read by everyone.
+
 ## Known cross-tool dependency-graph quirk
 
 - the host currently pulls
