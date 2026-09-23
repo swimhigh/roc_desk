@@ -22,8 +22,8 @@ tauri = { version = "2", features = ["unstable"] }
 [dependencies]
 roc_desk_core = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_core", tag = "common-v0.3.1" }
 roc_desk_common = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_common", tag = "common-v0.3.1" }
-roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", package = "roc_desk_explorer", tag = "v0.2.1" }
-roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.1" }
+roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", package = "roc_desk_explorer", tag = "v0.2.2" }
+roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.2" }
 roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.0" }
 # "unstable" 鐢ㄤ簬 browser 妯″潡鐨勫唴宓屽瓙 WebView锛坄Window::add_child`/`Manager::get_webview`/
 # `Manager::get_window`锛夛紝缃戦〉娴忚闈㈡澘闇€瑕佹妸缃戦〉鍐呭瀹氫綅鍒颁富绐楀彛鍐呯殑涓€鍧楃煩褰㈠尯鍩熼噷
