@@ -358,6 +358,61 @@ its standalone Tauri host.
   `state.workspaces` can be deleted from `AppState` entirely in favor of
   `roc_desk_core::workspace`'s registry, read by everyone.
 
+## 深色/浅色主题一致性 + 一个重要的 npm 限制发现 (2026-09-23)
+
+- 用户反馈两处真实 bug，都已修复并验证：
+  1. `roc_desk-explorer` 独立 exe 完全没有主题切换按钮、`App.tsx` 全篇硬编码
+     十六进制颜色（不是 CSS 变量），意味着这个工具事实上**只有一套写死的深色
+     配色，没有真正的浅色主题**。补了 `themeStore.ts`/`ThemeToggle.tsx`（自
+     包含，`data-theme` 属性 + `localStorage`，和宿主同一套模式），把
+     `index.css` 补成真正的 `[data-theme="dark"]`/`[data-theme="light"]` 双
+     主题令牌，`App.tsx` 的 `styles` 常量从字面量十六进制值换成 `var(--xxx)`
+     引用。Tag `v0.2.3`。
+  2. `roc_desk-editor` 独立 exe 界面外壳是深色的，但 Monaco 里打开的文件内容
+     是浅色的——根因是 `CodeEditor.tsx` 请求名为 `roc-dark`/`roc-light` 的
+     Monaco 自定义主题，但注册这两个主题的 `monacoSetup.ts` 从来没有搬进这个
+     仓库，Monaco 找不到就静默回退到内置的浅色 `vs` 主题。把 `monacoSetup.ts`
+     原样搬过来，在 `main.tsx`（独立壳入口）和 `index.ts`（给
+     `roc_desk-workspace` 之类嵌入方用的库入口）两处都做一次性 side-effect
+     import。同时给 `styles.css` 补上真正的双主题令牌（这个仓库组件历史上
+     混用了 `--bg-app`/`--bg-base` 两套变量名，没有强行统一改名，而是让两套
+     名字互为别名、都随主题切换）、加了顶部工具栏 + `ThemeToggle`。Tag
+     `v0.2.3`。
+  - 宿主 `Cargo.toml` 同步把这两个工具的 tag 提到 `v0.2.3`，`cargo check
+    --release` 验证通过，跑了一次完整 `build-portable.ps1` 刷新
+    `bin/roc_desk.exe`。
+
+- **重要的架构发现：`docs/MULTI_REPO_SPLIT_PLAN.md` 里"npm 用
+  `github:<repo>#path:packages/ui-core&<sha>` 取 monorepo 子目录"这个假设是
+  错的，实测验证过**：
+  ```
+  npm install "github:swimhigh/roc_desk-common#path:packages/ui-core"
+  npm error enoent Could not read package.json ...git-clone.../package.json
+  ```
+  plain npm 的 git 依赖只会克隆整个仓库、在**仓库根目录**找 `package.json`，
+  不支持提取子目录（`path:` 片段不是 npm 认的语法，是我们自己在设计阶段的
+  误记）。这意味着 `packages/ui-core`（本次顺手按计划搭建了 Toast/
+  ContextMenu/ConfirmDialog/ThemeToggle/useFileTreeOperations 等组件，代码
+  还在 `roc_desk-common` 仓库里、可以当参考实现抄）**目前没有一条实际可行
+  的路径被其他仓库当 npm 依赖引用**——这正是为什么 `roc_desk-explorer`/
+  `roc_desk-editor`/`roc_desk-ssh`/`roc_desk-workspace` 到目前为止全部是
+  "各自拷一份 Toast/ContextMenu/ConfirmDialog 源码"而不是"依赖同一个包"：
+  不是偷懒，是当前唯一可行的路。
+  - 后续要真正做到"改一处、所有工具同步"，需要在下面几个方案里选一个（都
+    没做，需要用户决策）：
+    a) 把 `packages/ui-core` 单独拆成自己的 GitHub 仓库（根目录就是
+       package.json），寄生在 `roc_desk-common` 之外——违背"9 个仓库"的
+       设计，但是最省事、npm 原生支持。
+    b) 发布到私有/公开 npm registry（`npm publish`），各工具正常
+       `"@roc_desk/ui-core": "^0.2.0"` 依赖——需要维护发布流程和版本号。
+    c) 换成 pnpm/yarn workspace + `workspace:` 协议——但这要求所有工具仓库
+       和 `roc_desk-common` 在同一个 workspace 根下（即物理上合成一个
+       monorepo），和"六个工具各自独立仓库"的设计冲突。
+    d) 维持现状：`packages/ui-core` 只是"标准实现参考"，各工具手动同步拷贝
+       （现在的实际做法），接受轻微的代码重复换取仓库独立性。
+  - 在方案 a/b/c 选定之前，`packages/ui-core` 暂不建议投入更多组件迁移
+    工作——写好的组件缺一条能被外部工具实际消费的路径，属于"写了但用不上"。
+
 ## Known cross-tool dependency-graph quirk
 
 - the host currently pulls
