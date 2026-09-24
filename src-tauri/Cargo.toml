@@ -1,7 +1,7 @@
 [package]
 name = "roc_desk"
 version = "3.0.0"
-description = "roc_desk 鈥?integrated developer client (SSH/SFTP/log search/AI)"
+description = "roc_desk — integrated developer client (SSH/SFTP/log search/AI)"
 authors = ["you"]
 edition = "2021"
 license-file = "../LICENSE"
@@ -28,52 +28,52 @@ roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "
 roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.4" }
 roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.4" }
 roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.2.5" }
-# "unstable" 鐢ㄤ簬 browser 妯″潡鐨勫唴宓屽瓙 WebView锛坄Window::add_child`/`Manager::get_webview`/
-# `Manager::get_window`锛夛紝缃戦〉娴忚闈㈡澘闇€瑕佹妸缃戦〉鍐呭瀹氫綅鍒颁富绐楀彛鍐呯殑涓€鍧楃煩褰㈠尯鍩熼噷
-# 鑰屼笉鏄脊鍑虹嫭绔嬬獥鍙ｏ紙2026-08-18 闇€姹傚彉鏇达紝瑙?src/browser/mod.rs 椤堕儴娉ㄩ噴锛夈€?
+# "unstable" 用于 browser 模块的内嵌子 WebView（`Window::add_child`/`Manager::get_webview`/
+# `Manager::get_window`），网页浏览面板需要把网页内容定位到主窗口内的一块矩形区域里
+# 而不是弹出独立窗口（2026-08-18 需求变更，见 src/browser/mod.rs 顶部注释）。
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-# Windows"鐢?..鎵撳紑"鏂囦欢鍏宠仈/鍙屽嚮宸插叧鑱旀枃浠舵椂锛岀郴缁熸槸鎶婃枃浠惰矾寰勫綋鍛戒护琛屽弬鏁?
-# 鎷夎捣涓€涓柊杩涚▼鈥斺€斿鏋?roc_desk 宸茬粡鍦ㄨ繍琛岋紝闇€瑕佹妸杩欎釜鏂拌繘绋嬬殑 argv 杞彂缁?
-# 宸叉湁瀹炰緥锛堝湪宸叉湁绐楀彛閲屽紑涓€涓柊鏍囩锛夛紝鑰屼笉鏄湡鐨勫啀璧蜂竴涓繘绋嬶紙2026-09-03 闇€姹傦級銆?
+# Windows"用...打开"文件关联/双击已关联文件时，系统是把文件路径当命令行参数
+# 拉起一个新进程——如果 roc_desk 已经在运行，需要把这个新进程的 argv 转发给
+# 已有实例（在已有窗口里开一个新标签），而不是真的再起一个进程（2026-09-03 需求）。
 tauri-plugin-single-instance = "2"
 trash = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# HTTP 妗岄潰锛坉ocs/HTTP_DESKTOP_PLAN.md 搂4.4锛夛細璇锋眰/闆嗗悎/鐜瀹氫箟鏂囦欢鐢?YAML銆?
-# 涓婃父 `serde_yaml` 宸茶浣滆€呭瓨妗ｏ紙涓嶅啀鎺ユ柊鍔熻兘锛夛紝浣嗘病鏈夊凡鐭ュ畨鍏ㄩ棶棰樸€佺敓鎬侀噷
-# 浠嶈骞挎硾渚濊禆锛岀敤浜庤鍐欐湰鍦?宸ヤ綔鍖哄唴鐨勯厤缃枃浠惰冻澶熺ǔ锛涘鏋滃悗缁渶瑕佺Н鏋佺淮鎶ょ殑
-# 鏇夸唬鍝侊紝鍙互骞虫浛鎴?`serde_yaml_ng`锛堝悓涓€濂?API锛夈€?
+# HTTP 桌面（docs/HTTP_DESKTOP_PLAN.md §4.4）：请求/集合/环境定义文件用 YAML。
+# 上游 `serde_yaml` 已被作者存档（不再接新功能），但没有已知安全问题、生态里
+# 仍被广泛依赖，用于读写本地/工作区内的配置文件足够稳；如果后续需要积极维护的
+# 替代品，可以平替成 `serde_yaml_ng`（同一套 API）。
 serde_yaml = "0.9"
 
-# 閿欒澶勭悊
+# 错误处理
 thiserror = "2"
 anyhow = "1"
 
-# 寮傛
+# 异步
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 async-trait = "0.1"
 
-# 鏁版嵁搴擄紙宸ヤ綔鍖烘。妗堟寔涔呭寲锛孋ODE_DESIGN.md 搂浜旓級
+# 数据库（工作区档案持久化，CODE_DESIGN.md §五）
 rusqlite = { version = "0.39", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.34"
 
-# 鏃ュ織
+# 日志
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# 钀界洏鏃ュ織锛坙ib.rs::init_logging锛夛細windows_subsystem = "windows" 鐨勫彂甯冪増娌℃湁鎺у埗鍙帮紝
-# tracing_subscriber::fmt::init() 鍙啓 stdout 绛変簬鏃ュ織鐩存帴娑堝け鈥斺€攑anic/寮傚父鍙戠敓鏃?
-# 闄や簡宕╂簝绐楀彛娑堝け浠€涔堥兘鐣欎笉涓嬶紙2026-08-28 鐢ㄦ埛鍙嶉"绋嬪簭鏈夊彲鑳戒細鑷姩閫€鍑轰笉瑙佷簡"锛夈€?
+# 落盘日志（lib.rs::init_logging）：windows_subsystem = "windows" 的发布版没有控制台，
+# tracing_subscriber::fmt::init() 只写 stdout 等于日志直接消失——panic/异常发生时
+# 除了崩溃窗口消失什么都留不下（2026-08-28 用户反馈"程序有可能会自动退出不见了"）。
 tracing-appender = "0.2"
 
-# 鍏朵粬
+# 其他
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# 鍑嵁瀛樺偍锛堢郴缁熷瘑閽ラ摼锛孌ESIGN.md 搂鍏?1锛?
+# 凭据存储（系统密钥链，DESIGN.md §八-1）
 keyring = { version = "3", features = ["windows-native"] }
 
 # SSH / SFTP
@@ -81,123 +81,122 @@ russh = "0.46"
 russh-keys = "0.46"
 russh-sftp = "2"
 
-# Windows 杩滅▼ Agent锛圓GENT_DESIGN.md锛夛細瀹㈡埛绔笌 roc_desk_agent.exe 鍏变韩鐨勫崗璁?
-# 绫诲瀷 + 甯х紪瑙ｇ爜锛汿LS 鐢ㄦ硶鍜?agent/Cargo.toml 淇濇寔涓€鑷达紙鏄惧紡 `ring`锛?
-# 閬垮厤 `aws-lc-rs` 鏋勫缓鑴氭湰鍦ㄩ儴鍒?Windows 鐜涓嬬殑"鎷掔粷璁块棶"闂锛夈€?
+# Windows 远程 Agent（AGENT_DESIGN.md）：客户端与 roc_desk_agent.exe 共享的协议
+# 类型 + 帧编解码；TLS 用法和 agent/Cargo.toml 保持一致（显式 `ring`，
+# 避免 `aws-lc-rs` 构建脚本在部分 Windows 环境下的"拒绝访问"问题）。
 roc_desk_protocol = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_protocol", tag = "v0.3.4" }
 
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 sha2 = "0.10"
 
-# 鏈湴缁堢 PTY锛圖ESIGN.md 搂3.2锛屾湰鍦板伐浣滃尯鐨勭粓绔潰鏉匡紱Windows 涓婂簳灞傝蛋 ConPTY锛?
+# 本地终端 PTY（DESIGN.md §3.2，本地工作区的终端面板；Windows 上底层走 ConPTY）
 portable-pty = "0.8"
 
-# 鏃ュ織琛岃В鏋?/ 楂樺嵄鍛戒护榛戝悕鍗曞尮閰?
+# 日志行解析 / 高危命令黑名单匹配
 regex = "1"
 
-# 鏂囨湰鏂囦欢缂栫爜鎺㈡祴锛圵indows 涓婂ぇ閲?.txt/.log 鏄?GBK 鎴栧甫 BOM 鐨?UTF-16锛?
-# 涓嶈兘鍋囪鍏ㄦ槸 UTF-8锛岃 fsops::encoding锛?
+# 文本文件编码探测（Windows 上大量 .txt/.log 是 GBK 或带 BOM 的 UTF-16，
+# 不能假设全是 UTF-8，见 fsops::encoding）
 encoding_rs = "0.8"
 
-# AI 瀵硅瘽锛圤penAI 鍏煎 API锛孲SE 娴佸紡锛孌ESIGN.md 搂3.6锛?
+# AI 对话（OpenAI 兼容 API，SSE 流式，DESIGN.md §3.6）
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
 futures-util = "0.3"
 
-# AI 缂栫▼鍔╂墜锛氭枃浠跺彉鏇?Diff 鐢熸垚锛圖ESIGN.md 搂3.8.3锛?
+# AI 编程助手：文件变更 Diff 生成（DESIGN.md §3.8.3）
 similar = "2"
 
-# 缂栬緫鍣ㄥ浘鐗囬瑙堬細鏁翠唤璇诲叆鐨勪簩杩涘埗缂栫爜鎴?base64 浜ょ粰鍓嶇鎷?data URL 灞曠ず
-# 锛?026-08-28 鐢ㄦ埛鍙嶉鍥剧墖鍦ㄧ紪杈戝櫒閲岃褰撴枃鏈墦寮€銆佹樉绀轰竴鍫嗕贡鐮侊級銆?
+# 编辑器图片预览：整份读入的二进制编码成 base64 交给前端拼 data URL 展示
+# （2026-08-28 用户反馈图片在编辑器里被当文本打开、显示一堆乱码）。
 base64 = "0.22"
 
-# 瑙ｆ瀽 EXE/DLL锛圥E锛夈€丼O锛圗LF锛夌瓑鍙墽琛屾枃浠剁殑鍩烘湰淇℃伅涓庝緷璧栧簱鍒楄〃锛?026-08-28
-# 闇€姹傦細鎵撳紑杩欑被涓嶅彲缂栬緫鐨勫彲鎵ц鏂囦欢鏃剁洿鎺ュ睍绀鸿繖浜涗俊鎭紝鑰屼笉鏄皾璇曞綋鏂囨湰鎵撳紑锛夈€?
-# 绾?Rust 瀹炵幇锛屽彧璇诲彇澶撮儴缁撴瀯锛屼笉鍔犺浇/鎵ц鏂囦欢鏈韩銆?
+# 解析 EXE/DLL（PE）、SO（ELF）等可执行文件的基本信息与依赖库列表（2026-08-28
+# 需求：打开这类不可编辑的可执行文件时直接展示这些信息，而不是尝试当文本打开）。
+# 纯 Rust 实现，只读取头部结构，不加载/执行文件本身。
 goblin = "0.9"
 
-# 瑙ｆ瀽 JAR 鍖咃紙鏈川鏄?ZIP + META-INF/MANIFEST.MF锛?026-08-28 闇€姹傦細鏌ョ湅 JAR 鐨?
-# 鍩烘湰淇℃伅/渚濊禆搴撳垪琛?+ 鍐呴儴鏉＄洰锛夈€傚彧寮€ "deflate"鈥斺€擩AR 閲岀粷澶у鏁版潯鐩涔堜笉鍘嬬缉
-# 锛圫TORED锛夎涔堢敤鏍囧噯 Deflate锛屼笉闇€瑕?bzip2/zstd/lzma 杩欎簺灏戣缂栬В鐮佸櫒鎷栫疮缂栬瘧鏃堕棿銆?
-# 涔熸槸 Skills 瀵煎叆鏀寔 .zip 鍘嬬缉鍖咃紙`coding::skills` 妯″潡锛夊鐢ㄧ殑鍚屼竴涓?crate銆?
+# 解析 JAR 包（本质是 ZIP + META-INF/MANIFEST.MF，2026-08-28 需求：查看 JAR 的
+# 基本信息/依赖库列表 + 内部条目）。只开 "deflate"——JAR 里绝大多数条目要么不压缩
+# （STORED）要么用标准 Deflate，不需要 bzip2/zstd/lzma 这些少见编解码器拖累编译时间。
+# 也是 Skills 导入支持 .zip 压缩包（`coding::skills` 模块）复用的同一个 crate。
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-# Skills 瀵煎叆鏀寔 .tar.gz/.tgz 鍘嬬缉鍖呪€斺€擿tar` 瑙ｅ寘 + `flate2` 瑙?gzip锛岄兘鏄函 Rust
-# 瀹炵幇锛屼笉渚濊禆绯荤粺瑁呮病瑁?tar/gzip锛沗flate2` 鏈潵灏辨槸 `zip` 鐨?deflate 鍚庣浼氭媺杩涙潵
-# 鐨勪紶閫掍緷璧栵紝杩欓噷鎻愬崌鎴愮洿鎺ヤ緷璧栧彧鏄负浜嗚兘鍦ㄤ唬鐮侀噷鐩存帴 `use`銆俁AR 鏍煎紡鏁呮剰涓嶆敮鎸?
-# 锛?026-09 鐢ㄦ埛鍐冲畾锛夛細娌℃湁闈犺氨鐨勭函 Rust 瑙ｅ帇搴擄紝瑕佹敮鎸佸彧鑳借皟鐢ㄧ郴缁熻鐨?WinRAR/
-# 7-Zip 鎴栬€呮墦鍖呬竴浠?unrar 鍙墽琛屾枃浠惰繘渚挎惡鐗堚€斺€擲kills 鍖呬粠鏉ヤ笉浼氱敤 RAR 鍒嗗彂
-# 锛圙itHub/Claude Skills 甯傚満鍙嚭 zip/tar.gz锛夛紝涓鸿繖涓鐜囨瀬浣庣殑鍦烘櫙澧炲姞澶栭儴渚濊禆
-# 涓嶅垝绠椼€?
+# Skills 导入支持 .tar.gz/.tgz 压缩包——`tar` 解包 + `flate2` 解 gzip，都是纯 Rust
+# 实现，不依赖系统装没装 tar/gzip；`flate2` 本来就是 `zip` 的 deflate 后端会拉进来
+# 的传递依赖，这里提升成直接依赖只是为了能在代码里直接 `use`。RAR 格式故意不支持
+# （2026-09 用户决定）：没有靠谱的纯 Rust 解压库，要支持只能调用系统装的 WinRAR/
+# 7-Zip 或者打包一份 unrar 可执行文件进便携版——Skills 包从来不会用 RAR 分发
+# （GitHub/Claude Skills 市场只出 zip/tar.gz），为这个概率极低的场景增加外部依赖
+# 不划算。
 tar = "0.4"
 flate2 = "1"
 
-# SQL 妗岄潰妯″潡锛坉ocs/SQL_DESKTOP_PLAN.md锛夐┍鍔ㄩ€夊瀷锛?
+# SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）驱动选型：
 #
-# 鏁呮剰涓嶇敤 `sqlx` 闂ㄩ潰 crate鈥斺€擿sqlx` 鏃犳潯浠跺湪 Cargo.toml 閲屽０鏄庝竴鏉?
-# 锛堝嵆浣夸笉鍚敤 "sqlite" feature 涔熷瓨鍦ㄧ殑锛塦sqlx-sqlite`锛坥ptional锛変緷璧栬竟锛?
-# 鑰?`sqlx-sqlite` 鍙?`links = "sqlite3"`锛屽拰椤圭洰鏈潵灏卞湪鐢ㄧ殑
-# `rusqlite`/`r2d2_sqlite`锛堝悓鏍?`links = "sqlite3"`锛屼絾鐗堟湰鍙峰尯闂村畬鍏ㄤ笉閲嶅彔锛?
-# rusqlite 0.39 瑕?`libsqlite3-sys ^0.37`锛宻qlx-sqlite 0.8.6 瑕?`^0.30.1`锛?
-# 鍦?Cargo 鐨?涓€涓?links 鍊煎叏鍥惧彧鑳芥湁涓€涓増鏈?瑙勫垯涓嬬洿鎺ュ啿绐併€乺esolve 澶辫触
-# 锛坄cargo check` 瀹炴祴鎶ラ敊锛屼笉鏄寽娴嬶級鈥斺€斿嵆渚夸笟鍔′唬鐮佸畬鍏ㄤ笉浼氳Е鍙?sqlite 鍒嗘敮锛?
-# Cargo.lock 浠嶇劧瑕佷负杩欐潯鏈縺娲荤殑 optional 渚濊禆杈归€夊畾涓€涓増鏈€傛敼鐢ㄥ悇鏁版嵁搴?
-# 鍚勮嚜鐙珛鐨勯┍鍔?crate锛堥兘涓嶅惈 sqlite 渚濊禆锛屽ぉ鐒朵笉浼氭挒杞︼級锛岄『甯︿篃璁╂瘡绉嶆暟鎹簱
-# 鐨?API 鏇磋创鍚堣嚜宸辩殑鍗忚鐗规€э紝涓嶇敤濂?sqlx 鐨勭粺涓€娉涘瀷 Row/Column 鎶借薄銆?
+# 故意不用 `sqlx` 门面 crate——`sqlx` 无条件在 Cargo.toml 里声明一条
+# （即使不启用 "sqlite" feature 也存在的）`sqlx-sqlite`（optional）依赖边，
+# 而 `sqlx-sqlite` 又 `links = "sqlite3"`，和项目本来就在用的
+# `rusqlite`/`r2d2_sqlite`（同样 `links = "sqlite3"`，但版本号区间完全不重叠：
+# rusqlite 0.39 要 `libsqlite3-sys ^0.37`，sqlx-sqlite 0.8.6 要 `^0.30.1`）
+# 在 Cargo 的"一个 links 值全图只能有一个版本"规则下直接冲突、resolve 失败
+# （`cargo check` 实测报错，不是猜测）——即便业务代码完全不会触发 sqlite 分支，
+# Cargo.lock 仍然要为这条未激活的 optional 依赖边选定一个版本。改用各数据库
+# 各自独立的驱动 crate（都不含 sqlite 依赖，天然不会撞车），顺带也让每种数据库
+# 的 API 更贴合自己的协议特性，不用套 sqlx 的统一泛型 Row/Column 抽象。
 #
-# PostgreSQL锛歚tokio-postgres` 鏄?rust-postgres 椤圭洰鐨勫畼鏂瑰紓姝ラ┍鍔紱openGauss
-# 璧板悓涓€涓?crate锛圥G 绾垮崗璁吋瀹癸紝鏂硅█宸紓灏佽鍦?`sql::adapters::opengauss`锛?
-# 瑙佹柟妗?4.3锛夛紝涓嶉渶瑕佸崟鐙殑椹卞姩銆俙deadpool-postgres` 鎻愪緵杩炴帴姹狅紝姹犲ぇ灏?
-# 涓婇檺瀵归綈 4.4 鑺傚弬鑰?rainfrog 鐨勫缓璁紙姣忔暟鎹簮榛樿缁欎釜淇濆畧涓婇檺锛夈€?
+# PostgreSQL：`tokio-postgres` 是 rust-postgres 项目的官方异步驱动；openGauss
+# 走同一个 crate（PG 线协议兼容，方言差异封装在 `sql::adapters::opengauss`，
+# 见方案 4.3），不需要单独的驱动。`deadpool-postgres` 提供连接池，池大小
+# 上限对齐 4.4 节参考 rainfrog 的建议（每数据源默认给个保守上限）。
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
-# TLS 鐢?rustls + ring provider锛屽拰椤圭洰閲?tokio-rustls/rustls 宸茬粡鍦ㄧ敤鐨?ring
-# 淇濇寔涓€鑷达紝閬垮厤鍚屾椂瀛樺湪 aws-lc-rs 鍜?ring 涓ゅ鍔犲瘑鍚庣銆?
+# TLS 用 rustls + ring provider，和项目里 tokio-rustls/rustls 已经在用的 ring
+# 保持一致，避免同时存在 aws-lc-rs 和 ring 两套加密后端。
 tokio-postgres-rustls = "0.14"
 deadpool-postgres = "0.14"
-# TLS 鏍硅瘉涔︾敤绯荤粺璇佷功搴撹€屼笉鏄?Mozilla 鍐呯疆鍒楄〃鈥斺€斿唴缃戣嚜寤?PostgreSQL/openGauss
-# 甯歌鍋氭硶鏄妸鑷 CA 瀵煎叆 Windows 璇佷功瀛樺偍锛岃蛋绯荤粺璇佷功搴撴墠璁ゅ緱鍒帮紱涓嶅仛
-# "璺宠繃鏍￠獙"锛堟柟妗?搂7 鏄庣‘绂佹榛樿鍏抽棴璇佷功鏍￠獙锛夈€?
+# TLS 根证书用系统证书库而不是 Mozilla 内置列表——内网自建 PostgreSQL/openGauss
+# 常见做法是把自签 CA 导入 Windows 证书存储，走系统证书库才认得到；不做
+# "跳过校验"（方案 §7 明确禁止默认关闭证书校验）。
 rustls-native-certs = "0.8"
 
-# MySQL锛歚mysql_async` 鏄ぞ鍖虹淮鎶ゆ渶娲昏穬鐨勫紓姝?MySQL 椹卞姩锛岃嚜甯﹁繛鎺ユ睜
-# 锛坄mysql_async::Pool`锛夛紝TLS 鍚屾牱閫?ring provider锛坄default-rustls-ring`
-# feature 缁勫悎锛夛紝涓嶉渶瑕侀澶栧紩鍏ヨ繛鎺ユ睜 crate銆?
+# MySQL：`mysql_async` 是社区维护最活跃的异步 MySQL 驱动，自带连接池
+# （`mysql_async::Pool`），TLS 同样选 ring provider（`default-rustls-ring`
+# feature 组合），不需要额外引入连接池 crate。
 mysql_async = { version = "0.37", default-features = false, features = [
     "default-rustls-ring",
     "chrono",
 ] }
 
-# SQL Server锛氱函 Rust 瀹炵幇鐨?TDS 鍗忚瀹㈡埛绔紝涓嶄緷璧栫郴缁熻 ODBC/FreeTDS銆?
-# `tiberius::Client::connect` 鍚冭８ `tokio::net::TcpStream`锛岃鐢?`tokio_util::
-# compat` 鎶婂畠閫傞厤鎴?tiberius 渚濊禆鐨?futures-io 椋庢牸 AsyncRead/AsyncWrite鈥斺€?
-# 涓婇潰 `tokio-util` 宸茬粡鍔犱簡 "compat" feature锛屼笉闇€瑕佸啀鍗曠嫭寮曚竴浠姐€?
+# SQL Server：纯 Rust 实现的 TDS 协议客户端，不依赖系统装 ODBC/FreeTDS。
+# `tiberius::Client::connect` 吃裸 `tokio::net::TcpStream`，要用 `tokio_util::
+# compat` 把它适配成 tiberius 依赖的 futures-io 风格 AsyncRead/AsyncWrite——
+# 上面 `tokio-util` 已经加了 "compat" feature，不需要再单独引一份。
 tiberius = { version = "0.12", default-features = false, features = [
     "rustls",
     "chrono",
     "tds73",
 ] }
-# tiberius 鏈韩涓嶅甫杩炴帴姹狅紝`bb8-tiberius` 鎻愪緵 `bb8::ManageConnection` 閫傞厤銆?
+# tiberius 本身不带连接池，`bb8-tiberius` 提供 `bb8::ManageConnection` 适配。
 bb8 = "0.9"
 bb8-tiberius = { version = "0.16", default-features = false, features = ["with-tokio"] }
 
-# 鍗遍櫓 SQL 鍒ゅ畾璧?AST 鍒嗙被鑰屼笉鏄鍒欙紙docs/SQL_DESKTOP_PLAN.md 搂7锛屽弬鑰?
-# rainfrog 鐨勫疄鐜版€濊矾锛夈€?
+# 危险 SQL 判定走 AST 分类而不是正则（docs/SQL_DESKTOP_PLAN.md §7，参考
+# rainfrog 的实现思路）。
 sqlparser = "0.52"
 pdf-extract = "0.12.1"
 
 [target.'cfg(windows)'.dependencies]
-# RDP锛堣繙绋嬪伐鍏锋ā寮忥紝DESIGN.md 搂3.9锛夛細涓嶈嚜宸卞疄鐜板崗璁€斺€斾緷娆¤俯浜?rustls 濂椾欢鍙楅檺銆?
-# IronRDP 涓嶆敮鎸佷細璇濋€夋嫨鐣岄潰銆丄ctiveX 鎵胯浇 `mstscax.dll` 鎺т欢鏃?`Connect()` 鎬绘槸
-# 鍚屾鑷垜鎷掔粷涓斿缁堟病鑳藉畾浣嶅埌鏍瑰洜鍑犱釜鍧戯紙璇﹁ src/rdp/mod.rs 椤堕儴娉ㄩ噴锛夛紝鏈€缁?
-# 钀藉湴鍦ㄦ媺璧风郴缁熻嚜甯︾殑 `mstsc.exe`銆佺敤 Win32 API 鎶婂畠鐨勭獥鍙ｆ憳鎺夋爣棰樻爮/杈规銆?
-# `SetParent` 鎸繘 roc_desk 涓荤獥鍙ｃ€俙Win32_Foundation`/`Win32_UI_WindowsAndMessaging`
-# 鏄繖鏉¤矾寰勬湰韬渶瑕佺殑 API 闈紱`Win32_Graphics_Gdi` 鏄?`RedrawWindow` 闇€瑕佺殑鈥斺€?
-# 鐪熸満鑱旇皟鍙戠幇璺ㄨ繘绋?`SetParent` 涔嬪悗纭欢鍔犻€熸覆鏌撶殑绐楀彛锛堢幇浠?mstsc.exe 鐢?
-# DirectX/DXGI 鐢绘闈㈢敾闈級缁忓父涓嶄細姝ｇ‘鎸傚埌鏂板涓荤殑鍚堟垚琛ㄩ潰涓婏紝绐楀彛鏈韩鐨勪綅缃?
-# 澶у皬/鍙鎬ц繖浜涘睘鎬у畬鍏ㄦ甯镐絾鍐呭鏄粦鐨勶紝`embed_window` 閲岀敤灏哄鎶栧姩+寮哄埗閲嶇粯
-# 搴斿杩欑被闂銆傜増鏈榻?tauri 鑷繁鍐呴儴渚濊禆鐨?windows crate锛堣 tauri 2.11.5 鐨?
-# Cargo.toml `[target."cfg(windows)".dependencies.windows]`锛夛紝杩欐牱
-# `tauri::WebviewWindow::hwnd()` 杩斿洖鐨?HWND 绫诲瀷鑳界洿鎺ヤ簰鎿嶄綔锛屼笉鐢ㄥ仛绫诲瀷杞崲銆?
+# RDP（远程工具模式，DESIGN.md §3.9）：不自己实现协议——依次踩了 rustls 套件受限、
+# IronRDP 不支持会话选择界面、ActiveX 承载 `mstscax.dll` 控件时 `Connect()` 总是
+# 同步自我拒绝且始终没能定位到根因几个坑（详见 src/rdp/mod.rs 顶部注释），最终
+# 落地在拉起系统自带的 `mstsc.exe`、用 Win32 API 把它的窗口摘掉标题栏/边框、
+# `SetParent` 挪进 roc_desk 主窗口。`Win32_Foundation`/`Win32_UI_WindowsAndMessaging`
+# 是这条路径本身需要的 API 面；`Win32_Graphics_Gdi` 是 `RedrawWindow` 需要的——
+# 真机联调发现跨进程 `SetParent` 之后硬件加速渲染的窗口（现代 mstsc.exe 用
+# DirectX/DXGI 画桌面画面）经常不会正确挂到新宿主的合成表面上，窗口本身的位置/
+# 大小/可见性这些属性完全正常但内容是黑的，`embed_window` 里用尺寸抖动+强制重绘
+# 应对这类问题。版本对齐 tauri 自己内部依赖的 windows crate（见 tauri 2.11.5 的
+# Cargo.toml `[target."cfg(windows)".dependencies.windows]`），这样
+# `tauri::WebviewWindow::hwnd()` 返回的 HWND 类型能直接互操作，不用做类型转换。
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Gdi", "Foundation", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
 windows-future = { version = "0.2.1", features = ["std"] }
-
