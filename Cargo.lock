@@ -4599,6 +4599,9 @@ dependencies = [
  "reqwest 0.12.28",
  "roc_desk_common",
  "roc_desk_core",
+ "roc_desk_editor",
+ "roc_desk_explorer",
+ "roc_desk_http",
  "roc_desk_protocol",
  "rusqlite",
  "russh",
@@ -4665,24 +4668,89 @@ dependencies = [
 
 [[package]]
 name = "roc_desk_common"
-version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.4#0b074109cb7ee3fd7a25b1242cf7d90df93a43fb"
+version = "0.4.0"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0#730763307adf731f88e3710402676523220bc873"
 dependencies = [
  "async-trait",
+ "chrono",
+ "encoding_rs",
+ "goblin",
+ "regex",
  "roc_desk_core",
  "serde",
+ "tokio",
+ "zip",
 ]
 
 [[package]]
 name = "roc_desk_core"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.2.4#0b074109cb7ee3fd7a25b1242cf7d90df93a43fb"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0#730763307adf731f88e3710402676523220bc873"
 dependencies = [
+ "async-trait",
+ "chrono",
+ "keyring",
  "r2d2",
+ "r2d2_sqlite",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "roc_desk_editor"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.4#7eb9f7f073aecd247614f85a47b5b130b55a2e71"
+dependencies = [
+ "base64 0.22.1",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_explorer",
+ "serde",
+ "tauri",
+ "tokio",
+ "windows 0.61.3",
+ "windows-future",
+]
+
+[[package]]
+name = "roc_desk_explorer"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.4#d7132c75158142e66052c253b3d3c1d25d84dfc4"
+dependencies = [
+ "base64 0.22.1",
+ "roc_desk_common",
+ "roc_desk_core",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
+ "trash",
+]
+
+[[package]]
+name = "roc_desk_http"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-http?tag=v0.2.1#1ba37c268eb32170e3e0f6448de9eb646c21a45e"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "r2d2",
+ "reqwest 0.12.28",
+ "roc_desk_common",
+ "roc_desk_core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tauri",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
