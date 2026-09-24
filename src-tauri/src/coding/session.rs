@@ -19,7 +19,7 @@ use super::skills::{self, SkillMeta};
 use super::tools::{self, TodoItem, ToolCall};
 use super::webfetch;
 use super::{CommandConfirmRegistry, QuestionRegistry};
-use crate::agent::AgentConnectionPool;
+use roc_desk_ssh::agent::AgentConnectionPool;
 use crate::agent_llm;
 use crate::ai::{search_web_results, AiProvider, AiProviderManager};
 use crate::db::repo::audit_log_repo::AuditLogRepo;
@@ -28,7 +28,7 @@ use crate::db::repo::permission_rules_repo::PermissionRulesRepo;
 use crate::error::AppError;
 use crate::fsops::{search_stream, FileOps, SearchMode, SearchOptions};
 use crate::mcp::McpServerManager;
-use crate::ssh::SshConnectionPool;
+use roc_desk_ssh::ssh::SshConnectionPool;
 use crate::symbols::{build_index, SymbolIndex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

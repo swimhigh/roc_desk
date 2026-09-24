@@ -8,10 +8,10 @@ use uuid::Uuid;
 use super::diff::generate_diff;
 use super::git_ops;
 use super::session::{ChangeStatus, CodingTarget, FileChange, FileSyncInfo};
-use crate::agent::AgentConnectionPool;
+use roc_desk_ssh::agent::AgentConnectionPool;
 use crate::error::AppError;
 use crate::fsops::{FileOps, WriteOutcome};
-use crate::ssh::SshConnectionPool;
+use roc_desk_ssh::ssh::SshConnectionPool;
 
 /// 待落盘/已落盘文件改动的独立状态容器，和 `CodingSession` 里跑 AI 对话循环的
 /// 部分分开加锁。

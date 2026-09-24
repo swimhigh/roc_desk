@@ -4602,8 +4602,9 @@ dependencies = [
  "roc_desk_editor",
  "roc_desk_explorer",
  "roc_desk_http",
- "roc_desk_protocol",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1)",
  "roc_desk_sql",
+ "roc_desk_ssh",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -4650,7 +4651,7 @@ dependencies = [
  "rand 0.8.7",
  "rcgen",
  "regex",
- "roc_desk_protocol",
+ "roc_desk_protocol 0.1.0",
  "rustls 0.23.43",
  "rustls-pemfile 2.2.0",
  "serde",
@@ -4765,6 +4766,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "roc_desk_protocol"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1#649d286970de6bef8f220679c80918f06143239a"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "roc_desk_sql"
 version = "0.1.0"
 source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.1#afe2ec3fc9c9f4374c3421eeb20f96bf2e83fcef"
@@ -4791,6 +4803,36 @@ dependencies = [
  "tokio-postgres-rustls",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "roc_desk_ssh"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1#649d286970de6bef8f220679c80918f06143239a"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "r2d2",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1)",
+ "rusqlite",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "rustls 0.23.43",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "trash",
+ "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]

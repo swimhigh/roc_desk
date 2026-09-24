@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::encoding::decode_text;
 use super::{FileEntry, FileOps, WriteOutcome};
 use crate::error::AppError;
-use crate::ssh::session::SshSession;
+use roc_desk_ssh::ssh::session::SshSession;
 use std::sync::Arc;
 
 /// 远程文件操作（DESIGN.md §3.1.4、§3.3）：通过 SFTP 读写，`write_file` 的

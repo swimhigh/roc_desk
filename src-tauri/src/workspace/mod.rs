@@ -7,15 +7,15 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::AgentConnectionPool;
-use crate::connection::{ConnectionManager, Protocol};
+use roc_desk_ssh::agent::AgentConnectionPool;
+use roc_desk_ssh::connection::{ConnectionManager, Protocol};
 use crate::db::repo::workspace_repo::WorkspaceRepo;
 use crate::error::AppError;
 use crate::fsops::agent::AgentFileOps;
 use crate::fsops::local::LocalFileOps;
 use crate::fsops::remote::RemoteFileOps;
 use crate::fsops::FileOps;
-use crate::ssh::SshConnectionPool;
+use roc_desk_ssh::ssh::SshConnectionPool;
 
 pub use profile::{WorkspaceKind, WorkspaceProfile};
 
@@ -75,7 +75,7 @@ impl WorkspaceManager {
     /// 建连、构造哪个 `FileOps` 实现（AGENT_DESIGN.md §四.2）。
     async fn remote_file_ops(
         &self,
-        connection: &crate::connection::ConnectionProfile,
+        connection: &roc_desk_ssh::connection::ConnectionProfile,
     ) -> Result<Arc<dyn FileOps>, AppError> {
         match connection.protocol {
             Protocol::Agent => {

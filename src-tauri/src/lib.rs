@@ -1,19 +1,15 @@
-pub mod agent;
 pub mod agent_llm;
 pub mod ai;
 pub mod browser;
 pub mod coding;
 pub mod commands;
-pub mod connection;
 pub mod credential;
 pub mod db;
 pub mod fsops;
 pub mod log;
 pub mod mcp;
 pub mod pty;
-pub mod rdp;
 pub mod sql;
-pub mod ssh;
 pub mod state;
 pub mod symbols;
 pub mod windows_context_menu;
@@ -29,32 +25,23 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
-use agent::{AgentCertVerifier, AgentConnectionPool, AgentTrustPromptRegistry};
 use ai::{AiChatClient, AiProviderManager, AiRuntime};
 use coding::CommandConfirmRegistry;
-use connection::{ConnectionGroupManager, ConnectionManager};
 use credential::KeyringStore;
-use db::repo::agent_known_hosts_repo::AgentKnownHostsRepo;
 use db::repo::ai_providers_repo::AiProvidersRepo;
 use db::repo::audit_log_repo::AuditLogRepo;
 use db::repo::browser_history_repo::BrowserHistoryRepo;
 use db::repo::coding_history_repo::CodingHistoryRepo;
 use db::repo::ai_evidence_repo::AiEvidenceRepo;
-use db::repo::connection_groups_repo::ConnectionGroupsRepo;
-use db::repo::connections_repo::ConnectionsRepo;
-use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
 use db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
-use db::repo::transfer_log_repo::TransferLogRepo;
 use db::repo::workspace_module_links_repo::WorkspaceModuleLinksRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
 use mcp::McpServerManager;
 use pty::LocalPtyManager;
-use rdp::RdpSessionManager;
 use sql::ai_assistant::SqlAiAssistant;
-use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
 use state::AppState;
 use workspace::WorkspaceManager;
 
@@ -274,43 +261,59 @@ pub fn run() {
 
             let credential_store: Arc<dyn credential::CredentialStore> = Arc::new(KeyringStore);
 
-            let connections_repo = Arc::new(ConnectionsRepo::new(sessions_pool.clone()));
-            let connection_manager = Arc::new(ConnectionManager::new(
-                connections_repo,
-                credential_store.clone(),
-            ));
-            let connection_groups_repo = Arc::new(ConnectionGroupsRepo::new(sessions_pool.clone()));
-            let connection_group_manager =
-                Arc::new(ConnectionGroupManager::new(connection_groups_repo));
-
-            let known_hosts_repo = Arc::new(KnownHostsRepo::new(sessions_pool.clone()));
-            let trust_prompts = TrustPromptRegistry::default();
-            let verifier = Arc::new(KnownHostsVerifier::new(
-                known_hosts_repo,
-                trust_prompts.clone(),
-                app.handle().clone(),
-            ));
-            let ssh_pool = Arc::new(SshConnectionPool::new(connection_manager.clone(), verifier));
-            let rdp_sessions = Arc::new(RdpSessionManager::new(connection_manager.clone()));
-
-            let agent_known_hosts_repo = Arc::new(AgentKnownHostsRepo::new(sessions_pool.clone()));
-            let agent_trust_prompts = AgentTrustPromptRegistry::default();
-            let agent_cert_verifier = Arc::new(AgentCertVerifier::new(
-                agent_known_hosts_repo,
-                agent_trust_prompts.clone(),
-                app.handle().clone(),
-            ));
-            let agent_pool = Arc::new(AgentConnectionPool::new(
-                connection_manager.clone(),
-                agent_cert_verifier,
-            ));
+            // SSH/SFTP/Agent/RDP 已经迁到 roc_desk_ssh（见
+            // docs/MULTI_REPO_SPLIT_PROGRESS.md "SSH/SFTP/RDP/Agent"一节）。
+            // `RocDeskSshAppState::new` 指向和宿主原本一样的 `sessions_db_path`
+            // （不是新开一个文件）——`connection_manager`/`ssh_pool`/`agent_pool`
+            // 这些不只被 SSH 自己的命令用，`commands/coding.rs`（远程工作区）/
+            // `commands/sql.rs`（AI 面板里的 `ChangeStore`）/`commands/log_search.rs`
+            // （远程日志搜索）都要看到同一份连接档案，不能分裂成两个互不相干的
+            // 连接管理器。`connections`/`connection_groups`/`known_hosts`/
+            // `agent_known_hosts` 四张表 schema 完全一致（已核对 0002+0010/0013 和
+            // roc_desk-ssh 的 `0001_ssh_init` 逐列对比过），提前记一条
+            // `schema_migrations` 跳过重建；但 `transfer_log` 表宿主原本存在主库
+            // `roc_desk.db`（不是 `sessions.db`），`roc_desk_ssh` 期待和连接数据
+            // 同一个文件里，所以在 `sessions.db` 里补建一份空的 `transfer_log`
+            // 表——旧的传输记录留在 `roc_desk.db` 里不再读取（和 HTTP 迁移时
+            // request_history 表的处理方式一样：尽力而为的审计日志，允许断档，
+            // 不是必须精确保留的数据）。
+            {
+                let conn = sessions_pool.get()?;
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations (
+                        name TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    CREATE TABLE IF NOT EXISTS transfer_log (
+                        id TEXT PRIMARY KEY,
+                        protocol TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        profile_id TEXT,
+                        profile_name TEXT NOT NULL,
+                        local_path TEXT NOT NULL,
+                        remote_path TEXT NOT NULL,
+                        is_dir INTEGER NOT NULL,
+                        file_count INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL,
+                        error_message TEXT,
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT NOT NULL,
+                        bytes_transferred INTEGER,
+                        total_bytes INTEGER
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_transfer_log_finished_at ON transfer_log(finished_at DESC);
+                    INSERT OR IGNORE INTO schema_migrations (name) VALUES ('0001_ssh_init');",
+                )?;
+            }
+            let ssh_app_state = roc_desk_ssh::RocDeskSshAppState::new(&sessions_db_path, app.handle().clone())
+                .expect("初始化 SSH/SFTP/Agent/RDP 存储失败");
 
             let workspace_repo = Arc::new(WorkspaceRepo::new(workspaces_pool.clone()));
             let workspace_manager = Arc::new(WorkspaceManager::new(
                 workspace_repo,
-                connection_manager.clone(),
-                ssh_pool.clone(),
-                agent_pool.clone(),
+                ssh_app_state.connection_manager.clone(),
+                ssh_app_state.ssh_pool.clone(),
+                ssh_app_state.agent_pool.clone(),
                 workspaces_dir,
             ));
 
@@ -347,7 +350,6 @@ pub fn run() {
                 mcp_servers_repo,
                 credential_store.clone(),
             ));
-            let transfer_log = Arc::new(TransferLogRepo::new(pool.clone()));
 
             // SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。数据源 CRUD/会话管理/查询
             // 执行/工作区标签页/导出导入已经迁到 roc_desk_sql（见
@@ -380,13 +382,6 @@ pub fn run() {
             app.manage(AppState {
                 db: pool,
                 credential_store,
-                connection_manager,
-                connection_group_manager,
-                ssh_pool,
-                rdp_sessions,
-                trust_prompts,
-                agent_pool,
-                agent_trust_prompts,
                 workspace_manager,
                 workspaces: Arc::new(RwLock::new(HashMap::new())),
                 workspace_module_links,
@@ -404,10 +399,6 @@ pub fn run() {
                 local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
-                cancelled_transfers: Arc::new(std::sync::Mutex::new(
-                    std::collections::HashSet::new(),
-                )),
-                transfer_log,
                 permission_rules,
                 question_confirms: coding::QuestionRegistry::default(),
                 mcp_manager,
@@ -435,6 +426,7 @@ pub fn run() {
             });
             app.manage(http_app_state);
             app.manage(sql_app_state);
+            app.manage(ssh_app_state);
 
             Ok(())
         })
@@ -475,63 +467,67 @@ pub fn run() {
             commands::symbols::symbols_build_index,
             commands::symbols::symbols_go_to_definition,
             commands::symbols::symbols_reindex_file,
-            commands::connection::connection_list,
-            commands::connection::connection_create,
-            commands::connection::connection_update,
-            commands::connection::connection_delete,
-            commands::connection_group::connection_group_list,
-            commands::connection_group::connection_group_create,
-            commands::connection_group::connection_group_update,
-            commands::connection_group::connection_group_delete,
-            commands::ssh::ssh_connect,
-            commands::ssh::ssh_open_shell,
-            commands::ssh::ssh_write,
-            commands::ssh::ssh_resize,
-            commands::ssh::ssh_disconnect,
-            commands::ssh::ssh_close_channel,
-            commands::ssh::ssh_host_stats,
-            commands::ssh::ssh_confirm_host_key,
-            commands::agent::agent_connect,
-            commands::agent::agent_disconnect,
-            commands::agent::agent_confirm_cert,
-            commands::agent::agent_test_connection,
-            commands::agent::agent_list_dir,
-            commands::agent::agent_list_roots,
-            commands::agent::agent_open_shell,
-            commands::agent::agent_write,
-            commands::agent::agent_resize,
-            commands::agent::agent_close_channel,
-            commands::agent::agent_read_file,
-            commands::agent::agent_write_file,
-            commands::agent::agent_delete,
-            commands::agent::agent_create_dir,
-            commands::agent::agent_rename,
-            commands::agent::agent_download,
-            commands::agent::agent_upload,
-            commands::agent::agent_download_entry,
-            commands::agent::agent_upload_entry,
-            commands::rdp::rdp_connect,
-            commands::rdp::rdp_set_bounds,
-            commands::rdp::rdp_hide,
-            commands::rdp::rdp_show,
-            commands::rdp::rdp_disconnect,
-            commands::rdp::rdp_status,
-            commands::sftp::sftp_list_dir,
-            commands::sftp::sftp_read_file,
-            commands::sftp::sftp_read_binary_preview,
-            commands::sftp::sftp_open_externally,
-            commands::sftp::sftp_convert_legacy_office_to_pdf,
-            commands::sftp::sftp_inspect_binary,
-            commands::sftp::sftp_peek_is_binary,
-            commands::sftp::sftp_inspect_jar,
-            commands::sftp::sftp_write_file,
-            commands::sftp::sftp_download,
-            commands::sftp::sftp_upload,
-            commands::sftp::sftp_delete,
-            commands::sftp::sftp_create_dir,
-            commands::sftp::sftp_rename,
-            commands::sftp::sftp_download_entry,
-            commands::sftp::sftp_upload_entry,
+            roc_desk_ssh::cmd::connection_list,
+            roc_desk_ssh::cmd::connection_create,
+            roc_desk_ssh::cmd::connection_update,
+            roc_desk_ssh::cmd::connection_delete,
+            roc_desk_ssh::cmd::connection_group_list,
+            roc_desk_ssh::cmd::connection_group_create,
+            roc_desk_ssh::cmd::connection_group_update,
+            roc_desk_ssh::cmd::connection_group_delete,
+            roc_desk_ssh::cmd::ssh_connect,
+            roc_desk_ssh::cmd::ssh_open_shell,
+            roc_desk_ssh::cmd::ssh_write,
+            roc_desk_ssh::cmd::ssh_resize,
+            roc_desk_ssh::cmd::ssh_disconnect,
+            roc_desk_ssh::cmd::ssh_close_channel,
+            roc_desk_ssh::cmd::ssh_host_stats,
+            roc_desk_ssh::cmd::ssh_confirm_host_key,
+            roc_desk_ssh::cmd::agent_connect,
+            roc_desk_ssh::cmd::agent_disconnect,
+            roc_desk_ssh::cmd::agent_confirm_cert,
+            roc_desk_ssh::cmd::agent_test_connection,
+            roc_desk_ssh::cmd::agent_list_dir,
+            roc_desk_ssh::cmd::agent_list_roots,
+            roc_desk_ssh::cmd::agent_open_shell,
+            roc_desk_ssh::cmd::agent_write,
+            roc_desk_ssh::cmd::agent_resize,
+            roc_desk_ssh::cmd::agent_close_channel,
+            roc_desk_ssh::cmd::agent_read_file,
+            roc_desk_ssh::cmd::agent_write_file,
+            roc_desk_ssh::cmd::agent_delete,
+            roc_desk_ssh::cmd::agent_create_dir,
+            roc_desk_ssh::cmd::agent_rename,
+            roc_desk_ssh::cmd::agent_download,
+            roc_desk_ssh::cmd::agent_upload,
+            roc_desk_ssh::cmd::agent_download_entry,
+            roc_desk_ssh::cmd::agent_upload_entry,
+            roc_desk_ssh::cmd::rdp_connect,
+            roc_desk_ssh::cmd::rdp_set_bounds,
+            roc_desk_ssh::cmd::rdp_hide,
+            roc_desk_ssh::cmd::rdp_show,
+            roc_desk_ssh::cmd::rdp_disconnect,
+            roc_desk_ssh::cmd::rdp_status,
+            roc_desk_ssh::cmd::sftp_list_dir,
+            roc_desk_ssh::cmd::sftp_read_file,
+            roc_desk_ssh::cmd::sftp_read_binary_preview,
+            roc_desk_ssh::cmd::sftp_open_externally,
+            roc_desk_ssh::cmd::sftp_convert_legacy_office_to_pdf,
+            roc_desk_ssh::cmd::sftp_inspect_binary,
+            roc_desk_ssh::cmd::sftp_peek_is_binary,
+            roc_desk_ssh::cmd::sftp_inspect_jar,
+            roc_desk_ssh::cmd::sftp_write_file,
+            roc_desk_ssh::cmd::sftp_download,
+            roc_desk_ssh::cmd::sftp_upload,
+            roc_desk_ssh::cmd::sftp_delete,
+            roc_desk_ssh::cmd::sftp_create_dir,
+            roc_desk_ssh::cmd::sftp_rename,
+            roc_desk_ssh::cmd::sftp_download_entry,
+            roc_desk_ssh::cmd::sftp_upload_entry,
+            // roc_desk_ssh::cmd::local_list_dir/local_home_dir/local_is_dir/local_delete
+            // 故意不注册——和下面 roc_desk_explorer::cmd 的同名命令是同一份代码的两份
+            // 拷贝（迁移脚本各自复制时留下的重复），Tauri 按命令名注册，两边注册会撞名，
+            // 保留 explorer 那份（已经在这里注册）即可。
             roc_desk_explorer::cmd::local_list_dir,
             roc_desk_explorer::cmd::local_home_dir,
             roc_desk_explorer::cmd::local_list_drives,
@@ -552,9 +548,9 @@ pub fn run() {
             roc_desk_explorer::cmd::local_create_dir,
             roc_desk_explorer::cmd::local_move,
             commands::local_fs::take_pending_open_paths,
-            commands::transfer::transfer_cancel,
-            commands::transfer::transfer_log_list,
-            commands::transfer::transfer_log_clear,
+            roc_desk_ssh::cmd::transfer_cancel,
+            roc_desk_ssh::cmd::transfer_log_list,
+            roc_desk_ssh::cmd::transfer_log_clear,
             commands::log_search::log_search_index,
             commands::log_search::log_search_live,
             commands::log_search::log_import_remote_paths,
@@ -714,8 +710,8 @@ pub fn run() {
             // 顶部"代价"一节），Windows 不再在主窗口销毁时自动级联关掉它——退出时
             // 必须显式收尾，否则 wfreerdp.exe 连带它的窗口会变成孤儿留在桌面上。
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    let _ = state.rdp_sessions.disconnect_all();
+                if let Some(ssh_state) = app_handle.try_state::<roc_desk_ssh::RocDeskSshAppState>() {
+                    let _ = ssh_state.rdp_sessions.disconnect_all();
                 }
             }
         });

@@ -7,7 +7,7 @@ use roc_desk_protocol::{Request, Response, ResponseBody};
 use std::sync::Arc;
 
 use super::{FileEntry, FileOps, WriteOutcome};
-use crate::agent::session::{AgentSession, StreamFrame};
+use roc_desk_ssh::agent::session::{AgentSession, StreamFrame};
 use crate::error::AppError;
 
 pub struct AgentFileOps {

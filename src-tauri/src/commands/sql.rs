@@ -10,6 +10,7 @@ use crate::fsops::local::LocalFileOps;
 use crate::fsops::FileOps;
 use crate::state::AppState;
 use roc_desk_sql::SqlAppState;
+use roc_desk_ssh::RocDeskSshAppState;
 
 // ---------------------------------------------------------------------------
 // AI 面板（方案 §8、§4.4）——生成/优化/修复走 ChangeStore 确认闸门，
@@ -56,6 +57,7 @@ async fn get_or_create_sql_change_store(
 async fn stage_ai_result(
     state: &State<'_, AppState>,
     sql_state: &State<'_, SqlAppState>,
+    ssh_state: &State<'_, RocDeskSshAppState>,
     app_handle: &AppHandle,
     data_source_id: Uuid,
     tab_id: Uuid,
@@ -77,8 +79,8 @@ async fn stage_ai_result(
             &abs_path,
             new_sql,
             Uuid::new_v4(),
-            &state.ssh_pool,
-            &state.agent_pool,
+            &ssh_state.ssh_pool,
+            &ssh_state.agent_pool,
             app_handle,
         )
         .await?;
@@ -89,6 +91,7 @@ async fn stage_ai_result(
 pub async fn sql_ai_generate(
     state: State<'_, AppState>,
     sql_state: State<'_, SqlAppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     data_source_id: Uuid,
     tab_id: Uuid,
@@ -101,7 +104,7 @@ pub async fn sql_ai_generate(
         .sql_ai_assistant
         .generate_sql(provider_id, &instruction, &schema_context, &current_sql)
         .await?;
-    stage_ai_result(&state, &sql_state, &app_handle, data_source_id, tab_id, sql).await
+    stage_ai_result(&state, &sql_state, &ssh_state, &app_handle, data_source_id, tab_id, sql).await
 }
 
 #[tauri::command]
@@ -119,6 +122,7 @@ pub async fn sql_ai_explain(
 pub async fn sql_ai_optimize(
     state: State<'_, AppState>,
     sql_state: State<'_, SqlAppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     data_source_id: Uuid,
     tab_id: Uuid,
@@ -131,7 +135,7 @@ pub async fn sql_ai_optimize(
         .sql_ai_assistant
         .optimize_sql(provider_id, &sql, explain_output.as_deref(), &schema_context)
         .await?;
-    stage_ai_result(&state, &sql_state, &app_handle, data_source_id, tab_id, optimized).await
+    stage_ai_result(&state, &sql_state, &ssh_state, &app_handle, data_source_id, tab_id, optimized).await
 }
 
 #[tauri::command]
@@ -139,6 +143,7 @@ pub async fn sql_ai_optimize(
 pub async fn sql_ai_fix_error(
     state: State<'_, AppState>,
     sql_state: State<'_, SqlAppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     data_source_id: Uuid,
     tab_id: Uuid,
@@ -151,13 +156,14 @@ pub async fn sql_ai_fix_error(
         .sql_ai_assistant
         .fix_error(provider_id, &sql, &error_message, &schema_context)
         .await?;
-    stage_ai_result(&state, &sql_state, &app_handle, data_source_id, tab_id, fixed).await
+    stage_ai_result(&state, &sql_state, &ssh_state, &app_handle, data_source_id, tab_id, fixed).await
 }
 
 #[tauri::command]
 pub async fn sql_accept_change(
     state: State<'_, AppState>,
     sql_state: State<'_, SqlAppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     data_source_id: Uuid,
     change_id: Uuid,
@@ -165,7 +171,7 @@ pub async fn sql_accept_change(
     let store = get_or_create_sql_change_store(&state, &sql_state, data_source_id).await;
     let mut guard = store.lock().await;
     guard
-        .accept(change_id, &state.ssh_pool, &state.agent_pool, &app_handle)
+        .accept(change_id, &ssh_state.ssh_pool, &ssh_state.agent_pool, &app_handle)
         .await
 }
 

@@ -6,8 +6,8 @@ use uuid::Uuid;
 use super::engine::LogSearchEngine;
 use crate::error::AppError;
 use crate::fsops::encoding::decode_text_detect;
-use crate::fsops::remote::RemoteFileOps;
-use crate::fsops::FileOps;
+use roc_desk_ssh::fsops::remote::RemoteFileOps;
+use roc_desk_ssh::fsops::FileOps;
 
 /// 一批路径导入完成后的汇总——单个文件失败（权限/编码之外的意外错误）不该让
 /// 整批操作直接报错中断，跳过继续导入其它文件，把失败明细带回去，前端汇总

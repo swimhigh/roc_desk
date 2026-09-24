@@ -26,6 +26,7 @@ roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", pac
 roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.4" }
 roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.1" }
 roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.1" }
+roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.1" }
 # "unstable" 鐢ㄤ簬 browser 妯″潡鐨勫唴宓屽瓙 WebView锛坄Window::add_child`/`Manager::get_webview`/
 # `Manager::get_window`锛夛紝缃戦〉娴忚闈㈡澘闇€瑕佹妸缃戦〉鍐呭瀹氫綅鍒颁富绐楀彛鍐呯殑涓€鍧楃煩褰㈠尯鍩熼噷
 # 鑰屼笉鏄脊鍑虹嫭绔嬬獥鍙ｏ紙2026-08-18 闇€姹傚彉鏇达紝瑙?src/browser/mod.rs 椤堕儴娉ㄩ噴锛夈€?
@@ -82,7 +83,7 @@ russh-sftp = "2"
 # Windows 杩滅▼ Agent锛圓GENT_DESIGN.md锛夛細瀹㈡埛绔笌 roc_desk_agent.exe 鍏变韩鐨勫崗璁?
 # 绫诲瀷 + 甯х紪瑙ｇ爜锛汿LS 鐢ㄦ硶鍜?agent/Cargo.toml 淇濇寔涓€鑷达紙鏄惧紡 `ring`锛?
 # 閬垮厤 `aws-lc-rs` 鏋勫缓鑴氭湰鍦ㄩ儴鍒?Windows 鐜涓嬬殑"鎷掔粷璁块棶"闂锛夈€?
-roc_desk_protocol = { path = "../protocol" }
+roc_desk_protocol = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_protocol", tag = "v0.3.1" }
 
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }

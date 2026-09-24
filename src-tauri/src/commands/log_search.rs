@@ -5,6 +5,7 @@ use crate::error::AppError;
 use crate::log::remote::{search_live, LiveSearchResult};
 use crate::log::{IndexStats, LogImportOutcome, LogQuery, LogSearchResult};
 use crate::state::AppState;
+use roc_desk_ssh::RocDeskSshAppState;
 
 /// 模式 B：本地索引搜索（DESIGN.md §3.4.2），查 FTS5。
 #[tauri::command]
@@ -18,13 +19,13 @@ pub async fn log_search_index(
 /// 模式 A：远程实时搜索，通过 SSH 跑 `rg`/`grep`（DESIGN.md §3.4.2）。
 #[tauri::command]
 pub async fn log_search_live(
-    state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     profile_id: Uuid,
     pattern: String,
     path: String,
     is_regex: bool,
 ) -> Result<Vec<LiveSearchResult>, AppError> {
-    let session = state.ssh_pool.get_or_connect(profile_id).await?;
+    let session = ssh_state.ssh_pool.get_or_connect(profile_id).await?;
     search_live(&session, &pattern, &path, is_regex).await
 }
 
@@ -37,6 +38,7 @@ pub async fn log_search_live(
 #[tauri::command]
 pub async fn log_import_remote_paths(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     profile_id: Uuid,
     paths: Vec<String>,
@@ -44,10 +46,10 @@ pub async fn log_import_remote_paths(
     host_name: String,
     request_id: Uuid,
 ) -> Result<LogImportOutcome, AppError> {
-    let file_ops = state.ssh_pool.get_file_ops(profile_id).await?;
+    let file_ops = ssh_state.ssh_pool.get_file_ops(profile_id).await?;
     state
         .log_importer
-        .import_remote_paths(&file_ops, &paths, &host_name, recursive, |path, done, total| {
+        .import_remote_paths(file_ops.as_ref(), &paths, &host_name, recursive, |path, done, total| {
             let _ = app_handle.emit(
                 "log:import-progress",
                 serde_json::json!({ "requestId": request_id, "path": path, "done": done, "total": total }),

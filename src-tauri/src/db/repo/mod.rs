@@ -1,15 +1,10 @@
-pub mod agent_known_hosts_repo;
 pub mod ai_providers_repo;
 pub mod ai_evidence_repo;
 pub mod audit_log_repo;
 pub mod browser_history_repo;
 pub mod coding_history_repo;
-pub mod connection_groups_repo;
-pub mod connections_repo;
-pub mod known_hosts_repo;
 pub mod mcp_servers_repo;
 pub mod permission_rules_repo;
 pub mod sql_agent_history_repo;
-pub mod transfer_log_repo;
 pub mod workspace_module_links_repo;
 pub mod workspace_repo;

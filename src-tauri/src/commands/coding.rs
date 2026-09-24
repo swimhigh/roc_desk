@@ -22,6 +22,7 @@ use crate::error::AppError;
 use crate::fsops::FileOps;
 use crate::mcp::{McpServer, McpServerInput};
 use crate::state::AppState;
+use roc_desk_ssh::RocDeskSshAppState;
 use crate::workspace::WorkspaceKind;
 
 /// 所有"打开工作区/切换历史"路径上、对远程工作区做的探测性/同步性 SFTP·Agent
@@ -264,6 +265,7 @@ pub async fn coding_set_provider(
 /// `false`：用户此时的意图就是清空重来，不该把旧变更悄悄带进新会话。
 async fn build_new_session(
     state: &State<'_, AppState>,
+    ssh_state: &State<'_, RocDeskSshAppState>,
     workspace_id: Uuid,
     provider_id: Uuid,
     resume_recent: bool,
@@ -285,14 +287,14 @@ async fn build_new_session(
             })?;
             // "Remote" 工作区可能是 SSH 也可能是 Agent 连接——两者共用同一个
             // `WorkspaceKind`，靠连接档案的 `protocol` 字段区分该走哪套 `CodingTarget`。
-            let connection = state
+            let connection = ssh_state
                 .connection_manager
                 .get(connection_id)?
                 .ok_or_else(|| {
                     AppError::NotFound(format!("connection not found: {connection_id}"))
                 })?;
             match connection.protocol {
-                crate::connection::Protocol::Agent => CodingTarget::Agent {
+                roc_desk_ssh::connection::Protocol::Agent => CodingTarget::Agent {
                     connection_id,
                     host_label: profile.display_name.clone(),
                 },
@@ -375,6 +377,7 @@ async fn build_new_session(
 #[tauri::command]
 pub async fn coding_start(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -423,7 +426,7 @@ pub async fn coding_start(
     }
 
     let (session, change_store) =
-        build_new_session(&state, workspace_id, provider_id, true, None).await?;
+        build_new_session(&state, &ssh_state, workspace_id, provider_id, true, None).await?;
     let info = session_info(&session).await;
     state
         .coding_sessions
@@ -441,6 +444,7 @@ pub async fn coding_start(
 #[tauri::command]
 pub async fn coding_new_session(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     workspace_id: Uuid,
     provider_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -453,7 +457,7 @@ pub async fn coding_new_session(
     state.coding_changes.write().await.remove(&workspace_id);
     state.coding_pending_injections.lock().unwrap().remove(&workspace_id);
     let (session, change_store) =
-        build_new_session(&state, workspace_id, provider_id, false, None).await?;
+        build_new_session(&state, &ssh_state, workspace_id, provider_id, false, None).await?;
     let info = session_info(&session).await;
     state
         .coding_sessions
@@ -523,6 +527,7 @@ pub async fn coding_set_auto_allow_readonly(
 #[tauri::command]
 pub async fn coding_set_auto_git_commit(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     workspace_id: Uuid,
     enabled: bool,
 ) -> Result<(), AppError> {
@@ -542,8 +547,8 @@ pub async fn coding_set_auto_git_commit(
                 crate::coding::git_ops::is_git_repo(
                     &target,
                     &workspace_root,
-                    &state.ssh_pool,
-                    &state.agent_pool,
+                    &ssh_state.ssh_pool,
+                    &ssh_state.agent_pool,
                 ),
             )
             .await
@@ -606,6 +611,7 @@ pub async fn coding_set_auto_apply_changes(
 #[tauri::command]
 pub async fn coding_send_message(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     workspace_id: Uuid,
     text: String,
@@ -630,8 +636,8 @@ pub async fn coding_send_message(
             &text,
             &attachments.unwrap_or_default(),
             &state.ai_provider_manager,
-            &state.ssh_pool,
-            &state.agent_pool,
+            &ssh_state.ssh_pool,
+            &ssh_state.agent_pool,
             &state.audit_log,
             &state.command_confirms,
             &state.permission_rules,
@@ -973,6 +979,7 @@ pub async fn skill_import(
 #[tauri::command]
 pub async fn coding_accept_change(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     workspace_id: Uuid,
     change_id: Uuid,
@@ -980,7 +987,7 @@ pub async fn coding_accept_change(
     let store = get_change_store(&state, workspace_id).await?;
     let mut guard = store.lock().await;
     let result = guard
-        .accept(change_id, &state.ssh_pool, &state.agent_pool, &app_handle)
+        .accept(change_id, &ssh_state.ssh_pool, &ssh_state.agent_pool, &app_handle)
         .await;
     if result.is_ok() {
         if let Some(turn_id) = guard.changes().iter().find(|c| c.id == change_id).map(|c| c.turn_id) {
@@ -990,7 +997,7 @@ pub async fn coding_accept_change(
                 .any(|c| c.turn_id == turn_id && c.status == ChangeStatus::Pending);
             drop(guard);
             if !still_pending {
-                maybe_auto_continue(&state, &app_handle, workspace_id, turn_id);
+                maybe_auto_continue(&state, &ssh_state, &app_handle, workspace_id, turn_id);
             }
         }
     }
@@ -1000,6 +1007,7 @@ pub async fn coding_accept_change(
 #[tauri::command]
 pub async fn coding_reject_change(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     app_handle: AppHandle,
     workspace_id: Uuid,
     change_id: Uuid,
@@ -1015,7 +1023,7 @@ pub async fn coding_reject_change(
                 .any(|c| c.turn_id == turn_id && c.status == ChangeStatus::Pending);
             drop(guard);
             if !still_pending {
-                maybe_auto_continue(&state, &app_handle, workspace_id, turn_id);
+                maybe_auto_continue(&state, &ssh_state, &app_handle, workspace_id, turn_id);
             }
         }
     }
@@ -1033,6 +1041,7 @@ pub async fn coding_reject_change(
 /// `CodingSession` 两把锁互不阻塞的既有设计，见 `ChangeStore` 顶部文档）。
 fn maybe_auto_continue(
     state: &State<'_, AppState>,
+    ssh_state: &State<'_, RocDeskSshAppState>,
     app_handle: &AppHandle,
     workspace_id: Uuid,
     turn_id: Uuid,
@@ -1040,8 +1049,8 @@ fn maybe_auto_continue(
     let coding_sessions = state.coding_sessions.clone();
     let coding_changes = state.coding_changes.clone();
     let ai_provider_manager = state.ai_provider_manager.clone();
-    let ssh_pool = state.ssh_pool.clone();
-    let agent_pool = state.agent_pool.clone();
+    let ssh_pool = ssh_state.ssh_pool.clone();
+    let agent_pool = ssh_state.agent_pool.clone();
     let audit_log = state.audit_log.clone();
     let command_confirms = state.command_confirms.clone();
     let permission_rules = state.permission_rules.clone();
@@ -1444,6 +1453,7 @@ pub async fn coding_history_get(
 #[tauri::command]
 pub async fn coding_history_resume(
     state: State<'_, AppState>,
+    ssh_state: State<'_, RocDeskSshAppState>,
     workspace_id: Uuid,
     history_id: Uuid,
 ) -> Result<CodingSessionInfo, AppError> {
@@ -1474,6 +1484,7 @@ pub async fn coding_history_resume(
     // 临时 id，和前端实际展示的 session id 对不上，直接用最终 id 构造会话。
     let (mut session, change_store) = build_new_session(
         &state,
+        &ssh_state,
         workspace_id,
         detail.summary.provider_id,
         false,

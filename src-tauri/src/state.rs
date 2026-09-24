@@ -1,13 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use crate::agent::{AgentConnectionPool, AgentTrustPromptRegistry};
 use crate::ai::{AiChatClient, AiProviderManager, AiRuntime};
 use crate::coding::{ChangeStore, CodingSession, CommandConfirmRegistry, PendingInjection, QuestionRegistry};
-use crate::connection::{ConnectionGroupManager, ConnectionManager};
 use crate::credential::CredentialStore;
 use crate::db::repo::audit_log_repo::AuditLogRepo;
 use crate::db::repo::browser_history_repo::BrowserHistoryRepo;
@@ -19,8 +17,6 @@ use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
 use crate::mcp::McpServerManager;
 use crate::pty::LocalPtyManager;
-use crate::rdp::RdpSessionManager;
-use crate::ssh::{SshConnectionPool, TrustPromptRegistry};
 use crate::sql::agent::SqlAgentSession;
 use crate::sql::ai_assistant::SqlAiAssistant;
 use crate::symbols::SymbolIndex;
@@ -33,18 +29,17 @@ use crate::workspace::{WorkspaceHandle, WorkspaceManager};
 pub struct AppState {
     pub db: DbPool,
     pub credential_store: Arc<dyn CredentialStore>,
-    pub connection_manager: Arc<ConnectionManager>,
-    pub connection_group_manager: Arc<ConnectionGroupManager>,
-    pub ssh_pool: Arc<SshConnectionPool>,
-    pub rdp_sessions: Arc<RdpSessionManager>,
-    pub trust_prompts: TrustPromptRegistry,
-    /// 远程 Windows Agent 连接池（AGENT_DESIGN.md），和 `ssh_pool` 是同一种"连接池"
-    /// 模式——`WorkspaceManager`/`CodingSession` 按连接档案的 `protocol` 字段决定
-    /// 用这个还是 `ssh_pool`。
-    pub agent_pool: Arc<AgentConnectionPool>,
-    /// Agent TLS 证书指纹 TOFU 弹窗的等待注册表，和 `trust_prompts`（SSH 主机指纹）
-    /// 是两条独立的信任链条，故意不合用一张表（见 `agent::handshake` 模块文档）。
-    pub agent_trust_prompts: AgentTrustPromptRegistry,
+    // 连接管理/SSH/SFTP/Agent/RDP/传输日志已经迁到 roc_desk_ssh
+    // （roc_desk_ssh::RocDeskSshAppState，单独 manage，见 lib.rs::run）——迁移前
+    // 这里是 `connection_manager`/`connection_group_manager`/`ssh_pool`/
+    // `rdp_sessions`/`trust_prompts`/`agent_pool`/`agent_trust_prompts`/
+    // `cancelled_transfers`/`transfer_log` 九个字段。`commands/coding.rs`/
+    // `commands/sql.rs`/`commands/log_search.rs` 里仍然需要 `ssh_pool`/
+    // `agent_pool`/`connection_manager` 的命令函数改成额外取一份
+    // `State<'_, roc_desk_ssh::RocDeskSshAppState>`（和 SQL 迁移时的处理方式
+    // 一致，见 commands/sql.rs 顶部注释）。`workspace_manager`（下面这个字段）
+    // 内部自己持有一份 `ssh_pool`/`agent_pool`/`connection_manager`，构造时从
+    // `RocDeskSshAppState` 里克隆，不需要 `AppState` 自己再重复放一份。
     pub workspace_manager: Arc<WorkspaceManager>,
     /// 当前窗口内已打开的工作区句柄，key 为 WorkspaceProfile.id
     pub workspaces: Arc<RwLock<HashMap<Uuid, WorkspaceHandle>>>,
@@ -76,17 +71,6 @@ pub struct AppState {
     /// 的 `should_cancel` 钩子）。用 `std::sync::Mutex` 而不是 `tokio::sync::Mutex`——
     /// 只是拿锁读写一个值，不跨 `.await`，标准库的锁足够，不需要 tokio 版本的开销。
     pub active_search: Arc<StdMutex<Option<Uuid>>>,
-    /// SFTP/Agent 双栏浏览器"停止传输"用（2026-09-01 用户反馈：拖拽/上传下载
-    /// 大文件夹时没有办法主动停下来，只能干等传完）——和 `active_search` 是同一个
-    /// 取消模式，区别是这里可能同时有多个传输各自跑在不同的 `request_id` 下（比如
-    /// 两个不同的浏览器面板各自拖了一次），所以用 `HashSet` 记"被取消的" id 集合，
-    /// 不是单个"当前活跃的" id：递归复制（`fsops::copy_between`/
-    /// `fsops::remote::upload_recursive`/`download_recursive`）每处理完一个文件都
-    /// 检查一次自己的 `request_id` 是否在这个集合里，在就尽快中止。取消/正常结束/
-    /// 出错都要记得从集合里移除对应 id，不然会无限增长。
-    pub cancelled_transfers: Arc<StdMutex<HashSet<Uuid>>>,
-    /// 传输日志（用户 2026-09-01 需求："传输日志需要记录，并可在界面上查询追溯"）。
-    pub transfer_log: Arc<crate::db::repo::transfer_log_repo::TransferLogRepo>,
     /// 权限规则引擎的持久化层（REQUIREMENTS.md §3.7 权限引擎升级）——`CodingSession`
     /// 不持有它，`send_message` 每次都现取一份最新规则，见 `coding/permission.rs`。
     pub permission_rules: Arc<PermissionRulesRepo>,

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::parser::parse_log_line;
 use crate::error::AppError;
-use crate::ssh::session::SshSession;
+use roc_desk_ssh::ssh::session::SshSession;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSearchResult {

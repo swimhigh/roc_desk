@@ -1,7 +1,7 @@
 use super::session::{run_local_command, CodingTarget};
-use crate::agent::AgentConnectionPool;
+use roc_desk_ssh::agent::AgentConnectionPool;
 use crate::error::AppError;
-use crate::ssh::SshConnectionPool;
+use roc_desk_ssh::ssh::SshConnectionPool;
 
 /// AI 编程助手的 Git 集成（DESIGN.md §3.8.2 "Git 自动提交变更"）。
 ///
