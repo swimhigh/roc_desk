@@ -8,12 +8,12 @@ use crate::agent_llm;
 use crate::ai::AiProviderManager;
 use crate::coding::{CommandConfirmRegistry, QuestionRegistry};
 use crate::coding::ChatAttachment;
-use crate::db::repo::sql_query_history_repo::SqlQueryHistoryRepo;
 use crate::error::AppError;
-use crate::sql::adapter::new_backend_handle_slot;
-use crate::sql::model::{DbKind, ExecuteResult, ObjectDefinition, ObjectKind, ObjectRef};
-use crate::sql::policy::{self, ExecutionKind};
-use crate::sql::service::{SqlDataSourceService, SqlSessionManager};
+use roc_desk_sql::db::repo::sql_query_history_repo::SqlQueryHistoryRepo;
+use roc_desk_sql::sql::adapter::new_backend_handle_slot;
+use roc_desk_sql::sql::model::{DbKind, ExecuteResult, ObjectDefinition, ObjectKind, ObjectRef};
+use roc_desk_sql::sql::policy::{self, ExecutionKind};
+use roc_desk_sql::sql::service::{SqlDataSourceService, SqlSessionManager};
 
 /// SQL 对话通常比"分析整个项目"这类编程任务收敛快得多——一般是"看几眼表结构、
 /// 跑一两条查询、给结论"，给一个比较小的预算即可；真的用完了不丢上下文，用户发

@@ -180,7 +180,54 @@ its standalone Tauri host.
   (e.g. retro-tag the true chronology as `v0.5.0`) before it causes real
   confusion, not urgent since both tags still resolve to valid, buildable
   commits.
-## SQL 工作台：tool-repo side done, host wiring deliberately deferred (2026-09-22)
+## SQL 工作台：host wiring done (2026-09-24)
+
+- Resolved the blocker described below: `roc_desk_sql::SqlAppState::new` is
+  now pointed at the host's *existing* `db_path` (the same SQLite file
+  everything else uses), not a separate file — confirmed byte-identical
+  schema between `roc_desk-sql`'s `migrations/0001_sql_desktop.sql` and the
+  host's `migrations/0020_sql_desktop.sql` first (`diff` showed zero output),
+  then seeded `schema_migrations` with a row for `'0001_sql_desktop'` before
+  constructing `SqlAppState` so `roc_desk_core::db::migrate::apply_migrations`
+  doesn't try to re-run `CREATE TABLE sql_data_sources` (no `IF NOT EXISTS`
+  in that migration) against a database where the table already exists under
+  a different migration name.
+- `commands/sql.rs` now only contains the AI panel (`sql_ai_generate/explain/
+  optimize/fix_error`, `sql_accept/reject/undo_change`, `sql_revert_turn`) —
+  the 29 non-AI commands are registered as `roc_desk_sql::cmd::*` in
+  `lib.rs`. The AI panel's two helpers (`get_or_create_sql_change_store`,
+  `stage_ai_result`) and `commands/sql_agent.rs`'s functions that touched
+  `state.sql_data_source_service`/`sql_session_manager`/`sql_query_history`
+  now take an additional `State<'_, roc_desk_sql::SqlAppState>` parameter and
+  read `sql_state.data_source_service`/`session_manager`/`query_history`/
+  `workspace_tabs`/`workspace_cache` instead — Tauri natively supports a
+  command taking multiple different `State<T>` parameters, no extension-slot
+  mechanism needed. `sql/agent/session.rs`'s imports were repointed from
+  `crate::sql::{adapter,model,policy,service}`/
+  `crate::db::repo::sql_query_history_repo` to the `roc_desk_sql::` 
+  equivalents (function signatures there already took these types as
+  parameters rather than reading `state.field` directly, so no other changes
+  were needed there).
+- Host's `state.rs` no longer has `sql_data_source_service`/
+  `sql_session_manager`/`sql_query_history`/`sql_workspace_tabs`/
+  `sql_workspace_cache`/`sql_executor`/`sql_transfer_manager` fields (kept
+  `sql_changes`/`sql_ai_assistant`/the `sql_agent_*` fields, which stay
+  host-only). Deleted the now-fully-migrated
+  `sql/{adapter,adapters/,data_editor,executor,model,policy,registry,
+  service,transfer,workspace_cache}.rs` and
+  `db/repo/sql_{data_sources,query_history,workspace_tabs}_repo.rs`; kept
+  `sql/agent/` and `sql/ai_assistant.rs`.
+- `cargo check --release` (zero warnings) and a full `build-portable.ps1` run
+  both pass; smoke-tested by launching `bin/roc_desk.exe` directly (process
+  stayed alive, empty error log, cleanly killed afterward).
+- Depends on the same-day tag-alignment fix (`common-v0.5.0` unified across
+  all consumers, see the top of `docs/MULTI_REPO_SPLIT_PLAN.md` §13) — before
+  that fix, `roc_desk-sql`'s `AppError`/`DbPool` types would have been a
+  *different* Rust type identity than the host's own (pinned to a different
+  `roc_desk-common` git tag), which would have made this exact
+  multi-`State<T>` wiring fail to type-check.
+
+## SQL 工作台（tool-repo side）：tool-repo side done, host wiring deliberately deferred (2026-09-22)
 
 - `roc_desk-common` gained `roc_desk_core::credential` (`CredentialStore` +
   `KeyringStore`) and `roc_desk_core::db` (`DbPool`/`create_pool`/

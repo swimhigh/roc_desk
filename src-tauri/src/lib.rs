@@ -46,9 +46,6 @@ use db::repo::known_hosts_repo::KnownHostsRepo;
 use db::repo::mcp_servers_repo::McpServersRepo;
 use db::repo::permission_rules_repo::PermissionRulesRepo;
 use db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
-use db::repo::sql_data_sources_repo::SqlDataSourcesRepo;
-use db::repo::sql_query_history_repo::SqlQueryHistoryRepo;
-use db::repo::sql_workspace_tabs_repo::SqlWorkspaceTabsRepo;
 use db::repo::transfer_log_repo::TransferLogRepo;
 use db::repo::workspace_module_links_repo::WorkspaceModuleLinksRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
@@ -57,9 +54,6 @@ use mcp::McpServerManager;
 use pty::LocalPtyManager;
 use rdp::RdpSessionManager;
 use sql::ai_assistant::SqlAiAssistant;
-use sql::executor::QueryExecutor;
-use sql::service::{SqlDataSourceService, SqlSessionManager};
-use sql::workspace_cache::SqlWorkspaceCache;
 use ssh::{KnownHostsVerifier, SshConnectionPool, TrustPromptRegistry};
 use state::AppState;
 use workspace::WorkspaceManager;
@@ -355,27 +349,32 @@ pub fn run() {
             ));
             let transfer_log = Arc::new(TransferLogRepo::new(pool.clone()));
 
-            // SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。复用主库 `pool`（数据源
-            // 档案/查询历史/标签页元数据体量都很小，不需要像 sessions/workspaces
-            // 那样单独拆库）；本地目录缓存放在 `.rock_desk/sql/`，和 `sessions/`/
-            // `workspaces/`/`log_cache/` 同一惯例（方案 §4.4）。
-            let sql_data_sources_repo = Arc::new(SqlDataSourcesRepo::new(pool.clone()));
-            let sql_data_source_service = Arc::new(SqlDataSourceService::new(
-                sql_data_sources_repo,
-                credential_store.clone(),
-            ));
-            let sql_session_manager =
-                Arc::new(SqlSessionManager::new(sql_data_source_service.clone()));
-            let sql_query_history = Arc::new(SqlQueryHistoryRepo::new(pool.clone()));
-            let sql_workspace_tabs = Arc::new(SqlWorkspaceTabsRepo::new(pool.clone()));
-            let sql_workspace_cache =
-                Arc::new(SqlWorkspaceCache::new(app_data_dir.clone()));
-            let sql_executor = Arc::new(QueryExecutor::new());
+            // SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。数据源 CRUD/会话管理/查询
+            // 执行/工作区标签页/导出导入已经迁到 roc_desk_sql（见
+            // docs/MULTI_REPO_SPLIT_PROGRESS.md "SQL 工作台"一节）——
+            // `roc_desk_sql::SqlAppState::new` 指向和主库同一个 `db_path`（不是
+            // 单独一个文件），因为 AI 面板/SQL Agent 这些还没迁走的宿主代码
+            // 需要看到和 SQL 工作台面板一样的数据源/查询历史，两者必须是同一份
+            // 数据；`0001_sql_desktop` 这个 crate 内部的迁移名和宿主自己的
+            // `0020_sql_desktop` 建的是同一套表（已核对过 schema 完全一致），
+            // 先手动把这条迁移记进 `schema_migrations`，避免 `SqlAppState::new`
+            // 对着已经建过表的库重新跑一遍 CREATE TABLE 报错。
+            {
+                let conn = pool.get()?;
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations (
+                        name TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    INSERT OR IGNORE INTO schema_migrations (name) VALUES ('0001_sql_desktop');",
+                )?;
+            }
+            let sql_app_state = roc_desk_sql::SqlAppState::new(&db_path, app_data_dir.clone())
+                .expect("初始化 SQL 工作台存储失败");
             let sql_ai_assistant = Arc::new(SqlAiAssistant::new(
                 ai_chat_client.clone(),
                 ai_provider_manager.clone(),
             ));
-            let sql_transfer_manager = Arc::new(sql::transfer::TransferManager::new());
             let sql_agent_history = Arc::new(SqlAgentHistoryRepo::new(pool.clone()));
 
             app.manage(AppState {
@@ -424,15 +423,8 @@ pub fn run() {
                     std::collections::HashMap::new(),
                 )),
                 symbol_indexes: Arc::new(RwLock::new(HashMap::new())),
-                sql_data_source_service,
-                sql_session_manager,
-                sql_query_history,
-                sql_workspace_tabs,
-                sql_workspace_cache,
-                sql_executor,
                 sql_changes: Arc::new(RwLock::new(HashMap::new())),
                 sql_ai_assistant,
-                sql_transfer_manager,
                 sql_agent_sessions: Arc::new(RwLock::new(HashMap::new())),
                 sql_agent_confirms: CommandConfirmRegistry::default(),
                 sql_agent_questions: coding::QuestionRegistry::default(),
@@ -442,6 +434,7 @@ pub fn run() {
                 )),
             });
             app.manage(http_app_state);
+            app.manage(sql_app_state);
 
             Ok(())
         })
@@ -625,31 +618,31 @@ pub fn run() {
             commands::browser::browser_history_remove,
             commands::browser::browser_history_clear,
             commands::diagnostics::log_frontend_error,
-            commands::sql::sql_list_data_sources,
-            commands::sql::sql_save_data_source,
-            commands::sql::sql_delete_data_source,
-            commands::sql::sql_test_connection,
-            commands::sql::sql_open_session,
-            commands::sql::sql_close_session,
-            commands::sql::sql_list_databases,
-            commands::sql::sql_current_database,
-            commands::sql::sql_switch_database,
-            commands::sql::sql_list_objects,
-            commands::sql::sql_preview_template,
-            commands::sql::sql_describe_object,
-            commands::sql::sql_table_page,
-            commands::sql::sql_table_row_count,
-            commands::sql::sql_table_update_cell,
-            commands::sql::sql_table_delete_row,
-            commands::sql::sql_table_insert_row,
-            commands::sql::sql_generate_alter_table,
-            commands::sql::sql_export_start,
-            commands::sql::sql_export_poll,
-            commands::sql::sql_export_cancel,
-            commands::sql::sql_import_start,
-            commands::sql::sql_import_poll,
-            commands::sql::sql_import_cancel,
-            commands::sql::sql_write_text_file,
+            roc_desk_sql::cmd::sql_list_data_sources,
+            roc_desk_sql::cmd::sql_save_data_source,
+            roc_desk_sql::cmd::sql_delete_data_source,
+            roc_desk_sql::cmd::sql_test_connection,
+            roc_desk_sql::cmd::sql_open_session,
+            roc_desk_sql::cmd::sql_close_session,
+            roc_desk_sql::cmd::sql_list_databases,
+            roc_desk_sql::cmd::sql_current_database,
+            roc_desk_sql::cmd::sql_switch_database,
+            roc_desk_sql::cmd::sql_list_objects,
+            roc_desk_sql::cmd::sql_preview_template,
+            roc_desk_sql::cmd::sql_describe_object,
+            roc_desk_sql::cmd::sql_table_page,
+            roc_desk_sql::cmd::sql_table_row_count,
+            roc_desk_sql::cmd::sql_table_update_cell,
+            roc_desk_sql::cmd::sql_table_delete_row,
+            roc_desk_sql::cmd::sql_table_insert_row,
+            roc_desk_sql::cmd::sql_generate_alter_table,
+            roc_desk_sql::cmd::sql_export_start,
+            roc_desk_sql::cmd::sql_export_poll,
+            roc_desk_sql::cmd::sql_export_cancel,
+            roc_desk_sql::cmd::sql_import_start,
+            roc_desk_sql::cmd::sql_import_poll,
+            roc_desk_sql::cmd::sql_import_cancel,
+            roc_desk_sql::cmd::sql_write_text_file,
             commands::sql_agent::sql_agent_start,
             commands::sql_agent::sql_agent_new_session,
             commands::sql_agent::sql_agent_close,
@@ -664,19 +657,19 @@ pub fn run() {
             commands::sql_agent::sql_agent_history_resume,
             commands::sql_agent::sql_agent_history_rename,
             commands::sql_agent::sql_agent_history_delete,
-            commands::sql::sql_execute,
-            commands::sql::sql_poll_query,
-            commands::sql::sql_cancel,
-            commands::sql::sql_confirm_write,
-            commands::sql::sql_rollback_write,
-            commands::sql::sql_explain,
-            commands::sql::sql_query_history,
-            commands::sql::sql_workspace_tabs_list,
-            commands::sql::sql_workspace_tab_create,
-            commands::sql::sql_workspace_tab_delete,
-            commands::sql::sql_workspace_tab_update_meta,
-            commands::sql::sql_tab_read_content,
-            commands::sql::sql_tab_write_content,
+            roc_desk_sql::cmd::sql_execute,
+            roc_desk_sql::cmd::sql_poll_query,
+            roc_desk_sql::cmd::sql_cancel,
+            roc_desk_sql::cmd::sql_confirm_write,
+            roc_desk_sql::cmd::sql_rollback_write,
+            roc_desk_sql::cmd::sql_explain,
+            roc_desk_sql::cmd::sql_query_history,
+            roc_desk_sql::cmd::sql_workspace_tabs_list,
+            roc_desk_sql::cmd::sql_workspace_tab_create,
+            roc_desk_sql::cmd::sql_workspace_tab_delete,
+            roc_desk_sql::cmd::sql_workspace_tab_update_meta,
+            roc_desk_sql::cmd::sql_tab_read_content,
+            roc_desk_sql::cmd::sql_tab_write_content,
             commands::sql::sql_ai_generate,
             commands::sql::sql_ai_explain,
             commands::sql::sql_ai_optimize,

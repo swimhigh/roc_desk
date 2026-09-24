@@ -10,6 +10,7 @@ use crate::db::repo::sql_agent_history_repo::{SqlAgentHistoryDetail, SqlAgentHis
 use crate::error::AppError;
 use crate::sql::agent::SqlAgentSession;
 use crate::state::AppState;
+use roc_desk_sql::SqlAppState;
 
 /// SQL Agent 的会话信息——`coding::commands::CodingSessionInfo` 的简化版，见
 /// `sql::agent::session` 模块文档里"没有搬哪些 coding 概念"的说明。
@@ -37,6 +38,7 @@ async fn get_session(state: &State<'_, AppState>, data_source_id: Uuid) -> Resul
 #[tauri::command]
 pub async fn sql_agent_start(
     state: State<'_, AppState>,
+    sql_state: State<'_, SqlAppState>,
     data_source_id: Uuid,
     provider_id: Uuid,
 ) -> Result<SqlAgentSessionInfo, AppError> {
@@ -51,8 +53,8 @@ pub async fn sql_agent_start(
         guard.provider_id = provider_id;
         return Ok(session_info(&guard).await);
     }
-    let profile = state
-        .sql_data_source_service
+    let profile = sql_state
+        .data_source_service
         .get(data_source_id)?
         .ok_or_else(|| AppError::NotFound(format!("data source not found: {data_source_id}")))?;
     let session = SqlAgentSession::new(data_source_id, provider_id, &profile.name, profile.db_kind);
@@ -64,6 +66,7 @@ pub async fn sql_agent_start(
 #[tauri::command]
 pub async fn sql_agent_new_session(
     state: State<'_, AppState>,
+    sql_state: State<'_, SqlAppState>,
     data_source_id: Uuid,
     provider_id: Uuid,
 ) -> Result<SqlAgentSessionInfo, AppError> {
@@ -71,8 +74,8 @@ pub async fn sql_agent_new_session(
         return Err(AppError::NotFound(format!("ai provider not found: {provider_id}")));
     }
     state.sql_agent_sessions.write().await.remove(&data_source_id);
-    let profile = state
-        .sql_data_source_service
+    let profile = sql_state
+        .data_source_service
         .get(data_source_id)?
         .ok_or_else(|| AppError::NotFound(format!("data source not found: {data_source_id}")))?;
     let session = SqlAgentSession::new(data_source_id, provider_id, &profile.name, profile.db_kind);
@@ -104,6 +107,7 @@ pub async fn sql_agent_set_provider(
 #[tauri::command]
 pub async fn sql_agent_send_message(
     state: State<'_, AppState>,
+    sql_state: State<'_, SqlAppState>,
     app_handle: AppHandle,
     data_source_id: Uuid,
     text: String,
@@ -118,9 +122,9 @@ pub async fn sql_agent_send_message(
             &text,
             &attachments.unwrap_or_default(),
             &state.ai_provider_manager,
-            &state.sql_data_source_service,
-            &state.sql_session_manager,
-            &state.sql_query_history,
+            &sql_state.data_source_service,
+            &sql_state.session_manager,
+            &sql_state.query_history,
             &state.sql_agent_confirms,
             &state.sql_agent_questions,
             &app_handle,
@@ -178,6 +182,7 @@ pub async fn sql_agent_history_save(state: State<'_, AppState>, input: SqlAgentH
 #[tauri::command]
 pub async fn sql_agent_history_resume(
     state: State<'_, AppState>,
+    sql_state: State<'_, SqlAppState>,
     data_source_id: Uuid,
     history_id: Uuid,
 ) -> Result<SqlAgentSessionInfo, AppError> {
@@ -193,8 +198,8 @@ pub async fn sql_agent_history_resume(
             "这条历史记录关联的 AI 供应商已被删除，请先在模型管理里重新配置后再试".into(),
         ));
     }
-    let profile = state
-        .sql_data_source_service
+    let profile = sql_state
+        .data_source_service
         .get(data_source_id)?
         .ok_or_else(|| AppError::NotFound(format!("data source not found: {data_source_id}")))?;
     let mut session = SqlAgentSession::new(data_source_id, detail.summary.provider_id, &profile.name, profile.db_kind);

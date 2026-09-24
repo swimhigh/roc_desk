@@ -4603,6 +4603,7 @@ dependencies = [
  "roc_desk_explorer",
  "roc_desk_http",
  "roc_desk_protocol",
+ "roc_desk_sql",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -4761,6 +4762,35 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "roc_desk_sql"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.1#afe2ec3fc9c9f4374c3421eeb20f96bf2e83fcef"
+dependencies = [
+ "async-trait",
+ "bb8",
+ "bb8-tiberius",
+ "chrono",
+ "deadpool-postgres",
+ "futures-util",
+ "mysql_async",
+ "r2d2",
+ "roc_desk_core",
+ "rusqlite",
+ "rustls 0.23.43",
+ "rustls-native-certs 0.8.4",
+ "serde",
+ "serde_json",
+ "sqlparser",
+ "tauri",
+ "tiberius",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

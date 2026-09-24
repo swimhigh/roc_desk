@@ -23,10 +23,6 @@ use crate::rdp::RdpSessionManager;
 use crate::ssh::{SshConnectionPool, TrustPromptRegistry};
 use crate::sql::agent::SqlAgentSession;
 use crate::sql::ai_assistant::SqlAiAssistant;
-use crate::sql::executor::QueryExecutor;
-use crate::sql::service::{SqlDataSourceService, SqlSessionManager};
-use crate::sql::transfer::TransferManager;
-use crate::sql::workspace_cache::SqlWorkspaceCache;
 use crate::symbols::SymbolIndex;
 use crate::workspace::{WorkspaceHandle, WorkspaceManager};
 
@@ -138,26 +134,20 @@ pub struct AppState {
     /// 扫描器，不是真正的语言语义分析，见 `symbols` 模块文档。
     pub symbol_indexes: Arc<RwLock<HashMap<Uuid, SymbolIndex>>>,
 
-    /// SQL 桌面模块（docs/SQL_DESKTOP_PLAN.md）。数据源 CRUD + 凭据编排。
-    pub sql_data_source_service: Arc<SqlDataSourceService>,
-    /// 每个数据源一份共享连接会话，跨标签页/窗口复用（方案 §2.5）。
-    pub sql_session_manager: Arc<SqlSessionManager>,
-    pub sql_query_history: Arc<crate::db::repo::sql_query_history_repo::SqlQueryHistoryRepo>,
-    pub sql_workspace_tabs: Arc<crate::db::repo::sql_workspace_tabs_repo::SqlWorkspaceTabsRepo>,
-    /// 标签页文件化的本地目录缓存，AI 编程助手的 `ChangeStore` 直接对着这里的
-    /// 文件读写（方案 §4.4）。
-    pub sql_workspace_cache: Arc<SqlWorkspaceCache>,
-    /// 查询执行任务的 spawn/poll/cancel registry，所有 adapter 共用（方案
-    /// §4.2.1，参考 rainfrog 的任务状态机思路，见 `sql::executor`）。
-    pub sql_executor: Arc<QueryExecutor>,
+    // 数据源 CRUD/会话管理/查询执行/工作区标签页/导出导入这些字段已迁到
+    // roc_desk_sql（roc_desk_sql::SqlAppState，单独 manage，见 lib.rs::run）——
+    // 迁移前这里是 `sql_data_source_service`/`sql_session_manager`/
+    // `sql_query_history`/`sql_workspace_tabs`/`sql_workspace_cache`/
+    // `sql_executor`/`sql_transfer_manager` 七个字段。AI 面板（下面
+    // `sql_ai_assistant`/`sql_changes`）和 SQL Agent 依赖 `roc_desk_core`
+    // 还没有的 `crate::ai`/`crate::agent_llm`，所以没有一起迁，留在宿主的
+    // 命令函数改成额外取一份 `State<'_, roc_desk_sql::SqlAppState>`
+    // （见 commands/sql.rs、commands/sql_agent.rs）。
     /// AI 对 SQL 标签页的文件改动状态，和 `coding_changes` 同样的
     /// "按 id 一份、独立加锁"模式，但 key 是 data_source_id 而不是
     /// workspace_id——两套状态机除了都复用 `ChangeStore` 类型外互不相干。
     pub sql_changes: Arc<RwLock<HashMap<Uuid, Arc<Mutex<ChangeStore>>>>>,
     pub sql_ai_assistant: Arc<SqlAiAssistant>,
-    /// 导出/导入任务的 spawn/poll/cancel registry（2026-09 用户需求：右键表
-    /// 导出/导入数据，大数据量要能断点续传），见 `sql::transfer`。
-    pub sql_transfer_manager: Arc<TransferManager>,
 
     // --- SQL Agent（2026-09 用户要求：AI 工具要和"工作区"编程助手一样是真正
     // 的多轮 Agent，而不是单次生成/解释/优化那种一次性请求，见 `sql::agent`）。
