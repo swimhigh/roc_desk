@@ -606,6 +606,59 @@ its standalone Tauri host.
   大得多，按这次的经验（一次带 8000 行左右代码、涉及 6+ 个仓库互相依赖）
   预计需要单独一次会有充足时间预算的迁移，不建议在时间紧张时强行推进。
 
+## AI 编程助手迁移 phase 2：WorkspaceManager 补上远程工作区 + 本地打开注册表 (2026-09-24)
+
+- **解决的正是 phase 1 结尾标出的那个前置条件缺口**：`roc_desk_core::
+  workspace::WorkspaceManager` 之前是纯本地实现，没有宿主那套"已打开工作区
+  注册表"（`AppState.workspaces`）和远程/SSH 支持，`coding::session` 深度
+  依赖这两者，是搬它之前必须先解决的两个功能缺口。这次都做了：
+  - **远程工作区（DB/profile 层）**：`common-v0.10.0` 给 `WorkspaceProfile`
+    加回 `connection_id`/`last_sftp_local_path`/`last_sftp_remote_path`
+    字段和 `WorkspaceKind::Remote`，`WorkspaceManager` 加了
+    `open_remote`/`update_last_sftp_paths`。**这个 crate 依然不依赖
+    `roc_desk-ssh`**——`open_remote` 不自己解析 `connection_id`，接受调用方
+    已经算好的 `display_name`/`embedded_workspace_id`（调用方才有
+    `roc_desk-ssh` 的连接池，能探测远程主机上的 `.rock_desk/workspace.json`
+    标记文件），这里只管 DB upsert + 本机 fallback 缓存那一半，职责边界和
+    `roc_desk_common`（不依赖桌面宿主/具体工具）的定位一致。
+  - **本地打开工作区注册表**：`roc_desk-workspace@v0.2.6` 给
+    `WorkspaceAppState` 加了 `open_workspaces: Arc<RwLock<HashMap<Uuid,
+    WorkspaceHandle>>>`，`workspace_open_local` 现在会往里插一条（之前
+    发现的真实 gap：它原来什么都不插，和宿主的 `workspace_open_local` 行为
+    不一致），新增 `workspace_close` 命令负责移除。`WorkspaceHandle` 里的
+    `file_ops: Arc<dyn roc_desk_common::fsops::FileOps>` 目前只接
+    `LocalFileOps`——远程工作区要接进来，还需要这个 crate 直接依赖
+    `roc_desk-ssh`（获取 `ConnectionManager`/`SshConnectionPool`/
+    `AgentConnectionPool`），这是特意留到下一步的，不在这次范围内（见下）。
+- **验证方式**：`roc_desk_core`/`roc_desk_common` 全部单测通过（17 个，
+  含新增字段不影响任何既有测试）；6 个 tool repo + 宿主重新对齐到
+  `common-v0.10.0`（这次的版本漂移修复流程比之前更熟练——`roc_desk-explorer`
+  → `roc_desk-editor`（依赖 explorer）→ 剩下互相独立的 4 个仓库，逐个
+  `cargo check` 验证单一 `roc_desk_core` 实例后再提交打 tag，没有再重演
+  "本地改完 Cargo.toml 但忘记给依赖它的仓库也发新 tag"这个坑）；宿主
+  `cargo check` 全绿，`build-portable.ps1` 完整跑通。
+- **仍然没做、下一步真正要做的事**（按依赖顺序）：
+  1. 给 `roc_desk-workspace` 加 `roc_desk-ssh` 依赖，让它自己能解析
+     `connection_id` → 实际连接 → `RemoteFileOps`/`AgentFileOps`，补上
+     `workspace_open_remote` 命令，把 `WorkspaceHandle.file_ops` 扩成
+     "本地或远程都行"。这一步之后，`open_workspaces` 注册表才是真正完整的
+     "宿主 `AppState.workspaces` 的对等物"。
+  2. 决定"谁的 `ConnectionManager`/`SshConnectionPool`/`AgentConnectionPool`
+     实例"这个问题——如果宿主接线（`roc_desk-workspace` 的 `open_remote`
+     命令最终要接进宿主），必须复用宿主已经在用的 `RocDeskSshAppState`
+     那一份，不能自己重新 `new` 一份，否则重演这次会话反复踩过的"分裂
+     注册表"bug（同一个连接池在两个地方各有一份，互相看不到）。standalone
+     的 `roc_desk-workspace` 单独跑的场景要不要也支持远程工作区（意味着
+     要嵌入一部分 SSH 连接管理 UI/命令）是一个单独的产品决定，不是这次
+     范围。
+  3. 真正开始把 `coding::session.rs`（2838 行）/`coding::tools.rs`
+     （740 行）/`coding::changes.rs`/`diff.rs`/`git_ops.rs`/`guard.rs`/
+     `permission.rs`/`skills.rs`/`webfetch.rs`（加起来约 4700 行）连同宿主
+     命令层 `commands/coding.rs`（1532 行）迁到 `roc_desk-workspace`——现在
+     前置条件（共享 Agent 基础设施 + WorkspaceManager 远程支持 + 打开注册表）
+     都齐了，但这一步本身仍然是这次会话里最大的单项工作量，需要单独一次
+     会话专门做。
+
 ## 环境问题记录：本机杀毒软件间歇性拦截刚编译出的 Rust 构建脚本 (2026-09-24)
 
 - 本次会话反复撞到 `error: failed to run custom build command for
