@@ -552,6 +552,84 @@ its standalone Tauri host.
   - 在方案 a/b/c 选定之前，`packages/ui-core` 暂不建议投入更多组件迁移
     工作——写好的组件缺一条能被外部工具实际消费的路径，属于"写了但用不上"。
 
+## AI 编程助手迁移 phase 1：共享 Agent 基础设施拆到 roc_desk_common (2026-09-24)
+
+- **背景**：AI 编程助手（`coding::session`/`coding::tools`，约 3500 行）之前
+  被判定为"单独一个大工程"，因为它依赖的 `crate::ai`/`crate::agent_llm`/
+  `crate::coding::{CommandConfirmRegistry, QuestionRegistry, ChatAttachment}`
+  这些基础设施完全是 host-only 的，哪个 tool repo 都拿不到。这不是假设——
+  `roc_desk-sql` 早先那次迁移就因为同样的理由把 `sql/agent`（SQL Agent 的
+  多轮工具调用循环）复制过去了但**没有在 `sql/mod.rs` 里声明**，成了一份
+  写好但编译不到 crate 里的死代码。
+- **这次做的**：把这些基础设施从 host 搬到 `roc_desk_common`（新增
+  `common-v0.7.0`→`v0.9.0` 四个小版本），供任意 tool repo 共用：
+  - `roc_desk_common::ai`：`AiProvider`/`AiProviderManager`/`AiProvidersRepo`
+    （连同 SQLite 存储）、`AiChatClient`（流式对话+联网搜索）、`AiRuntime`
+    （并发/取消控制）、`security`（脱敏/审计）、`sse`（SSE 解析）、
+    `attachments`（图片/文本/PDF 附件处理，超预算时自动分窗口用 LLM 提取
+    相关内容）。
+  - `roc_desk_common::agent_llm`：协议无关的多轮工具调用引擎半层——
+    chat/completions vs Responses API 两种协议归一化、429/5xx 重试、usage
+    抽取。这是 `coding::session`/`sql::agent::session` 两边本来就在共用的
+    同一份逻辑，只是之前只存在于 host 里。
+  - `roc_desk_common::agent_confirm`：`CommandConfirmRegistry`/
+    `QuestionRegistry`，两个通用的"等前端一个 oneshot 响应"注册表，和
+    "文件/SQL"这些领域概念完全无关。
+  - `roc_desk_common::agent_todo`：`TodoItem`/`TodoStatus`，`todo_write`
+    工具用的结构化任务清单类型。
+  - `event_prefix` 从硬编码的 `"coding:"` 改成参数（`"coding"`/
+    `"sqlagent"`），这样两个 Agent 能共用同一份实现但各自发到自己的前端
+    事件通道。
+- **验证方式**：`roc_desk_common` 自己 `cargo test` 全绿（17 个测试，含从
+  host 搬过来的 `ai::sse`/`ai::security` 单元测试）；然后把 `roc_desk-sql`
+  那份死代码（`sql/agent/*.rs`、`sql/ai_assistant.rs`）的 import 从
+  `crate::ai`/`crate::agent_llm`/`crate::coding::*` 改成
+  `roc_desk_common::{ai, agent_llm, agent_confirm, agent_todo}`，在
+  `sql/mod.rs` 里补上 `pub mod agent; pub mod ai_assistant;` 两行——
+  `cargo check` 一次性编译通过，**证明这套共享基础设施确实可用**，不是
+  纸面设计。目前只到"编译进 crate"这一步，还没有给 `roc_desk_sql::cmd`
+  加对应的 Tauri 命令包装（standalone SQL 工具本身也还没有 Agent 面板的
+  前端），这部分本来就不在这次的范围内。
+- **NOT 做的、下一步真正的大工程**：把 `coding::session.rs`（2838 行）/
+  `coding::tools.rs`（740 行）/`coding::changes.rs`/`diff.rs`/`git_ops.rs`/
+  `guard.rs`/`permission.rs`/`skills.rs`/`webfetch.rs`（加起来约 4700 行）
+  连同宿主侧命令层 `commands/coding.rs`（1532 行）迁到 `roc_desk-workspace`。
+  这次没做，原因和之前文档记录的一样：`roc_desk_core::workspace::
+  WorkspaceManager` 还是纯本地实现，没有宿主那套"已打开工作区注册表"
+  （`state.workspaces`）和远程/SSH 工作区支持——`coding::session` 深度依赖
+  这两者（每个 `CodingSession` 绑定一个 workspace，通过 `CodingTarget`
+  区分本地/远程/Agent 目标读取对应的 `file_ops`/`ssh_pool`）。**这次拆出来
+  的共享基础设施（ai/agent_llm/agent_confirm/agent_todo）是这个大工程的
+  必要前置条件，但不是它本身**——真正开始搬 `coding::session.rs` 之前，
+  还需要先解决 `WorkspaceManager` 的功能缺口（对齐或替换宿主实现），否则
+  会重演"打开的工作区其实不可用"那类隐性回归。工作量比这次拆共享基础设施
+  大得多，按这次的经验（一次带 8000 行左右代码、涉及 6+ 个仓库互相依赖）
+  预计需要单独一次会有充足时间预算的迁移，不建议在时间紧张时强行推进。
+
+## 环境问题记录：本机杀毒软件间歇性拦截刚编译出的 Rust 构建脚本 (2026-09-24)
+
+- 本次会话反复撞到 `error: failed to run custom build command for
+  \`<crate>\`... 拒绝访问 (os error 5)`——一开始怀疑磁盘空间不足（`F:` 盘
+  一度只剩 42MB，清理 `roc_tools/*/target` + `roc_desk/build` 后恢复到
+  40GB+，但清完之后同类错误仍然出现），后确认是 360 安全卫士
+  （`360tray.exe`/`360Safe.exe`）对刚编译出来、还没签名的 Rust 构建脚本
+  可执行文件做实时扫描，扫描窗口内 cargo 想执行/重命名这个文件会拿到
+  `ACCESS_DENIED`。规律：换一个新的 crate 名字第一次触发时几乎总是失败，
+  但同一个 crate 的构建脚本一旦在某个仓库的 `target/` 里成功跑过一次，
+  它自己的 `target/` 目录里就不会再触发（不是全局免疫，是"这个具体文件在
+  这个具体路径第一次执行"这一步容易撞上扫描窗口）——单纯重试（不改任何
+  代码）５～２０次基本都能过去，最长一次卡了 40 次重试才通过（`tauri-
+  runtime`/`tauri-runtime-wry`/`encoding_rs` 是这次撞到最多次的几个）。
+  跨仓库复制已经编译好的 `build-script-build.exe` 大多数时候没用——cargo
+  的 fingerprint 校验会认为"不是自己刚编译的"而重新编译一遍，重新触发同一
+  个扫描窗口。**结论：没有真正的修复手段，只能重试**；如果这个问题反复出现
+  拖慢构建，需要用户自己在 360 里给 `F:\code\wuyou` 加一条实时防护排除规则。
+- 顺带确认（并修复）了一个真实的、和这个环境问题无关的 bug：`crates.io`
+  的 `index.crates.io`/`static.crates.io` 在本机网络下 TLS SNI 校验持续
+  失败（GitHub 连接正常，只有 crates.io 系域名不通），已经给用户全局
+  `~/.cargo/config.toml`（不只是 `roc_desk` 项目自己的 `.cargo/
+  config.toml`）加了中国科技大学的 crates.io 镜像源，所有仓库的构建都受益。
+
 ## Known cross-tool dependency-graph quirk — recurred twice, still needs a real fix (2026-09-24)
 
 - This version-drift bug (multiple repos pinning different `common-v*`
