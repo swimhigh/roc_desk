@@ -4636,12 +4636,12 @@ dependencies = [
  "r2d2_sqlite",
  "regex",
  "reqwest 0.12.28",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_editor 0.2.0 (git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.6)",
- "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.6)",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_editor",
+ "roc_desk_explorer",
  "roc_desk_http",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.4)",
  "roc_desk_sql",
  "roc_desk_ssh",
  "roc_desk_workspace",
@@ -4711,58 +4711,34 @@ dependencies = [
 [[package]]
 name = "roc_desk_common"
 version = "0.4.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0#730763307adf731f88e3710402676523220bc873"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.9.0#e079ea5992c604d55031dd06b0f2f3c8a3c55205"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "encoding_rs",
+ "futures-util",
  "goblin",
+ "pdf-extract",
  "regex",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
- "serde",
- "tokio",
- "zip",
-]
-
-[[package]]
-name = "roc_desk_common"
-version = "0.4.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0#4dfce2479da40fc2bda77861d9cf0450f234043c"
-dependencies = [
- "async-trait",
- "chrono",
- "encoding_rs",
- "goblin",
- "regex",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "serde",
- "tokio",
- "zip",
-]
-
-[[package]]
-name = "roc_desk_core"
-version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0#730763307adf731f88e3710402676523220bc873"
-dependencies = [
- "async-trait",
- "chrono",
- "keyring",
- "r2d2",
- "r2d2_sqlite",
  "reqwest 0.12.28",
+ "roc_desk_core",
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "sha2 0.10.9",
+ "tauri",
  "tokio",
+ "tokio-util",
+ "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]
 name = "roc_desk_core"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0#4dfce2479da40fc2bda77861d9cf0450f234043c"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.9.0#e079ea5992c604d55031dd06b0f2f3c8a3c55205"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4781,28 +4757,12 @@ dependencies = [
 [[package]]
 name = "roc_desk_editor"
 version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.5#f1751fe4255d2ec9a82f3c032a75e315e371ad05"
+source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.7#21e022d090beb60a3253cfddf612cb6d6c601dc9"
 dependencies = [
  "base64 0.22.1",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.4)",
- "serde",
- "tauri",
- "tokio",
- "windows 0.61.3",
- "windows-future",
-]
-
-[[package]]
-name = "roc_desk_editor"
-version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.6#ae2821e8c175a39d552d827d024b906255d553bc"
-dependencies = [
- "base64 0.22.1",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5)",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_explorer",
  "serde",
  "tauri",
  "tokio",
@@ -4813,39 +4773,11 @@ dependencies = [
 [[package]]
 name = "roc_desk_explorer"
 version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.4#d7132c75158142e66052c253b3d3c1d25d84dfc4"
+source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.7#b3be62266769aea81076eed2bd5106ae00a5e587"
 dependencies = [
  "base64 0.22.1",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
- "tauri",
- "tauri-plugin-opener",
- "tokio",
- "trash",
-]
-
-[[package]]
-name = "roc_desk_explorer"
-version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5#05cc66f1946d400c116f848967d2cd869325ec40"
-dependencies = [
- "base64 0.22.1",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "tauri",
- "tauri-plugin-opener",
- "tokio",
- "trash",
-]
-
-[[package]]
-name = "roc_desk_explorer"
-version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.6#6f55a1cc8cbb02f62006709a93b4d3dcd2cdb49a"
-dependencies = [
- "base64 0.22.1",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_common",
+ "roc_desk_core",
  "tauri",
  "tauri-plugin-opener",
  "tokio",
@@ -4855,15 +4787,15 @@ dependencies = [
 [[package]]
 name = "roc_desk_http"
 version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-http?tag=v0.2.3#bbd88c492e787c09b260e0297f197db9fe19db06"
+source = "git+https://github.com/swimhigh/roc_desk-http?tag=v0.2.4#2fedbae40f8e9aa8d60731767ce09f354949feb6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "r2d2",
  "reqwest 0.12.28",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_common",
+ "roc_desk_core",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4887,7 +4819,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_protocol"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3#6cb25cf4589c142eb81a87a6537bc507106053e6"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.4#f7485f8860ee1306b005548a148f9ffc24194ed7"
 dependencies = [
  "serde",
  "serde_json",
@@ -4898,7 +4830,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_sql"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.3#056fe6a3cd5827673eda2b9875b4f80170e0260c"
+source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.4#cfdf78489628f9cf7a167849314ca6a9264bdf06"
 dependencies = [
  "async-trait",
  "bb8",
@@ -4908,7 +4840,9 @@ dependencies = [
  "futures-util",
  "mysql_async",
  "r2d2",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "reqwest 0.12.28",
+ "roc_desk_common",
+ "roc_desk_core",
  "rusqlite",
  "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
@@ -4927,15 +4861,15 @@ dependencies = [
 [[package]]
 name = "roc_desk_ssh"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3#6cb25cf4589c142eb81a87a6537bc507106053e6"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.4#f7485f8860ee1306b005548a148f9ffc24194ed7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "r2d2",
- "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3)",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.4)",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -4957,12 +4891,12 @@ dependencies = [
 [[package]]
 name = "roc_desk_workspace"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.2.4#cd9b7eb8cd9bf86326cbf8cc88a0c04e14accdd1"
+source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.2.5#47d6de02a3e7cd687bcc249f9d08ff52ff340eca"
 dependencies = [
  "portable-pty 0.9.0",
- "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
- "roc_desk_editor 0.2.0 (git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.5)",
- "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5)",
+ "roc_desk_core",
+ "roc_desk_editor",
+ "roc_desk_explorer",
  "serde",
  "serde_json",
  "tauri",
