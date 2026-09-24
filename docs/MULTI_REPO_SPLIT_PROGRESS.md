@@ -425,7 +425,33 @@ its standalone Tauri host.
   This likely wants to happen together with the `roc_desk-workspace` host
   wiring below, since `coding.rs` is the connective tissue between them.
 
-## 编程工作区：tool-repo side partially done, host wiring deliberately deferred (2026-09-22)
+## 编程工作区：host wiring partially done — PTY + Git panel only (2026-09-24)
+
+- Wired in `roc_desk_workspace::cmd::pty_open/write/resize/close` (1:1 port
+  of host's old `crate::pty`, pure in-memory runtime state, no other host
+  code reads `state.local_pty`, so the swap is safe) and the 6 local Git
+  panel commands (`git_is_repo/status/diff/log/current_branch/commit_file/
+  commit_paths` — pure `cwd`-argument functions, no state at all, and host
+  had none of these standalone before this pass, so it's purely additive).
+  Deleted host's own `crate::pty` module entirely.
+- **Deliberately NOT wired** — same blocker documented in the tool-repo-side
+  section below, confirmed still applies: `roc_desk_core::workspace`'s
+  `WorkspaceManager` is local-only and has no "currently open workspace"
+  registry, vs. host's own `WorkspaceManager`/`state.workspaces` which
+  supports remote/SSH workspaces (now wired to `roc_desk_ssh`, see the SSH
+  section above) and is read by `commands/coding.rs` (15+ sites) and
+  `commands/symbols.rs`. Swapping `workspace_open_local`/`list_recent`/etc.
+  for the tool-repo's versions would silently break "opening a workspace
+  makes it usable for editing." Host's `commands/workspace.rs` stays
+  untouched — it's a strict functional superset. The AI coding-agent loop
+  (`coding::session`/`coding::tools`) is unaffected and also untouched, for
+  the same `crate::ai`/`crate::agent_llm`-not-yet-extracted reason as before.
+- Verification: `cargo check` clean, full `build-portable.ps1` succeeded,
+  confirmed the frontend calls `pty_open`/`pty_write`/`pty_resize`/
+  `pty_close` by the same unnamespaced command names (`src-web/src/services/
+  ptyService.ts`), so the swap is transparent to the UI.
+
+## 编程工作区（tool-repo side）：tool-repo side partially done, host wiring deliberately deferred (2026-09-22)
 
 - `roc_desk-common` gained `roc_desk_core::workspace` (tag `common-v0.5.0`)
   — the "open a local folder, remember it in a recent list" concept,
@@ -526,17 +552,79 @@ its standalone Tauri host.
   - 在方案 a/b/c 选定之前，`packages/ui-core` 暂不建议投入更多组件迁移
     工作——写好的组件缺一条能被外部工具实际消费的路径，属于"写了但用不上"。
 
-## Known cross-tool dependency-graph quirk
+## Known cross-tool dependency-graph quirk — recurred twice, still needs a real fix (2026-09-24)
 
-- the host currently pulls
-  *two different commits* of `roc_desk_core`/`roc_desk_common` into the same
-  build — one directly (pinned to `common-v0.3.1`), one transitively via
-  `roc_desk-explorer` (pinned to `common-v0.3.0`) and another via
-  `roc_desk-editor` (pinned to `common-v0.4.0`). This compiles today because
-  no code currently passes a value of one instantiation's types (e.g.
-  `AppError`) across a boundary that expects the other instantiation's
-  types — each tool crate's commands are self-contained and only meet the
-  host via Tauri's serde-serialized IPC boundary, not shared Rust type
-  identity. It is still fragile and should be cleaned up by bumping
-  `roc_desk-explorer`/`roc_desk-editor` to both pin `common-v0.3.1` next
-  time either is touched, rather than left to accumulate further.
+- This version-drift bug (multiple repos pinning different `common-v*`
+  tags → cargo resolving two incompatible `roc_desk_core` instances) has now
+  been hit and manually fixed **twice**: once earlier this session (aligned
+  everyone on `common-v0.5.0`), and again today — bumping `roc_desk-common`
+  to `common-v0.6.0` (added `paths::portable_data_dir`) and updating the six
+  tool repos' own `roc_desk_core`/`roc_desk_common` tags missed two
+  *transitive* pins: `roc_desk-editor`'s own dependency on `roc_desk_explorer`
+  (still `v0.2.4`, itself still pinning `common-v0.5.0`) and
+  `roc_desk-workspace`'s dependencies on both `roc_desk_editor` and
+  `roc_desk_explorer` (same stale `v0.2.4`). `cargo check` did **not** error
+  on this — it silently compiled two `roc_desk_core` instances side by side,
+  same as the first time this happened; it only becomes a hard compile error
+  if some code actually passes a value across the two instantiations'
+  boundary. Both are fixed now (`roc_desk-editor@v0.2.6`,
+  `roc_desk-workspace@v0.2.4`, everyone on `common-v0.6.0`), but the *process*
+  gap is unfixed: there's no automated check that catches this, it's manual
+  vigilance every time `roc_desk-common` bumps. A `cargo tree -d` (duplicates)
+  check in each tool repo's CI, or a script that greps every repo's
+  `Cargo.toml` files for `common-v` tags and fails on disagreement, would
+  catch this mechanically instead of relying on someone noticing weird
+  double-compilation in build output. Not implemented yet.
+
+## Standalone tool packaging: portable data dir + release bundling (2026-09-24)
+
+- **Bug**: every standalone tool exe (`roc_desk-ssh`/`sql`/`workspace`/`http`
+  standalone; `editor`/`explorer` have no persistent state so were unaffected)
+  resolved its SQLite data directory via Tauri's OS AppData default (or, for
+  `roc_desk-workspace`, a bespoke `dirs_next_data_dir()` pointing at
+  `%APPDATA%/roc_desk-workspace`) — a different location per tool, and
+  different from the full `roc_desk.exe` host's own convention (exe-relative
+  `.rock_desk/`, portable-zip-friendly). Running two standalone tools side by
+  side, or a standalone tool alongside the full host, meant each kept its own
+  disconnected data — the same "split registry" class of bug this migration
+  has repeatedly had to design around, just at the packaging layer instead of
+  in-process wiring (2026-09-24 user feedback).
+- **Fix**: added `roc_desk_core::paths::portable_data_dir()` (new in
+  `common-v0.6.0`) — same exe-relative `.rock_desk` resolution the host uses,
+  minus the legacy-directory-migration logic (standalone tools are new, no
+  legacy dir to migrate from). Updated `roc_desk-ssh`/`sql`/`workspace`/`http`
+  standalone `main.rs` to use it. Consequence: copying several standalone
+  tool exes into the *same* directory now makes them automatically share one
+  `.rock_desk` (each tool still uses its own filename inside it, e.g.
+  `roc_desk_ssh.db`/`workspace.db`, so no collision).
+- **Also found while doing this**: `roc_desk-ssh`'s standalone build never
+  bundled `wfreerdp.exe` (the RDP-embedding runtime dependency, only ever
+  vendored in the host repo's own `vendor/`) — running the standalone SSH
+  tool's RDP feature alone would fail for lack of it. Vendored a copy into
+  `roc_desk-ssh/vendor/` and updated `build-standalone.ps1`/CI to bundle it
+  alongside the exe.
+- **Process mistake made and fixed along the way**: accidentally used
+  `git add -A` while committing the `roc_desk-ssh` fix, which swept in ~150
+  files of unrelated pre-existing uncommitted work in that repo's working
+  tree (frontend component refactor, `standalone/dist/` build output,
+  `package-lock.json`). Cleaned up in a follow-up commit; the real frontend
+  source changes were kept (they were genuine in-progress work), only the
+  `standalone/dist/` build artifacts were removed and gitignored. This
+  surfaced a second, real bug: **`standalone/dist/` had been committed
+  straight into git in all six tool repos because `build-standalone.ps1`
+  never actually ran the frontend build** (`vite`'s `outDir` writes directly
+  to `standalone/dist`, but nothing invoked `npm run build` — `tauri.conf.json`
+  has no `beforeBuildCommand`). Gitignoring `dist/` without fixing this would
+  have permanently broken local builds and CI. Fixed by adding an explicit
+  `npm install && npm run build` step to every repo's `build-standalone.ps1`
+  and a `setup-node` step to every repo's CI workflow, verified by an actual
+  clean local build of all six.
+- **`roc_desk-releases` bundling**: added a `workflow_dispatch` GitHub Actions
+  workflow (`.github/workflows/bundle.yml`) that pulls the latest published
+  release asset from each of the six tool repos (plus `wfreerdp.exe`) and
+  republishes them together as one zip — extracting it puts every tool in
+  one folder, which is what makes the `portable_data_dir` sharing above
+  actually happen for an end user. **Not yet triggered/verified** — creating
+  and running a GitHub Actions workflow isn't observable from this
+  environment; needs a manual `workflow_dispatch` run to confirm it actually
+  works end-to-end (gh CLI auth, `--pattern` matching, zip contents).
