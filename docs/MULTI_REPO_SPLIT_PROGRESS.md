@@ -325,7 +325,73 @@ its standalone Tauri host.
   exclusion for `F:\code\wuyou\roc_desk\build\` (or wherever
   `CARGO_TARGET_DIR` points).
 
-## SSH/SFTP/RDP/Agent：tool-repo side done, host wiring deliberately deferred (2026-09-22)
+## SSH/SFTP/RDP/Agent：host wiring done (2026-09-24)
+
+- Resolved the blocker described below using the same pattern as the SQL
+  wiring: `RocDeskSshAppState::new` points at the host's *existing*
+  `sessions_db_path` (not a new file). Confirmed the `connections`/
+  `connection_groups`/`known_hosts`/`agent_known_hosts` schemas are
+  column-for-column identical to `roc_desk-ssh`'s consolidated
+  `0001_ssh_init` migration (diffed against the host's own incremental
+  `0002_connections`/`0010_connection_protocol`/`0013_agent_known_hosts`),
+  then seeded `schema_migrations` with `'0001_ssh_init'` before construction.
+  One wrinkle SQL didn't have: the host's `transfer_log` table lived in the
+  *main* `roc_desk.db`, not `sessions.db`, but `roc_desk_ssh` expects it
+  alongside the connection data — manually created a fresh empty
+  `transfer_log` table in `sessions.db` (matching `roc_desk_ssh`'s schema)
+  as part of the same seed step; old transfer history in `roc_desk.db` is
+  orphaned (same acceptable trade-off as the HTTP migration's history table).
+- `commands/coding.rs` (`build_new_session` + 3 callers, `coding_send_message`,
+  `coding_set_auto_git_commit`, `maybe_auto_continue` + 2 callers),
+  `commands/sql.rs` (`stage_ai_result` + 3 callers, `sql_accept_change`), and
+  `commands/log_search.rs` (`log_search_live`, `log_import_remote_paths`) now
+  take an additional `State<'_, roc_desk_ssh::RocDeskSshAppState>` parameter
+  wherever they read `ssh_pool`/`agent_pool`/`connection_manager` — same
+  multi-`State<T>` pattern as the SQL migration, no new mechanism needed.
+  `coding/changes.rs`/`coding/git_ops.rs`/`coding/session.rs`/
+  `workspace/mod.rs`/`log/remote.rs`/`log/importer.rs`/`fsops/agent.rs`/
+  `fsops/remote.rs` had their `SshConnectionPool`/`AgentConnectionPool`/
+  `ConnectionManager`/`Protocol`/`SshSession`/`RemoteFileOps`/`FileOps`
+  imports repointed to `roc_desk_ssh::{ssh,agent,connection,fsops}` (these
+  take the types as parameters rather than reading `state.field`, so mostly
+  import-path swaps — `log/importer.rs`'s `import_remote_paths`/
+  `expand_remote_paths`/`download_and_import_remote` needed their
+  `RemoteFileOps` typed against `roc_desk_ssh`'s copy specifically because
+  they call its SFTP-specific inherent `download_to_local`, which isn't part
+  of the generic `FileOps` trait).
+- **Found and fixed a real type-split bug, not just a theoretical risk**:
+  `roc_desk-ssh` vendors its own copy of the `roc_desk_protocol` wire-format
+  crate (documented in its own module doc as intentional — the standalone
+  `roc_desk_agent.exe` binary isn't part of this migration). The host's
+  `src-tauri/Cargo.toml` still had `roc_desk_protocol = { path = "../protocol" }`
+  pointing at the *local* copy — a different SourceId than what
+  `roc_desk_ssh::agent::session::AgentSession` was compiled against, so
+  `fsops/agent.rs`/`coding/session.rs` (same-process Rust code calling into
+  `AgentSession::request()`) failed with "expected `Request`, found a
+  different `Request`" despite byte-identical source. Fixed by pointing the
+  host's `roc_desk_protocol` dependency at the *same* git tag `roc_desk-ssh`
+  resolves internally (`{ git = "...roc_desk-ssh", package = "roc_desk_protocol",
+  tag = "v0.3.1" }`) instead of the local path — `agent/Cargo.toml` (the
+  actual `roc_desk_agent.exe` binary deployed to remote servers) keeps the
+  local path dependency unchanged, since it's a separate OS process
+  communicating over the wire, not sharing Rust type identity with the host.
+- Host's `AppState` no longer has `connection_manager`/
+  `connection_group_manager`/`ssh_pool`/`rdp_sessions`/`trust_prompts`/
+  `agent_pool`/`agent_trust_prompts`/`cancelled_transfers`/`transfer_log`
+  (nine fields). Deleted the fully-migrated `ssh/`, `agent/`, `rdp/`,
+  `connection/` module directories, `commands/{ssh,sftp,rdp,agent,connection,
+  connection_group,transfer}.rs`, and
+  `db/repo/{connections,connection_groups,known_hosts,agent_known_hosts,
+  transfer_log}_repo.rs`.
+- `cargo check --release` (zero warnings) and a full `build-portable.ps1` run
+  both pass; smoke-tested by launching `bin/roc_desk.exe` directly (process
+  stayed alive ~6s, no new entries in the error log beyond pre-existing
+  unrelated ones from a concurrent user session, cleanly killed afterward).
+- Explicitly deferred (matches the plan): `commands/coding.rs`'s AI Agent
+  loop itself, `commands/symbols.rs`, and `roc_desk-workspace`'s own host
+  wiring are unaffected by this pass — `编程工作区` migration is still next.
+
+## SSH/SFTP/RDP/Agent（tool-repo side）：tool-repo side done, host wiring deliberately deferred (2026-09-22)
 
 - `roc_desk-ssh` (tag `v0.3.0`) has SSH terminal (connect/auth/PTY/TOFU),
   SFTP (list/read/write/transfer/preview), Windows remote Agent (TLS+pairing
