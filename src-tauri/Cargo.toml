@@ -20,14 +20,14 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["unstable"] }
 
 [dependencies]
-roc_desk_core = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_core", tag = "common-v0.9.0" }
-roc_desk_common = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_common", tag = "common-v0.9.0" }
-roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", package = "roc_desk_explorer", tag = "v0.2.7" }
-roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.7" }
-roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.4" }
-roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.4" }
-roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.4" }
-roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.2.5" }
+roc_desk_core = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_core", tag = "common-v0.10.0" }
+roc_desk_common = { git = "https://github.com/swimhigh/roc_desk-common", package = "roc_desk_common", tag = "common-v0.10.0" }
+roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", package = "roc_desk_explorer", tag = "v0.2.8" }
+roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.8" }
+roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.5" }
+roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.5" }
+roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.5" }
+roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.2.6" }
 # "unstable" 用于 browser 模块的内嵌子 WebView（`Window::add_child`/`Manager::get_webview`/
 # `Manager::get_window`），网页浏览面板需要把网页内容定位到主窗口内的一块矩形区域里
 # 而不是弹出独立窗口（2026-08-18 需求变更，见 src/browser/mod.rs 顶部注释）。
@@ -84,7 +84,7 @@ russh-sftp = "2"
 # Windows 远程 Agent（AGENT_DESIGN.md）：客户端与 roc_desk_agent.exe 共享的协议
 # 类型 + 帧编解码；TLS 用法和 agent/Cargo.toml 保持一致（显式 `ring`，
 # 避免 `aws-lc-rs` 构建脚本在部分 Windows 环境下的"拒绝访问"问题）。
-roc_desk_protocol = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_protocol", tag = "v0.3.4" }
+roc_desk_protocol = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_protocol", tag = "v0.3.5" }
 
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
