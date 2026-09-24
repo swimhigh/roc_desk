@@ -8,3 +8,14 @@
 # 目录构建，产物都统一落在同一个 build/ 下。
 [build]
 target-dir = "build"
+
+# 2026-09-24：crates.io 的 index.crates.io/static.crates.io 域名当前在本机网络
+# 环境下 TLS SNI 校验失败（schannel SEC_E_WRONG_PRINCIPAL），直连不通但 GitHub
+# 正常，判断是区域性网络问题而不是代码/依赖本身的问题；临时切到清华镜像源解除
+# 卡住的 `cargo check`（只在本仓库生效，不改用户全局 `~/.cargo/config.toml`）。
+# 如果之后 crates.io 直连恢复，可以删掉这一段。
+[source.crates-io]
+replace-with = "ustc"
+
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"

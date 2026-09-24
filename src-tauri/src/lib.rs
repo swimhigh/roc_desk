@@ -8,7 +8,6 @@ pub mod db;
 pub mod fsops;
 pub mod log;
 pub mod mcp;
-pub mod pty;
 pub mod sql;
 pub mod state;
 pub mod symbols;
@@ -40,7 +39,6 @@ use db::repo::workspace_module_links_repo::WorkspaceModuleLinksRepo;
 use db::repo::workspace_repo::WorkspaceRepo;
 use log::{LogImporter, LogSearchEngine};
 use mcp::McpServerManager;
-use pty::LocalPtyManager;
 use sql::ai_assistant::SqlAiAssistant;
 use state::AppState;
 use workspace::WorkspaceManager;
@@ -373,6 +371,17 @@ pub fn run() {
             }
             let sql_app_state = roc_desk_sql::SqlAppState::new(&db_path, app_data_dir.clone())
                 .expect("初始化 SQL 工作台存储失败");
+            // 本地终端 PTY 迁到 roc_desk_workspace（和宿主原实现 1:1 移植，纯运行时
+            // 状态、不落库、host 里也没有别的代码读 `local_pty`，可以直接整体换掉）。
+            // `WorkspaceAppState::new` 顺带会建一份它自己的"最近工作区"库，这里没有
+            // 任何命令会用到（Git 面板命令是纯函数，workspace_open/list 等命令仍然用
+            // 宿主自己更完整的 `WorkspaceManager`），所以指向一个独立的新文件即可，
+            // 不存在和主库 schema 冲突的风险。
+            let workspace_app_state = roc_desk_workspace::WorkspaceAppState::new(
+                &app_data_dir.join("workspace_tool.db"),
+                app_data_dir.clone(),
+            )
+            .expect("初始化 workspace 工具状态失败");
             let sql_ai_assistant = Arc::new(SqlAiAssistant::new(
                 ai_chat_client.clone(),
                 ai_provider_manager.clone(),
@@ -396,7 +405,6 @@ pub fn run() {
                 audit_log,
                 coding_history,
                 ai_evidence,
-                local_pty: Arc::new(LocalPtyManager::default()),
                 browser_history,
                 active_search: Arc::new(std::sync::Mutex::new(None)),
                 permission_rules,
@@ -427,6 +435,7 @@ pub fn run() {
             app.manage(http_app_state);
             app.manage(sql_app_state);
             app.manage(ssh_app_state);
+            app.manage(workspace_app_state);
 
             Ok(())
         })
@@ -600,10 +609,17 @@ pub fn run() {
             commands::coding::skill_list,
             commands::coding::skill_import,
             commands::coding::skill_delete,
-            commands::pty::pty_open,
-            commands::pty::pty_write,
-            commands::pty::pty_resize,
-            commands::pty::pty_close,
+            roc_desk_workspace::cmd::pty_open,
+            roc_desk_workspace::cmd::pty_write,
+            roc_desk_workspace::cmd::pty_resize,
+            roc_desk_workspace::cmd::pty_close,
+            roc_desk_workspace::cmd::git_is_repo,
+            roc_desk_workspace::cmd::git_status,
+            roc_desk_workspace::cmd::git_diff,
+            roc_desk_workspace::cmd::git_log,
+            roc_desk_workspace::cmd::git_current_branch,
+            roc_desk_workspace::cmd::git_commit_file,
+            roc_desk_workspace::cmd::git_commit_paths,
             commands::browser::browser_open,
             commands::browser::browser_set_bounds,
             commands::browser::browser_hide,

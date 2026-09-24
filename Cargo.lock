@@ -686,6 +686,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "cfg_aliases"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
+
+[[package]]
+name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
@@ -3269,6 +3275,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases 0.1.1",
+ "libc",
+]
+
+[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4027,8 +4045,29 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
- "nix",
+ "nix 0.25.1",
  "serial",
+ "shared_library",
+ "shell-words",
+ "winapi",
+ "winreg 0.10.1",
+]
+
+[[package]]
+name = "portable-pty"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e"
+dependencies = [
+ "anyhow",
+ "bitflags 1.3.2",
+ "downcast-rs",
+ "filedescriptor",
+ "lazy_static",
+ "libc",
+ "log",
+ "nix 0.28.0",
+ "serial2",
  "shared_library",
  "shell-words",
  "winapi",
@@ -4208,7 +4247,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
 dependencies = [
  "bytes",
- "cfg_aliases",
+ "cfg_aliases 0.2.2",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
@@ -4249,7 +4288,7 @@ version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
 dependencies = [
- "cfg_aliases",
+ "cfg_aliases 0.2.2",
  "libc",
  "once_cell",
  "socket2",
@@ -4592,19 +4631,20 @@ dependencies = [
  "keyring",
  "mysql_async",
  "pdf-extract",
- "portable-pty",
+ "portable-pty 0.8.1",
  "r2d2",
  "r2d2_sqlite",
  "regex",
  "reqwest 0.12.28",
- "roc_desk_common",
- "roc_desk_core",
- "roc_desk_editor",
- "roc_desk_explorer",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_editor 0.2.0 (git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.6)",
+ "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.6)",
  "roc_desk_http",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3)",
  "roc_desk_sql",
  "roc_desk_ssh",
+ "roc_desk_workspace",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -4647,7 +4687,7 @@ dependencies = [
  "chrono",
  "clap",
  "data-encoding",
- "portable-pty",
+ "portable-pty 0.8.1",
  "rand 0.8.7",
  "rcgen",
  "regex",
@@ -4678,7 +4718,23 @@ dependencies = [
  "encoding_rs",
  "goblin",
  "regex",
- "roc_desk_core",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
+ "serde",
+ "tokio",
+ "zip",
+]
+
+[[package]]
+name = "roc_desk_common"
+version = "0.4.0"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0#4dfce2479da40fc2bda77861d9cf0450f234043c"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "encoding_rs",
+ "goblin",
+ "regex",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
  "serde",
  "tokio",
  "zip",
@@ -4704,14 +4760,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "roc_desk_core"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0#4dfce2479da40fc2bda77861d9cf0450f234043c"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "keyring",
+ "r2d2",
+ "r2d2_sqlite",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "roc_desk_editor"
 version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.4#7eb9f7f073aecd247614f85a47b5b130b55a2e71"
+source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.5#f1751fe4255d2ec9a82f3c032a75e315e371ad05"
 dependencies = [
  "base64 0.22.1",
- "roc_desk_common",
- "roc_desk_core",
- "roc_desk_explorer",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.4)",
+ "serde",
+ "tauri",
+ "tokio",
+ "windows 0.61.3",
+ "windows-future",
+]
+
+[[package]]
+name = "roc_desk_editor"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.6#ae2821e8c175a39d552d827d024b906255d553bc"
+dependencies = [
+ "base64 0.22.1",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5)",
  "serde",
  "tauri",
  "tokio",
@@ -4725,8 +4816,36 @@ version = "0.2.0"
 source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.4#d7132c75158142e66052c253b3d3c1d25d84dfc4"
 dependencies = [
  "base64 0.22.1",
- "roc_desk_common",
- "roc_desk_core",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.5.0)",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
+ "trash",
+]
+
+[[package]]
+name = "roc_desk_explorer"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5#05cc66f1946d400c116f848967d2cd869325ec40"
+dependencies = [
+ "base64 0.22.1",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
+ "trash",
+]
+
+[[package]]
+name = "roc_desk_explorer"
+version = "0.2.0"
+source = "git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.6#6f55a1cc8cbb02f62006709a93b4d3dcd2cdb49a"
+dependencies = [
+ "base64 0.22.1",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
  "tauri",
  "tauri-plugin-opener",
  "tokio",
@@ -4736,15 +4855,15 @@ dependencies = [
 [[package]]
 name = "roc_desk_http"
 version = "0.2.0"
-source = "git+https://github.com/swimhigh/roc_desk-http?tag=v0.2.1#1ba37c268eb32170e3e0f6448de9eb646c21a45e"
+source = "git+https://github.com/swimhigh/roc_desk-http?tag=v0.2.3#bbd88c492e787c09b260e0297f197db9fe19db06"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "r2d2",
  "reqwest 0.12.28",
- "roc_desk_common",
- "roc_desk_core",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4768,7 +4887,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_protocol"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1#649d286970de6bef8f220679c80918f06143239a"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3#6cb25cf4589c142eb81a87a6537bc507106053e6"
 dependencies = [
  "serde",
  "serde_json",
@@ -4779,7 +4898,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_sql"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.1#afe2ec3fc9c9f4374c3421eeb20f96bf2e83fcef"
+source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.3#056fe6a3cd5827673eda2b9875b4f80170e0260c"
 dependencies = [
  "async-trait",
  "bb8",
@@ -4789,7 +4908,7 @@ dependencies = [
  "futures-util",
  "mysql_async",
  "r2d2",
- "roc_desk_core",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
  "rusqlite",
  "rustls 0.23.43",
  "rustls-native-certs 0.8.4",
@@ -4808,15 +4927,15 @@ dependencies = [
 [[package]]
 name = "roc_desk_ssh"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1#649d286970de6bef8f220679c80918f06143239a"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3#6cb25cf4589c142eb81a87a6537bc507106053e6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "r2d2",
- "roc_desk_common",
- "roc_desk_core",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.1)",
+ "roc_desk_common 0.4.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.3)",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -4833,6 +4952,22 @@ dependencies = [
  "trash",
  "uuid",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "roc_desk_workspace"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.2.4#cd9b7eb8cd9bf86326cbf8cc88a0c04e14accdd1"
+dependencies = [
+ "portable-pty 0.9.0",
+ "roc_desk_core 0.1.0 (git+https://github.com/swimhigh/roc_desk-common?tag=common-v0.6.0)",
+ "roc_desk_editor 0.2.0 (git+https://github.com/swimhigh/roc_desk-editor?tag=v0.2.5)",
+ "roc_desk_explorer 0.2.0 (git+https://github.com/swimhigh/roc_desk-explorer?tag=v0.2.5)",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -5584,6 +5719,17 @@ checksum = "15c6d3b776267a75d31bbdfd5d36c0ca051251caafc285827052bc53bcdc8162"
 dependencies = [
  "libc",
  "serial-core",
+]
+
+[[package]]
+name = "serial2"
+version = "0.2.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b16809bc35793b19ce4e0c53924bc0dce3937f15487997cfdaed936004180730"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

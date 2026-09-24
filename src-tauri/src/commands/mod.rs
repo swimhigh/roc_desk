@@ -6,7 +6,6 @@ pub mod fs;
 pub mod launcher;
 pub mod local_fs;
 pub mod log_search;
-pub mod pty;
 pub mod sql;
 pub mod sql_agent;
 pub mod symbols;

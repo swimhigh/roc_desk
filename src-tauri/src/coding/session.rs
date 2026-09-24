@@ -1209,12 +1209,11 @@ impl CodingSession {
                     Some(c) => c,
                     None => self.file_ops.read_file(&path).await?.text,
                 };
-                if !original.contains(&old_text) {
-                    return Err(AppError::Internal(format!(
+                let updated = tools::apply_text_edit(&original, &old_text, &new_text).ok_or_else(|| {
+                    AppError::Internal(format!(
                         "edit_file 失败：在 {path} 中没有找到匹配的 old_text，请先用 read_file 确认现有内容"
-                    )));
-                }
-                let updated = original.replacen(&old_text, &new_text, 1);
+                    ))
+                })?;
                 self.stage_change(&path, updated, ssh_pool, agent_pool, app_handle)
                     .await
             }
@@ -1256,16 +1255,18 @@ impl CodingSession {
                     None => self.file_ops.read_file(&path).await?.text,
                 };
                 for (i, edit) in edits.iter().enumerate() {
-                    if !content.contains(&edit.old_text) {
-                        return Err(AppError::Internal(format!(
-                            "multi_edit 失败：第 {} 处替换的 old_text 在 {path} 中没有找到匹配（前面 {} 处\
-                             已经在内存里预演成功，但这次调用整体不会生效，不会留下部分修改），请先用 \
-                             read_file 确认最新内容后重试",
-                            i + 1,
-                            i
-                        )));
-                    }
-                    content = content.replacen(&edit.old_text, &edit.new_text, 1);
+                    content = match tools::apply_text_edit(&content, &edit.old_text, &edit.new_text) {
+                        Some(updated) => updated,
+                        None => {
+                            return Err(AppError::Internal(format!(
+                                "multi_edit 失败：第 {} 处替换的 old_text 在 {path} 中没有找到匹配（前面 {} 处\
+                                 已经在内存里预演成功，但这次调用整体不会生效，不会留下部分修改），请先用 \
+                                 read_file 确认最新内容后重试",
+                                i + 1,
+                                i
+                            )))
+                        }
+                    };
                 }
                 self.stage_change(&path, content, ssh_pool, agent_pool, app_handle)
                     .await

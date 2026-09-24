@@ -530,6 +530,28 @@ struct TaskArgs {
     prompt: String,
 }
 
+/// `edit_file`/`multi_edit` 的核心替换逻辑：LLM 生成的 `old_text`/`new_text`
+/// 几乎总是用裸 `\n` 换行，即使原文件是 Windows CRLF（这个仓库的源码文件基本全是
+/// CRLF）——逐字节 `contains`/`replacen` 在这种情况下几乎每次多行编辑都会因为换行
+/// 符不一致而报"没有找到匹配的 old_text"，模型只能反复重试甚至放弃（2026-09 用户
+/// 反馈"文件编辑工具频繁报错"，实测正是这个问题）。统一在 LF 归一化后的空间里做
+/// 匹配/替换，再按原文件本来的换行风格转换回去，不会把 CRLF 文件改成混合换行。
+pub fn apply_text_edit(original: &str, old_text: &str, new_text: &str) -> Option<String> {
+    let uses_crlf = original.contains("\r\n");
+    let norm_original = original.replace("\r\n", "\n");
+    let norm_old = old_text.replace("\r\n", "\n");
+    if !norm_original.contains(&norm_old) {
+        return None;
+    }
+    let norm_new = new_text.replace("\r\n", "\n");
+    let updated = norm_original.replacen(&norm_old, &norm_new, 1);
+    Some(if uses_crlf {
+        updated.replace('\n', "\r\n")
+    } else {
+        updated
+    })
+}
+
 pub fn parse_tool_call(name: &str, arguments_json: &str) -> Result<ToolCall, AppError> {
     let bad_args = |e: serde_json::Error| {
         AppError::Internal(format!("invalid tool arguments for {name}: {e}"))
@@ -690,4 +712,29 @@ pub fn search_files_local(
         }
     }
     results
+}
+
+#[cfg(test)]
+mod apply_text_edit_tests {
+    use super::apply_text_edit;
+
+    #[test]
+    fn matches_bare_lf_old_text_against_crlf_file() {
+        let original = "line1\r\nline2\r\nline3\r\n";
+        let updated = apply_text_edit(original, "line2\n", "changed\n").unwrap();
+        assert_eq!(updated, "line1\r\nchanged\r\nline3\r\n");
+    }
+
+    #[test]
+    fn keeps_lf_file_as_lf() {
+        let original = "line1\nline2\nline3\n";
+        let updated = apply_text_edit(original, "line2\n", "changed\n").unwrap();
+        assert_eq!(updated, "line1\nchanged\nline3\n");
+    }
+
+    #[test]
+    fn returns_none_when_old_text_missing() {
+        let original = "line1\r\nline2\r\n";
+        assert!(apply_text_edit(original, "nope\n", "x\n").is_none());
+    }
 }

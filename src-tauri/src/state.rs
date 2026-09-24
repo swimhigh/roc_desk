@@ -16,7 +16,6 @@ use crate::db::repo::sql_agent_history_repo::SqlAgentHistoryRepo;
 use crate::db::DbPool;
 use crate::log::{LogImporter, LogSearchEngine};
 use crate::mcp::McpServerManager;
-use crate::pty::LocalPtyManager;
 use crate::sql::agent::SqlAgentSession;
 use crate::sql::ai_assistant::SqlAiAssistant;
 use crate::symbols::SymbolIndex;
@@ -63,7 +62,6 @@ pub struct AppState {
     pub audit_log: Arc<AuditLogRepo>,
     pub coding_history: Arc<CodingHistoryRepo>,
     pub ai_evidence: Arc<AiEvidenceRepo>,
-    pub local_pty: Arc<LocalPtyManager>,
     pub browser_history: Arc<BrowserHistoryRepo>,
     /// 当前正在跑的 Explorer 全文搜索请求 id（`fs_search_stream`）——新搜索开始时
     /// 覆盖这个值，正在跑的旧搜索每处理一个目录/文件都会发现自己的 request_id 已经
