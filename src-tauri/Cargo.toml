@@ -27,7 +27,7 @@ roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package
 roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.5" }
 roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.5" }
 roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.5" }
-roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.2.6" }
+roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.2.7" }
 # "unstable" 用于 browser 模块的内嵌子 WebView（`Window::add_child`/`Manager::get_webview`/
 # `Manager::get_window`），网页浏览面板需要把网页内容定位到主窗口内的一块矩形区域里
 # 而不是弹出独立窗口（2026-08-18 需求变更，见 src/browser/mod.rs 顶部注释）。

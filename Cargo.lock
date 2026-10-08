@@ -4891,13 +4891,14 @@ dependencies = [
 [[package]]
 name = "roc_desk_workspace"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.2.6#01943f125a239301ecb470c801bbedc4ea7e684c"
+source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.2.7#a29f394adc8697fde702407683941e31312bb671"
 dependencies = [
  "portable-pty 0.9.0",
  "roc_desk_common",
  "roc_desk_core",
  "roc_desk_editor",
  "roc_desk_explorer",
+ "roc_desk_ssh",
  "serde",
  "serde_json",
  "tauri",
