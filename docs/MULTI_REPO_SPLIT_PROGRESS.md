@@ -1139,3 +1139,80 @@ provider-management half of `stores/aiChatStore.ts`/`ProviderManagerDialog.tsx`
   for) or restructuring `CodingSession::send_message`'s signature to make
   the pools optional. Flagging this explicitly rather than letting it be
   discovered as a confusing runtime error later.
+
+## 独立版对齐 roc_desk.exe 的三阶段规划 (2026-10-08)
+
+User goal, stated directly: `roc_desk-workspace.exe`/`roc_desk-sql.exe`
+standalone should have **full feature parity** with the corresponding
+module in `roc_desk.exe` -- not just "compiles and runs", but local *and*
+remote workspaces, AI assistant included. Planned (and confirmed with the
+user) as three phases; full plan text lives in
+`C:\Users\lipeng\.claude\plans\goofy-wiggling-spark.md` on this machine.
+Two architecture corrections came out of researching the plan, worth
+recording since they refine the user's own stated hypothesis:
+
+- **SSH stays its own tool repo** -- `roc_desk-ssh` is not moved into
+  `roc_desk_common`. It already ships a one-call `RocDeskSshAppState::new(db_path, app_handle)`
+  constructor (connection manager/pools/known-hosts/credentials/transfer
+  log all included) and 65 already-verified commands; moving it into
+  `common` would break the "the core layer depends on no tool repo" rule.
+  `roc_desk-workspace` instead takes a **direct tool-to-tool dependency**
+  on `roc_desk-ssh` (same pattern as the existing `workspace -> editor`
+  dependency for `<EditorPane/>`).
+- **The real "move to common" candidate turned out to be `ChangeStore`/
+  `diff`/`CodingTarget`**, not SSH or more AI plumbing (`roc_desk_common::ai`/
+  `agent_llm`/`agent_confirm`/`agent_todo` already cover that from earlier
+  phases). Host's own `commands/sql.rs` (the SQL AI assist panel) reuses
+  the exact same `crate::coding::ChangeStore` type the AI coding agent
+  uses for Diff/Accept/Undo -- i.e. host itself already treats this as a
+  shared primitive, just not one either tool repo could depend on (SQL
+  depending on the workspace tool would be backwards).
+
+### Phase 1 — done, verified, pushed
+
+Moved `ChangeStore`/`FileChange`/`FileSyncInfo`/`ChangeStatus`/`DiffLine`/
+`generate_diff`/`CodingTarget` from `roc_desk-workspace`'s `coding::{changes,diff,target}`
+into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
+
+- **Decoupling, not a straight copy**: `ChangeStore::stage`/`accept` used
+  to hard-code `&roc_desk_ssh::ssh::SshConnectionPool`/
+  `&roc_desk_ssh::agent::AgentConnectionPool` parameters (for the "Accept
+  on a target that auto-commits to git" path) -- `roc_desk_common` must
+  never depend on a tool crate, so that became a small
+  `#[async_trait] pub trait GitCommitter { async fn commit_file(...); }`.
+  `roc_desk-workspace` supplies the real implementation
+  (`coding::git_ops::SshGitCommitter`, wired in via `ChangeStore::with_committer`
+  in `coding::commands::build_new_session`, only when `state.ssh` is
+  `Some`); a purely local-only caller like the future SQL port never
+  constructs one.
+- **Also decoupled from `tauri::AppHandle` entirely** (not originally
+  planned, found while trying to unit-test the moved code): `stage`/
+  `accept` used to call `app_handle.emit("coding:git-commit-result", ...)`
+  internally, which meant every call site needed a *real* `AppHandle` --
+  including in a `roc_desk_common` unit test, where constructing one via
+  `tauri::test::mock_app()` crashed the test binary at startup
+  (`STATUS_ENTRYPOINT_NOT_FOUND`, looks like a native/DLL mismatch specific
+  to `tauri`'s `test` feature in this environment, not investigated
+  further since the real fix was better anyway). Changed `stage`/`accept`
+  to return `Option<GitCommitOutcome { path, output }>` instead of emitting
+  themselves; the caller (`coding::session::stage_change`, and
+  `lib.rs`'s `coding_accept_change` command) emits the event. Net result:
+  `roc_desk_common::change_store` has no `tauri` dependency at all, and
+  gained two real unit tests (stage→pending, accept→undo round trip)
+  that didn't exist before.
+- Side benefit: `coding_accept_change` no longer requires `state.ssh` to
+  be `Some` at all (it only needed the pools to pass into `ChangeStore::accept`,
+  which no longer takes them) -- one fewer place the "local workspace
+  blocked on SSH" bug from phase 7 shows up, ahead of phase 2 fixing the
+  root cause.
+- Verified: `roc_desk_common`'s own `cargo test` (19 passing, two new);
+  `roc_desk-workspace`'s `cargo check`/`cargo test` (lib *and* standalone,
+  25 passing); `grep -c 'name = "roc_desk_core"' Cargo.lock` confirms a
+  single source after bumping `roc_desk-explorer`/`-editor`/`-ssh`/
+  `-workspace` in dependency order (`common-v0.13.0` throughout).
+
+### Phase 2/3 — not started
+
+See the plan file for the full detail (SSH integration into
+`roc_desk-workspace` for remote workspace parity; SQL Agent + AI assist
+panel port into `roc_desk-sql`).
