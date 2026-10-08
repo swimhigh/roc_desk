@@ -659,6 +659,48 @@ its standalone Tauri host.
      都齐了，但这一步本身仍然是这次会话里最大的单项工作量，需要单独一次
      会话专门做。
 
+## AI 编程助手迁移 phase 3：`roc_desk-workspace` 真正接上远程工作区 (2026-09-24)
+
+- 完成了 phase 2 结尾列的第 1、2 项：`roc_desk-workspace@v0.2.7` 加了
+  `roc_desk-ssh` 依赖，新增 `WorkspaceAppState::with_ssh(connection_manager,
+  ssh_pool, agent_pool)` —— **这是个 opt-in builder，不是构造时必填**，
+  理由直接写在新增的 `SshPools` 类型文档里：连接池该由谁构造/持有是调用方
+  的决定，这个 crate 不能替调用方做主。宿主接线时必须传进去宿主自己
+  `RocDeskSshAppState` 的那几个 `Arc`，不能在这里 `new` 一份新的——否则
+  正是这次会话反复踩过的"分裂注册表"（SSH 面板里连的连接，这边看不见）。
+  standalone 没有自己的连接管理 UI，`ssh` 字段保持 `None`，`workspace_
+  open_remote` 这时候会返回"远程工作区功能未启用"的明确错误，不是 panic
+  或者静默失败。
+- `cmd::workspace_open_remote` 镜像宿主旧版 `commands::workspace::
+  workspace_open_remote` 的行为：探测远程 `.rock_desk/workspace.json`
+  标记文件决定要不要复用已有 id，打开成功后把 `WorkspaceHandle`（带
+  `RemoteFileOps`/`AgentFileOps`）插进 `open_workspaces` 注册表，元数据
+  文件写回远程走 best-effort（只读目录不应该让"打开只读工作区"这个操作
+  本身失败）。
+- 顺手发现并修了一个遗漏：`workspace_close`/`workspace_update_last_sftp_
+  paths` 两个命令在 v0.2.6 就加了，但从来没有在 `standalone/src/main.rs`
+  的 `generate_handler!` 里注册过——这次一并补上。
+- **宿主侧还是没接**：宿主 `commands/workspace.rs` 自己的
+  `workspace_open_local/open_remote/...` 10 个命令依然原样保留，没有切换
+  成 `roc_desk_workspace::cmd::*`——这是 phase 2 就记录过的、故意的决定：
+  宿主自己的 `WorkspaceManager`/`state.workspaces` 目前还是功能超集
+  （`commands/coding.rs` 15+ 处、`commands/symbols.rs` 都依赖它），贸然切换
+  会导致"AI 助手/符号索引看到的工作区"和"文件树看到的工作区"分裂成两个
+  注册表。`roc_desk-workspace` 现在已经具备和宿主对等的能力（本地+远程打开、
+  注册表、SFTP 记忆路径），但"宿主改用这个 crate 代替自己的实现"要和
+  `coding::session.rs` 真正迁移那一步一起做，不是提前单独切，否则中途会有
+  一段两套工作区概念并存、容易出 bug 的过渡态。
+- **验证方式**：`roc_desk-workspace` 的 `lib`/`standalone` 都 `cargo check`
+  通过，`Cargo.lock` 确认 `roc_desk_core` 单一实例；宿主 bump 到
+  `roc_desk-workspace@v0.2.7` 后 `cargo check` 全绿（宿主目前不调用新加的
+  `workspace_open_remote`，纯粹是依赖图更新，功能行为不变）。
+- **到这里，phase 2 列的三件事已经完成两件半**（远程 DB/profile 支持 +
+  本地/远程打开注册表都有了，连接池归属问题也有了明确、不会分裂注册表的
+  设计），真正剩下的就是 phase 2 第 3 项：把 `coding::session.rs` 本身
+  （连同 `coding::tools/changes/diff/git_ops/guard/permission/skills/
+  webfetch` 和宿主 `commands/coding.rs`，加起来约 6200 行）迁进来，这仍然
+  是单独一次会话量级的工作，不建议现在零散时间里强推。
+
 ## 环境问题记录：本机杀毒软件间歇性拦截刚编译出的 Rust 构建脚本 (2026-09-24)
 
 - 本次会话反复撞到 `error: failed to run custom build command for
