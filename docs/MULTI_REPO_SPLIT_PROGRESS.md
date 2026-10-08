@@ -856,3 +856,84 @@ should continue reading `session.rs` from where phase 4 left off (its
 job commands) and port it incrementally with the same per-chunk
 check/test/commit discipline, rather than writing the whole thing in one
 untested pass.
+
+## AI 编程助手迁移 phase 5：`coding::session.rs`（2838 行）本体迁移完成 (2026-10-08)
+
+Finished what phase 4 left as "what's left" — `coding::session.rs` itself is
+now fully ported into `roc_desk-workspace/lib/src/coding/session.rs`
+(`v0.2.15`), and `roc_desk-workspace` can now, in principle, run the whole
+AI coding agent end to end (not yet wired into any Tauri command or
+standalone UI — that's the next layer, see below).
+
+- Read the entire 2838-line file end to end and confirmed every host-only
+  dependency it has was already either ported in an earlier phase, or
+  already exists byte-for-byte in `roc_desk_common` from phase 1
+  (`build_user_message_content`/`ChatAttachment`/`condense_attachment_text`/
+  `extract_pdf_text_raw` turned out to already live verbatim in
+  `roc_desk_common::ai::attachments`, just parameterized by `event_prefix`
+  — host's own `session.rs` simply never switched over to the shared
+  version after phase 1 extracted it for the SQL Agent's benefit, so this
+  phase could delete ~280 lines of would-be duplication and call the
+  common version directly instead of re-porting it) — before writing a
+  single line, not discovered partway through.
+- No new infrastructure-layer dependency turned out to be missing: every
+  remaining dependency `session.rs` has (`fsops::search_stream`,
+  `symbols::build_index`/`SymbolIndex`, `agent_llm::*`,
+  `agent_confirm::{CommandConfirmRegistry, QuestionRegistry}`,
+  `AuditLogRepo`/`AiEvidenceRepo`/`McpServerManager`) was already in place
+  from phases 1-4, confirmed by grepping every `use crate::`/`use super::`
+  line in the host file before starting rather than discovering gaps
+  mid-port. This phase's actual work was entirely in `session.rs` itself.
+- `CodingTarget`/`ChangeStatus`/`FileChange`/`FileSyncInfo` are *not*
+  redefined in the ported `session.rs` (host defines them inline at the top
+  of its own `session.rs`) — the tool-repo versions already live in
+  `coding::target`/`coding::changes` from phase 4's porting, so the ported
+  `session.rs` imports them from there instead of duplicating the type
+  definitions, a deliberate structural difference from the host file.
+- `effective_context_budget`/`DEFAULT_CONTEXT_TOKENS_ESTIMATE`/
+  `CONTEXT_BUDGET_HEADROOM_{NUM,DEN}` are also dropped from the port —
+  confirmed these are byte-for-byte the same formula as
+  `agent_llm::context_budget` (already shared from phase 1), so the port
+  calls that directly instead of keeping a second copy of the same 60_000-
+  token-default calculation.
+- Pulled in two new direct dependencies: `roc_desk_protocol` (same repo/tag
+  as `roc_desk_ssh`, needed for the `Agent`-target branch of
+  `search_files_uncached`, which speaks the Agent wire protocol directly)
+  and `tokio-util`/`sha2`/`chrono`/`tracing`/`async-trait` (accumulated
+  across phase 4 and 5 for `CancellationToken`, evidence-cache hashing,
+  timestamps, warn-logging, and the MCP transport trait respectively).
+  `windows_command_for`/`unix_command_for` in `coding::local_exec` had to be
+  changed from `fn` to `pub(crate) fn` — phase 4 ported them without
+  anticipating `session.rs`'s `run_command_background_gated` would need to
+  call them directly from a sibling module.
+- **Triggered (and fixed) the recurring cross-repo version-drift bug one
+  more time**: bumping `roc_desk-common` to pick up phase 4's
+  `fsops::search` addition (`common-v0.11.0`) meant `roc_desk-workspace`'s
+  other git dependencies (`roc_desk-editor`/`roc_desk-explorer`/
+  `roc_desk-ssh`, each still pinned to `common-v0.10.0`) would otherwise
+  resolve a second, incompatible `roc_desk_core`/`roc_desk_common` instance.
+  Fixed in the established dependency order — `roc_desk-explorer`
+  (`v0.2.9`) → `roc_desk-editor` (`v0.2.9`, depends on explorer) →
+  `roc_desk-ssh` (`v0.3.6`, independent) — each bumped, `cargo check`'d
+  alone to confirm a single resolved instance, committed/tagged/pushed,
+  *before* bumping `roc_desk-workspace`'s own references to all four and
+  verifying its build one final time. Host's own `Cargo.toml` is
+  deliberately **not** bumped to any of these new tags — it doesn't yet
+  consume anything from this phase's work, and bumping it would just be
+  unnecessary churn ahead of actual need (same rule phase 1-4 followed).
+
+**What's left**: host's `commands/coding.rs` (1532 lines, the Tauri command
+layer — `coding_start`/`coding_send_message`/accept/reject/undo/redo/
+history-save/-resume, the `build_new_session` constructor that wires a
+freshly-built `CodingSession` together with `tokio::join!`-concurrent
+project-memory/skill/git-repo probes) has not been looked at yet in this
+migration. Until that layer is ported and exposed as Tauri commands (plus
+a `WorkspaceAppState`-level registry of active `CodingSession`s, analogous
+to host's `AppState.coding_sessions`/`coding_changes`/
+`coding_pending_injections`/`coding_cancel_tokens`), `roc_desk-workspace`'s
+AI coding agent is a fully-compiling, fully-tested library with no command
+surface calling into it yet — the next session should read
+`commands/coding.rs` in full before starting, the same way phase 5 started
+by reading all of `session.rs` first, since the command layer is where the
+per-workspace session registry and concurrency/locking strategy actually
+get decided, not something to design file-by-file as it's ported.
