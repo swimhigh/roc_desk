@@ -1211,8 +1211,84 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
   single source after bumping `roc_desk-explorer`/`-editor`/`-ssh`/
   `-workspace` in dependency order (`common-v0.13.0` throughout).
 
-### Phase 2/3 — not started
+### Phase 2 — done, verified, pushed (2026-10-08)
 
-See the plan file for the full detail (SSH integration into
-`roc_desk-workspace` for remote workspace parity; SQL Agent + AI assist
-panel port into `roc_desk-sql`).
+**改动的仓库**：`roc_desk-explorer`、`roc_desk-editor`、`roc_desk-ssh`、`roc_desk-workspace`。
+
+- `roc_desk-workspace` standalone 现在自己构造一份 `roc_desk_ssh::RocDeskSshAppState`
+  （独立的 `ssh.db`，和 `workspace.db` 分开），喂进 `WorkspaceAppState::with_ssh`——
+  `workspace_open_remote` 从"永远返回功能未启用"变成真的能用，本地工作区也顺带被
+  修好（`CodingSession` 的签名本来就无条件需要*某一份*连接池引用，不管 target 是不是
+  本地，见 phase 7/阶段一笔记）。
+- **调研中发现一个计划文本没覆盖到的缺口，另外问过用户是否要一并补齐**：`EditorPane`
+  有"本地简单模式"（`workspaceId=null`，走 `local_*`）和"工作区模式"
+  （`workspaceId` 非空，走 `fs_*`，本地/远程统一由 `WorkspaceHandle.file_ops` 分发）
+  两种，`roc_desk-workspace` 之前只用了前者——意味着即使接上 SSH，人工在编辑器里也
+  打不开/编辑不了远程文件（AI 编程助手不受影响，它走的是已经 target-aware 的
+  `ChangeStore`/`FileOps`）。用户选择"一并补齐"，于是这轮额外做了：
+  - `roc_desk-workspace/lib/src/lib.rs` 新增 `fs_*` 命令层（16 个：
+    list_dir/read_file/write_file(_with_encoding)/read_file(_with_encoding)/
+    supported_encodings/read_binary_preview/open_externally/
+    convert_legacy_office_to_pdf/inspect_binary/peek_is_binary/inspect_jar/
+    delete/rename/copy/create_dir），原样照搬宿主 `commands/fs.rs` 的逻辑，但
+    读写一律走 `WorkspaceHandle.file_ops`（而不是宿主旧版的 `LocalFileOps` 硬编码），
+    `guard_local_path` 只在 `WorkspaceKind::Local` 时做边界校验（远程交给 `FileOps`
+    自己的实现，和宿主旧版注释的取舍一致）。`fs_open_externally` 复用
+    `roc_desk-explorer` 的 `open_path_or_launch_exe`（为此把该函数从 `roc_desk-explorer`
+    的私有 fn 改成 `pub fn`，标 `v0.2.12`，这是本阶段唯一一次改动一个"已完工"工具仓库
+    的代码）。
+  - `roc_desk-editor` 的 `src-web` barrel（`src/index.ts`）补充导出
+    `useFileTreeOperations`/`parentOf`/`baseName`/`flattenVisible`/`FileTreeBackend`/
+    `fsService`——这些在该仓库内部本来就已经是和宿主 `ExplorerTree.tsx`/
+    `useFileTreeOperations.ts` 逐字节一致的实现（之前只是没通过 barrel 导出），直接
+    复用，不新写一份。`editorStore.openPreview(workspaceId, path)` 本来就已经在
+    `workspaceId` 非空时走 `fsService`/`fs_*`——这意味着只要后端 `fs_*` 命令存在，
+    `EditorPane` 切到工作区模式后不需要改一行自己的代码就能支持远程文件。标 `v0.2.12`。
+  - 新增 `roc_desk-workspace/src-web/src/components/Workspace/ExplorerTree.tsx` +
+    `stores/explorerStore.ts`：原样搬自宿主 `Explorer/ExplorerTree.tsx`/
+    `stores/explorerStore.ts` 的懒加载/多选/剪切复制粘贴/重命名/新建/删除/拖拽移动/
+    右键菜单逻辑，`fsService`/`useFileTreeOperations` 都从 `@roc_desk/tool-editor`
+    导入，不重复实现。故意去掉两个这个独立版没有对应基础设施的功能："运行脚本"
+    （需要宿主那套多标签终端 session store，这个工具的终端面板是单一简单终端）和
+    "导入到本地搜索引擎"（host 独有的日志搜索模块，完全没有对应物）。
+  - `App.tsx`：`EditorPane`/侧边栏从"本地简单模式 + `LocalFileTree`"换成"工作区模式
+    + `ExplorerTree`"，本地和远程workspace统一走这一套；新增"连接远程主机"入口
+    （`RemoteWorkspaceDialog`）和"打开文件夹"并列；远程工作区隐藏"终端"/"Git" 两个
+    底部标签（这两个本来就是本地专属，宿主自己的编程工作区screen 也没给远程开这两个，
+    phase 7 已确认过，不是这轮引入的新限制）。
+  - `roc_desk-ssh` 的 `src-web` 补了一个最小 barrel（`package.json` 改名
+    `@roc_desk/tool-ssh`，新增 `src/index.ts`），只导出"连接远程主机并选择目录"这条
+    流程真正用到的东西：`ConnectionForm`、`connectionService`/`connectionGroupService`/
+    `sftpService`/`agentService`，以及**调研时才发现必须一起导出**的
+    `HostKeyPromptHost`/`AgentCertPromptHost`/`register(HostKey|AgentCert)PromptListener`
+    ——没有这两个全局事件监听/弹窗，第一次连接一台新主机触发的指纹 TOFU 确认会永远
+    没人响应，`ssh_pool.get_or_connect` 相当于挂死。不导出该工具的其余组件（终端/RDP/
+    SFTP 双栏浏览器/传输日志）。
+  - `roc_desk-workspace/src-web`：新增 `RemoteWorkspaceDialog.tsx`（三步流程，原样
+    搬自宿主同名组件，服务层换成 `@roc_desk/tool-ssh` 导出的那几个）+
+    `Workspace/PasswordPromptDialog.tsx`（补录密码/配对令牌的小弹窗，直接搬，只依赖
+    本仓库已有的 `ConfirmDialog`）+ `utils/windowsPath.ts`（Agent 目标的虚拟盘符根
+    路径工具）。`App.tsx` 顶层挂载两个 TOFU 弹窗宿主 + 注册两个监听器。
+  - `standalone/Cargo.toml` 新增对 `roc_desk_ssh` 的直接依赖（`v0.3.8`，和 `lib` 一致）
+    ——这是又一次确认"每个有自己独立依赖声明的 crate 都要单独检查"教训的地方：
+    `standalone/main.rs` 里要直接写 `roc_desk_ssh::RocDeskSshAppState::new(...)`，
+    不经过 `roc_desk_workspace` 的任何转发，所以需要自己的直接依赖声明。
+  - `standalone/main.rs` 只注册 `roc_desk_ssh::cmd::*` 里"打开远程工作区"这条流程
+    真正用到的 14 个命令（连接/分组 CRUD、`sftp_list_dir`、
+    `agent_test_connection`/`list_dir`/`list_roots`、`ssh_confirm_host_key`、
+    `agent_confirm_cert`），不是全部 65 个——终端/RDP/上传下载这些不是这个流程要用的，
+    宿主自己的编程工作区 screen 也从来没有过。
+- 依赖链 bump（严格顺序，每步都单独 `cargo check` 验证）：`roc_desk-explorer`
+  （`v0.2.12`）→ `roc_desk-editor`（`v0.2.12`，bump explorer 引用）→
+  `roc_desk-workspace`（`lib`/`standalone` 都 bump editor/explorer 到 `v0.2.12`，
+  新增 `base64`/`roc_desk_ssh` 依赖）。
+- 验证：`roc_desk-workspace` 的 `cargo check`（lib + standalone）、`cargo test`
+  （lib，25 passing，不受影响）、`grep -c 'name = "roc_desk_core"' Cargo.lock`
+  （单一来源）；前端 `npx tsc --noEmit`（通过）+ `npx vite build`（通过，只有既有的
+  Monaco chunk-size 警告）。未做端到端真机联调（新建 SSH 连接→打开远程工作区→
+  在编辑器里改一个远程文件→AI 编程助手发消息）——下次有真实远程主机可测时补上。
+
+### Phase 3 — not started
+
+See the plan file for the full detail (SQL Agent + AI assist panel port
+into `roc_desk-sql`).
