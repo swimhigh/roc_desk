@@ -1025,3 +1025,44 @@ looks like when it's done. `roc_desk-workspace`'s own standalone build is
 untested end-to-end in a running app (verified via `cargo check`/`cargo
 test` only, consistent with every other phase in this migration) — running
 it has not been attempted in this environment.
+
+**2026-10-08 follow-up — host wiring found to be a bigger decision than
+"paste and register", explicitly deferred by the user**: attempting host
+wiring surfaced a real architectural fork, not a mechanical step. Host's
+existing `roc_desk_workspace::WorkspaceAppState` instance (added earlier in
+this migration for the PTY/Git-panel-only wiring) is a *second, independent*
+workspace registry — it points at its own separate `workspace_tool.db` and
+its `open_workspaces` map is never populated by host's actual
+"open workspace" commands, which still go through `AppState.workspaces`/
+host's own fuller `WorkspaceManager` (see the host code comment at the
+`WorkspaceAppState::new` call site: "workspace_open/list 等命令仍然用宿主
+自己更完整的 WorkspaceManager"). But every coding-agent command this phase
+added resolves its `WorkspaceHandle` via `WorkspaceAppState.open_workspaces`
+— wiring them into host as-is would mean every `coding_start`/
+`coding_send_message` call looks up a workspace in a table host never
+writes to, and fails outright.
+
+Three ways to resolve this were presented to the user:
+1. Defer host wiring entirely for now (matches the already-established
+   SQL/SSH precedent).
+2. Make `roc_desk_workspace`'s registry canonical in host too — redirect
+   host's own `workspace_open_local`/`workspace_open_remote` commands to
+   `roc_desk_workspace::cmd::workspace_open_*`, retiring `AppState.workspaces`/
+   the host's standalone `WorkspaceManager` instance. Correct long-term
+   direction, but a materially larger change (every piece of host code that
+   reads `AppState.workspaces` would need to move too), not something to
+   fold into a "wire up the coding agent" task.
+3. Keep both registries, with host's workspace-open commands additionally
+   mirroring into `workspace_app_state.open_workspaces` — smaller, lower-
+   risk, but a patch that keeps two sources of truth in sync rather than a
+   real fix.
+
+**User chose option 1** — host wiring for the AI coding agent stays
+deferred, same as SQL/SSH. Noted here specifically (rather than just
+repeating the same one-line "deferred" the other tools got) because the
+*reason* is different: those were deferred for scope/time reasons; this one
+surfaced an actual pre-existing architectural inconsistency in the host
+(two independent workspace registries) that option 2 above would need to
+resolve before host wiring could even start, and that's a decision for a
+dedicated future task, not something to default into while wiring one
+feature.
