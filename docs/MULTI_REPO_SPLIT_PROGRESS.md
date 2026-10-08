@@ -1066,3 +1066,76 @@ surfaced an actual pre-existing architectural inconsistency in the host
 resolve before host wiring could even start, and that's a decision for a
 dedicated future task, not something to default into while wiring one
 feature.
+
+## AI 编程助手迁移 phase 7：`roc_desk-workspace` 自己的前端界面 (2026-10-08)
+
+With host wiring deliberately deferred, the user asked to instead give
+`roc_desk-workspace`'s own standalone build a working AI coding agent
+*frontend* — until this phase, the tool-repo side was backend-only
+(commands existed, nothing in `src-web` called them). Ported from host's
+`src-web/src/components/CodingAgent/*`, `stores/codingStore.ts`, and the
+provider-management half of `stores/aiChatStore.ts`/`ProviderManagerDialog.tsx`
+(~3300 lines across both repos combined) — `v0.3.1`-`v0.3.2`.
+
+- **Styling is deliberately not a pixel match of the host.** The user chose
+  this explicitly after being told host's AI-agent styling lives inside one
+  1800-line `components.css` shared by every panel in the app, with no
+  clean way to extract just the coding-agent-relevant classes. Instead
+  wrote a compact, functional set of classes in this tool's own
+  `styles.css` (~230 new lines) reusing the design tokens
+  (`--bg-surface`/`--border-default`/`--accent`/etc.) and the `.btn`/
+  `.dialog-*` patterns this repo already had from the terminal/Git-panel
+  work. Visually simpler than host, not broken.
+- **New backend commands needed and added**: `ai_provider_list/create/
+  update/delete/list_models` -- these live in the host's separate
+  `commands/ai.rs`, not `commands/coding.rs`, so phase 6's port correctly
+  didn't bring them along, but the frontend has no usable coding session
+  without at least one configured provider. Thin wrappers around the
+  `ai_provider_manager` field phase 6 already added to `WorkspaceAppState`
+  (`v0.3.1`).
+  - Also added `roc_desk_common::fsops::copy_between` (needed by
+    `skill_import`)'s companion piece on the frontend side needed no new
+    backend work -- the backend half was already done in phase 6.
+- **`aiProviderStore.ts` is a new, trimmed store**, not a straight port of
+  host's `aiChatStore.ts` -- the host version also manages a general-
+  purpose streaming chat panel (`ai_chat_send`/`ai:chat-chunk` events) this
+  tool doesn't have and wasn't asked to add. Only the provider CRUD/model-
+  list half was ported; `codingStore.ts`'s `saveCurrentHistory` and
+  `CodingAgentPanel.tsx`'s provider/model pickers read from this instead.
+- **A few small, previously-unported host utilities turned out to be load-
+  bearing and got ported too**: `utils/markdown.ts` + `utils/shellHighlight.ts`
+  (Markdown rendering and shell-command syntax coloring inside the
+  timeline, pulled in `marked`+`dompurify` as new frontend deps),
+  `utils/language.ts` (Monaco language-id detection for the file-change
+  Diff viewer), `utils/formatTokens.ts`, `hooks/useExternalFileDrop.ts`
+  (Tauri's window-level native drag-and-drop, needed because
+  `dragDropEnabled` defeats plain HTML5 `ondrop` on Windows), and two tiny
+  shared components (`SegmentedControl`, `ToggleSwitch`).
+- **Verification**: both `tsc --noEmit` (strict mode, `noUnusedLocals`/
+  `noUnusedParameters` on, checks every file under `src/` regardless of
+  whether anything imports it) and a full `vite build` pass cleanly with
+  zero errors/warnings beyond vite's pre-existing "Monaco chunk is large"
+  notice. This is **not** the same as having run the app and clicked
+  through it in a browser/webview — no such verification was attempted in
+  this environment; it confirms the code is well-typed and bundles, not
+  that the UI behaves correctly at runtime.
+- **A real, not-yet-resolved usability gap this phase surfaced**: every
+  `coding_*` command phase 6 added requires `WorkspaceAppState::with_ssh`
+  to have been called (see that field's doc comment -- `CodingSession::
+  send_message`'s signature unconditionally needs concrete `SshConnectionPool`/
+  `AgentConnectionPool` references even though a `CodingTarget::Local`
+  session never touches them). `roc_desk-workspace`'s own `standalone/
+  src/main.rs` **never calls `with_ssh`** -- it has no SSH connection-
+  management UI of its own. Concretely: a user running the standalone
+  `roc_desk-workspace.exe` and opening a **local** folder will see the new
+  "AI 编程助手" tab, but `coding_start` will immediately fail with "AI 编程
+  助手功能未启用" even though their session never needed SSH at all. This
+  wasn't something the user explicitly signed off on (it's a side effect of
+  phase 6's design, not surfaced clearly as "this breaks the common
+  standalone+local case" at the time). Not fixed in this phase -- doing so
+  would mean either constructing throwaway `SshConnectionPool`/
+  `AgentConnectionPool` instances for the local-only case (pulls in SSH
+  connection-management machinery the standalone build has no other use
+  for) or restructuring `CodingSession::send_message`'s signature to make
+  the pools optional. Flagging this explicitly rather than letting it be
+  discovered as a confusing runtime error later.
