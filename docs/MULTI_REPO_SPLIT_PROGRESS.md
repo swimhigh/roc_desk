@@ -937,3 +937,91 @@ surface calling into it yet — the next session should read
 by reading all of `session.rs` first, since the command layer is where the
 per-workspace session registry and concurrency/locking strategy actually
 get decided, not something to design file-by-file as it's ported.
+
+## AI 编程助手迁移 phase 6：`commands/coding.rs` 命令层迁移完成，tool-repo side done (2026-10-08)
+
+What phase 5 left as "what's left" is now done: host's `commands/coding.rs`
+(1532 lines) is fully ported into `roc_desk-workspace` (`v0.3.0`) as
+`coding::commands` (pure helper logic — caches, `build_new_session`,
+`maybe_auto_continue`, history list/resume reconciliation) plus ~30
+`#[tauri::command]` wrappers added to `cmd` in `lib.rs`. `roc_desk-workspace`
+now has a complete, wired, standalone-buildable AI coding agent — not just a
+compiling library with no caller, as phase 5 left it.
+
+- **New `coding::history` module** (`CodingHistoryRepo`/`CodingHistoryInput`/
+  `CodingHistorySummary`/`CodingHistoryDetail`/`WorkspaceHistorySnapshot`) --
+  host's `db::repo::coding_history_repo.rs` wasn't covered by any earlier
+  phase (it's a DB repo, not something `session.rs` itself imports), found
+  only once `commands/coding.rs` was read end to end. Same
+  `ensure_schema()`-folded-into-the-repo pattern as `permission`/`audit`/
+  `evidence`/`mcp::repo` from phases 4-5.
+- **`WorkspaceAppState` grew the full set of fields `CodingSession`/
+  `commands/coding.rs` need**: `coding_sessions`/`coding_changes` (session +
+  change-store registries, independently locked per the host's own
+  rationale), `coding_history`/`ai_evidence`/`audit_log`/`permission_rules`/
+  `mcp_manager` (all sharing this tool's one SQLite file via a cloned
+  `DbPool`, each calling its own `ensure_schema()` at construction —
+  previously these `ensure_schema()` methods existed from phases 4-5 but
+  were never actually *called* by anything), `ai_provider_manager` (new:
+  constructs `roc_desk_common::ai::{AiProvidersRepo, AiProviderManager}`
+  with a `roc_desk_core::credential::KeyringStore`, this tool's first use of
+  either), `command_confirms`/`question_confirms`/`coding_cancel_tokens`/
+  `coding_pending_injections`/`symbol_indexes`.
+- **`WorkspaceHandle` gained a `fallback_cache_dir` field** (host's
+  `workspace::WorkspaceHandle` has the equivalent) -- needed by
+  `coding_history_save`'s best-effort local mirror when a remote workspace
+  write fails. Required exposing a new `WorkspaceManager::cache_root()`
+  accessor from `roc_desk_core` (previously private) rather than duplicating
+  the cache-root path computation independently.
+- **New `fsops::copy_between` landed in `roc_desk_common` itself**
+  (`common-v0.12.0`, bundled with the `cache_root()` accessor as
+  `common-v0.11.1`/`v0.12.0`): cross-`FileOps`-implementation file/directory
+  copy, needed by `skill_import` to copy a local skill folder into a
+  possibly-remote workspace -- generically useful beyond the coding agent,
+  so it went into `roc_desk_common::fsops` directly rather than being
+  duplicated inside this tool crate, mirroring the earlier decision to put
+  `fsops::search_stream` there instead of in `roc_desk-workspace`.
+- **A design decision, not a bug**: every coding-agent command now requires
+  `WorkspaceAppState::with_ssh` to have been called, *even for a session
+  whose target ends up local* — `CodingSession::send_message`'s signature
+  unconditionally takes concrete `SshConnectionPool`/`AgentConnectionPool`
+  references (unused on the `Local` path, but still part of the call), and
+  this crate has no way to construct meaningful placeholder pools of its
+  own. This matches the host's own precedent exactly: host's
+  `coding_send_message` always takes `State<'_, RocDeskSshAppState>`
+  regardless of the session's actual target, because the host process
+  always has that state managed. The standalone build (which never calls
+  `with_ssh`) registers every `coding_*`/`mcp_server_*`/`permission_rule_*`/
+  `skill_*` command anyway for forward compatibility, same policy already
+  established for `workspace_open_remote` -- they return a clear "AI 编程
+  助手功能未启用" error at runtime rather than being omitted.
+- **Triggered the version-drift bug a third time, caught earlier than
+  before**: after bumping `roc_desk-explorer`/`roc_desk-editor`/`roc_desk-ssh`
+  and `roc_desk-workspace/lib`'s own references to `common-v0.12.0`, a
+  `cargo check` on `roc_desk-workspace/standalone` still showed **two**
+  `roc_desk_core` instances being compiled (`common-v0.12.0` *and*
+  `common-v0.10.0`) -- `standalone/Cargo.toml` has its *own* direct
+  `roc_desk_core` dependency (for `paths::portable_data_dir()`) separate
+  from `lib`'s, which this round's bump had missed. Caught by actually
+  running `cargo check` on the standalone crate specifically (not just
+  `lib`) before considering the bump done, then confirmed fixed via `grep
+  -c 'name = "roc_desk_core"' Cargo.lock` showing exactly one entry in the
+  workspace-level lockfile. Lesson for next time: **every crate in a
+  multi-crate repo with its own direct git dependency on `roc_desk-common`
+  needs checking individually** — `lib`'s own `cargo check` passing is not
+  sufficient proof the whole repo is drift-free when `standalone`/other
+  members pin the same dependency separately.
+
+**What's left**: host itself still runs its own original, never-touched
+`coding::session`/`commands/coding.rs` — nothing in the host repo has been
+changed to *consume* `roc_desk-workspace`'s now-complete AI coding agent.
+"Host wiring" (replacing host's own implementation with calls into
+`roc_desk_workspace::cmd::coding_*`, the same transition already done for
+SSH/SFTP/RDP/Agent and partially done for the workspace/PTY/Git-panel
+pieces earlier in this migration) is a distinct, deliberately-deferred next
+phase — see the "SQL 工作台（tool-repo side）"/"SSH/SFTP/RDP/Agent（tool-repo
+side）" sections above for the established pattern of what that transition
+looks like when it's done. `roc_desk-workspace`'s own standalone build is
+untested end-to-end in a running app (verified via `cargo check`/`cargo
+test` only, consistent with every other phase in this migration) — running
+it has not been attempted in this environment.
