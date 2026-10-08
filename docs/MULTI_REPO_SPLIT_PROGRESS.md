@@ -1288,7 +1288,60 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
   Monaco chunk-size 警告）。未做端到端真机联调（新建 SSH 连接→打开远程工作区→
   在编辑器里改一个远程文件→AI 编程助手发消息）——下次有真实远程主机可测时补上。
 
-### Phase 3 — not started
+### Phase 3 — done, verified, pushed (2026-10-08)
 
-See the plan file for the full detail (SQL Agent + AI assist panel port
-into `roc_desk-sql`).
+**改动的仓库**：`roc_desk-sql`。
+
+- `roc_desk-sql` 的 `roc_desk_common`/`roc_desk_core` 依赖之前停在
+  `common-v0.10.0`，比依赖链其它仓库落后了三个大版本——这是真实的版本漂移
+  风险（不是理论上的，这次要用的 `roc_desk_common::change_store` 根本不存在
+  于 v0.10.0），一并 bump 到 `common-v0.13.0`（`lib`/`standalone` 两处都要改，
+  老教训）。
+- `SqlAppState` 新增：`ai_provider_manager`（和 `roc_desk-workspace` 同一份
+  模式）、`sql_ai_assistant`、`sql_agent_sessions`/`sql_agent_cancel_tokens`/
+  `sql_agent_confirms`/`sql_agent_questions`/`sql_agent_history`（新
+  `sql::agent::history::SqlAgentHistoryRepo`，原样搬自宿主
+  `db/repo/sql_agent_history_repo.rs`）、`sql_changes`（阶段一搬进
+  `roc_desk_common` 的那个 `ChangeStore`，SQL 侧永远 `CodingTarget::Local` +
+  不设 `GitCommitter`——SQL 标签页是本地缓存文件，这个工具完全不需要像
+  `roc_desk-workspace` 那样依赖 SSH）。
+- 新命令：`ai_provider_*`（5 个，和 `roc_desk-workspace` 那组一样的理由，
+  宿主这组命令在 `commands/ai.rs`，不随 SQL Agent 代码带过来）、
+  `sql_agent_*`（start/new_session/close/set_provider/send_message/
+  cancel_turn/resolve_confirm/answer_question/history_*，13 个，原样搬自
+  宿主 `commands/sql_agent.rs`，只是把"同时拿 `State<AppState>` 和
+  `State<SqlAppState>`"简化成只拿 `State<SqlAppState>`——这个工具没有宿主
+  那个独立的 `AppState`）、`sql_ai_*` + `sql_accept/reject/undo/
+  revert_change`（8 个，AI 生成/解释/优化/修复 SQL 面板，`stage`/`accept`
+  换成了阶段一之后的新签名，不再需要传 SSH pool/`AppHandle`）。
+- **调研中发现一个和"移植"预期不同的真实情况**：`sql_ai_*`（生成/解释/
+  优化/修复面板）这套命令宿主自己的前端从来没有接过任何界面调用——
+  `grep` 遍历整个宿主 `src-web` 没有一处引用 `sql_ai_generate` 等命令，
+  这是宿主自己现状，不是这次漏做。按"独立版功能和 roc_desk.exe 完全
+  一致"的目标，这意味着**不需要给这几个命令补前端界面**——补了反而是
+  "比宿主自己做得更多"，偏离了对齐的目标。`sql_agent_*`（多轮对话面板）
+  则确认是宿主真实在用的功能（`SqlDesk/SqlAgentPanel.tsx` 挂在
+  `SqlWorkspace.tsx` 里），这条路径完整移植了前端。
+- 前端新增 `components/SqlAgent/*`（`SqlAgentPanel`/`AgentMarkdown`/
+  `ThinkingBlock`/`ToolCallProgress`/`QuestionDialog`/
+  `SqlAgentHistoryDialog`/`SqlAgentConfirmDialog`/`ProviderManagerDialog`）+
+  `stores/{aiProviderStore,sqlAgentStore}.ts` + `services/
+  {aiProviderService,sqlAgentService}.ts` + `utils/{markdown,shellHighlight,
+  formatTokens}.ts`，风格上延续"简洁实用"基调（这个工具自己维护一份，不
+  是跨工具共享）。附件输入去掉了宿主版本里"Tauri 原生拖拽本地文件路径"
+  这条路径（需要 `local_read_binary_preview` 这类命令，这个独立版的
+  standalone 没有注册本地文件浏览命令，不值得单独为这一个输入方式去接）
+  ，保留浏览器原生"选择文件"/粘贴这两种。`SqlWorkspace.tsx` 从两栏布局
+  恢复成宿主的三栏布局（对象树 | 编辑器 | AI 工具，默认收起）。
+- 验证：`roc_desk-sql` 的 `cargo check`（lib + standalone）、`cargo test`
+  （lib，3 个既有测试套件全部通过，不受影响）、`grep -c 'name =
+  "roc_desk_core"' Cargo.lock`（单一来源）；前端 `npx tsc --noEmit`
+  （通过）+ `npx vite build`（通过，只有既有的 Monaco chunk-size 警告）。
+  未做端到端真机联调（配置 Provider → 连接数据源 → AI 助手发消息）——
+  下次有真实数据库可测时补上。
+
+至此，approved 的三阶段计划（`roc_desk_common::change_store` 抽象 → SSH 接入
+`roc_desk-workspace` → SQL Agent 接入 `roc_desk-sql`）全部完成。独立版
+`roc_desk-workspace.exe`/`roc_desk-sql.exe` 和 `roc_desk.exe` 对应模块的
+功能差距，到这里已经收敛到"宿主自己都没有的东西"（宿主自己没有的 `sql_ai_*`
+界面、`fs_search_stream`/`fs_replace` 这个搜索面板，见阶段二笔记）为止。
