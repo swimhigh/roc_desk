@@ -801,3 +801,58 @@ its standalone Tauri host.
   and running a GitHub Actions workflow isn't observable from this
   environment; needs a manual `workflow_dispatch` run to confirm it actually
   works end-to-end (gh CLI auth, `--pattern` matching, zip contents).
+
+## AI 编程助手迁移 phase 4：`coding::session.rs` 的全部支撑模块迁移完成 (2026-10-08)
+
+Continuing the AI coding agent migration from phase 1-3 above: `roc_desk-workspace`
+now has every module `coding::session.rs` (host, 2838 lines — the actual
+multi-turn tool-calling loop, not yet itself ported) depends on, each ported
+module-by-module with its own `cargo check` + `cargo test` + tag + push
+before moving to the next, same discipline as the earlier phases:
+
+- `coding::target` (`CodingTarget`), `coding::local_exec` (local shell exec,
+  Windows PowerShell/cmd.exe dispatch), `coding::diff`, `coding::guard`
+  (command blacklist/whitelist), `coding::permission` (`PermissionEngine` +
+  `PermissionRulesRepo` folded in with its own `ensure_schema()`),
+  `coding::git_ops`, `coding::changes` (`ChangeStore`/`FileChange`),
+  `coding::tools` (`ToolCall` enum, `tool_schema()`, `apply_text_edit`) —
+  `v0.2.7` through `v0.2.10`, done in an earlier session and already
+  recorded by the files-and-code-sections tracking at the time.
+- `coding::webfetch` (`fetch_url` + SSRF guard against internal/loopback
+  hosts) — `v0.2.11`.
+- `coding::skills` (`SKILL.md` discovery/frontmatter parsing, `.zip`/
+  `.tar.gz`/`.tgz` import with the same "找唯一含 SKILL.md 的子目录" probing
+  as the host) — `v0.2.12`.
+- `coding::audit` (`AuditLogRepo`, `spawn_blocking`-backed command audit
+  log) and `coding::evidence` (`AiEvidenceRepo` — the FTS5-backed cache of
+  file-snapshot/search/webfetch results the agent has already gathered,
+  letting a later turn recall a prior finding instead of re-fetching it) —
+  `v0.2.13`. Added two new tests exercising the FTS5 virtual table end to
+  end (`ensure_schema` → `upsert` → `search_fts`) specifically because FTS5
+  support in a `rusqlite`/`libsqlite3-sys` "bundled" build isn't guaranteed
+  by the Cargo feature alone — confirmed working rather than assumed.
+- `coding::mcp` (`McpServerManager`, stdio child-process transport, HTTP
+  "Streamable HTTP" transport with the minimal SSE-frame parser real MCP
+  servers need, `McpServersRepo`) — `v0.2.14`.
+- Also added to `roc_desk_common` itself (not `roc_desk-workspace`):
+  `fsops::search` (`search_stream`/`SearchOptions`/`SearchMode`, the
+  directory-walking content/filename search `session.rs`'s `search_files`
+  tool uses) — `common-v0.11.0`, since this is generically useful to any
+  tool crate with a `FileOps` tree, not coding-agent-specific.
+
+**What's left**: `coding::session.rs` itself — the `CodingSession` struct,
+system-prompt construction, the `send_message` tool-calling loop (context-
+window budgeting/summarization, MCP tool dispatch, background job
+management, the `execute_tool` match over all ~24 `ToolCall` variants
+including `task` sub-agent recursion, `run_command_gated`/`webfetch_gated`
+permission+confirmation flows), plus host's `commands/coding.rs` (1532
+lines, the Tauri command layer calling into it). This is the single
+largest remaining unit of work and is deliberately **not** attempted in one
+pass — it's dense, security-relevant (command execution gating, permission
+rules), and threads together every module ported above plus the `ai`/
+`agent_llm`/`agent_confirm`/`agent_todo` infra from phase 1. Next session
+should continue reading `session.rs` from where phase 4 left off (its
+`execute_tool` match, `run_command_gated`, `run_subagent_task`, background
+job commands) and port it incrementally with the same per-chunk
+check/test/commit discipline, rather than writing the whole thing in one
+untested pass.
