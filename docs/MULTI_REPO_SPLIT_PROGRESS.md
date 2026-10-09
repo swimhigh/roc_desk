@@ -1451,26 +1451,45 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
      roc_desk-editor.exe——这类已经有默认值的扩展名需要用户自己手动
      右键"打开方式"选一次+勾选"始终使用此应用"，没有纯注册表脚本能绕过
      这层保护。脚本运行完会打印这条提示，README 里也写了。
-3. **roc_desk-editor 独立版的界面式样和 host 对齐**：用户反馈这个独立 exe
-   和 host 的 `roc_desk.exe`（`mode === "editor"` 独立编辑器模块窗口）
-   差距明显。把顶部工具条换成和 host 同一套 markup/CSS class
-   （`Code2` 图标 + "本地文件" 标题 + "打开文件 (Ctrl+O)" 按钮 + 主题
-   切换，`.tab-bar`/`.app-icon`/`.workspace-name-btn`/`.quick-tools` 几个
-   class 照抄host `components.css`），侧栏从固定 260px 改成可拖拽宽度+
+3. **roc_desk-editor 独立版的界面式样和 host 对齐**（v0.2.13 → v0.2.14，
+   两版）：用户反馈这个独立 exe 和 host 的 `roc_desk.exe`
+   （`mode === "editor"` 独立编辑器模块窗口）差距明显。v0.2.13 把顶部
+   工具条换成和 host 同一套 markup/CSS class（`Code2` 图标 + "本地文件"
+   标题 + "打开文件 (Ctrl+O)" 按钮 + 主题切换，"打开文件"按钮/主题切换
+   用 `justify-content: space-between` 推到最右，照抄 host
+   `components.css` 的布局思路），侧栏从固定 260px 改成可拖拽宽度+
    `localStorage` 持久化。host 那个模式窗口还有的"返回首页"按钮和底部
    可折叠本地终端面板没有带——前者在独立 exe 里没有意义（没有宿主那个
    多模块首页/启动器概念），后者需要整套本地 PTY 终端支持（`portable-pty`
    + 一堆 `pty_*` 命令），这个工具目前完全没有这部分后端，是比"界面
    式样"大得多的另一个功能，没有一并加上。
-   - **调试过程中踩了一个值得记录的坑**：验证这版改动时用 Win32
-     `PrintWindow` 截图一直看不到右上角的"打开文件"/主题切换图标，一度
-     怀疑是 flex 布局里 `margin-left: auto` 在这个环境下有问题，改成
-     `justify-content: space-between` 后截图依然看不到。最后用
-     `getBoundingClientRect()`/`getComputedStyle()` 直接读 DOM 才确认
-     元素其实渲染正常（`display:flex`、`visibility:visible`、
-     `opacity:1`、尺寸非零）——是 `PrintWindow` 截这个特定窗口时，窗口
-     顶部靠右一小块区域（大致 y<30px 那一条，不管 x 坐标多少）截不出来，
-     和应用代码毫无关系，纯粹是这次用来验证效果的截图方法在这个环境下
-     对这一小块区域失效。下次再怀疑"界面元素看起来不渲染"但截图看不到
-     时，先用 `getBoundingClientRect`/`getComputedStyle` 读真实 DOM 状态
-     而不是只信截图。
+   - **v0.2.13 验证时踩了一个坑，之后发现这坑本身就是真 bug**：用 Win32
+     `PrintWindow` 截图看不到右上角的"打开文件"/主题切换图标，一度怀疑
+     是截图方法本身的问题——用 `getBoundingClientRect()`/
+     `getComputedStyle()` 直接读 DOM 显示元素"渲染正常"（`display:flex`、
+     `visibility:visible`、`opacity:1`、尺寸非零），于是当时错误地下结论
+     "纯粹是截图工具在这个区域失效，和代码无关"就把 v0.2.13 发布出去了。
+     **后来用户在真机上用普通方式截图反馈"UI还是不对头"，同样的图标还是
+     看不见**——换成更可靠的截图方式（`SetWindowPos` 置顶 +
+     `Graphics.CopyFromScreen` 直接拷屏，不是 `PrintWindow`）复现后确认
+     这两个图标在真实画面上确实不可见，DOM 测出来"正常"只是 DOM 测的
+     东西和实际画面是两回事。进一步用 CSS `order` 属性做了个对照实验
+     （保持 DOM 顺序不变，只用 `order:-1` 把 `.quick-tools` 视觉上挪到
+     最左边）：挪到左边之后两个图标就能看见了，而原来在左边的"本地文件"
+     标题被视觉挪到最右边之后反而看不见了——说明问题跟 DOM 顺序无关，
+     跟"视觉上处于这一行最右侧"这个位置本身有关（这个窗口顶部偏右的
+     一小块区域，大致 y<30px、x 较大的部分，不管用 flex auto margin、
+     `justify-content:space-between` 还是 `order` 属性把内容摆过去，
+     结果都是"摆过去的内容在真实画面上画不出来"，换成
+     `position:fixed` 固定坐标到同一块区域现象也一样，对窗口做一次
+     resize 强制重绘也没用）。根因没有彻底查清楚（怀疑和这台机器上
+     WebView2/合成器在这块区域的某种显示管线问题有关，可能是这个特定
+     运行环境的问题，不确定是否是 WebView2 通用 bug），v0.2.14
+     的做法是**绕开**而不是修复：顶部工具条改成"打开文件"/主题切换
+     按钮都紧跟在"本地文件"标题后面、不推到最右，整行左对齐、不出现
+     在这块有问题的区域。**教训**：`getBoundingClientRect`/
+     `getComputedStyle` 证明的是 DOM/布局计算层面"应该"渲染成什么样，
+     不能替代"实际画面上真的看得见"这个最终判断；只有自动化截图方法
+     可疑时才换一种截图方法交叉验证，不能仅凭 DOM 测量就反过来断言
+     "所有截图方法都有问题、代码本身没问题"——这次这个论断在 v0.2.13
+     发布前就是错的，需要用户在真机上复现才被纠正过来。
