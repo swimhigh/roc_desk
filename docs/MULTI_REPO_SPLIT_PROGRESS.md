@@ -1493,3 +1493,49 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
      可疑时才换一种截图方法交叉验证，不能仅凭 DOM 测量就反过来断言
      "所有截图方法都有问题、代码本身没问题"——这次这个论断在 v0.2.13
      发布前就是错的，需要用户在真机上复现才被纠正过来。
+
+### SQL 工具支持一次运行多条只读语句（2026-10-09，roc_desk-sql v0.3.10）
+
+用户反馈（配了 DBeaver/Navicat 的截图对比）：选中/粘贴了多条 SQL 一起运行，
+之前的实现直接报错"一次只能执行一条语句，请拆分后逐条执行"，而参考工具会
+把每条语句的结果分别展示出来。
+
+这个单语句限制是阶段一就有的、刻意的设计（`sql::policy::parse_single_statement`
+文档注释原话："多语句一次提交无法给出单一、明确的确认/回滚粒度"），不是
+疏漏——对写操作/DDL 这个理由依然成立，但对纯只读查询不成立（只读语句没有
+"确认/回滚粒度"这个问题，失败了也不会留下部分提交的脏状态）。这次的改法是
+**只放行"解析出不止一条、且每一条都是单纯 SELECT/EXPLAIN"这一种情况**，
+其余（写操作、DDL、未知语句混在多条里）维持原来的拒绝：
+
+- `sql::policy` 新增 `parse_statements`（不限条数的解析，`parse_single_statement`
+  保留不变，`classify`/`parse_and_classify` 这些单语句专用的调用点都没动）。
+- `lib.rs::sql_execute` 在原有单语句分支之前插了一段：先不限条数地解析，
+  条数 >1 时逐条跑 `statement_allows_readonly`（和只读数据源用的是同一个
+  判定函数），全部通过才放行——放行后在一个 spawn 出去的 tokio 任务里顺序
+  （不是真并发，顺序执行更安全、心智模型也更接近用户截图里参考工具的实际
+  行为）逐条调用 `session.execute_sql`，收集进 `ExecuteResult.statements:
+  Option<Vec<ExecuteResult>>`（新字段，7 个 adapter 构造点——mysql/postgres/
+  sqlserver 各 2-3 处——都要补 `statements: None`，单语句这条路径永远是
+  `None`，不影响旧行为）。顶层 `columns`/`rows` 镜像最后一条语句的结果，
+  兼容这个字段出现之前就有的"结果区读顶层字段"逻辑。
+- 前端 `ResultPanel.tsx`：`run.result.statements` 非空且长度 >1 时，改成把
+  每条语句的结果各自渲染一个结果格（纵向堆叠、各自独立滚动、共用同一个
+  表格/文本模式切换），否则走原来的单结果渲染路径。`ResultTableView`/
+  `ResultTextView` 本身不用改——还是只认一个 `ExecuteResult`，多结果就是
+  多次渲染这同一个组件。
+- **host 也同步升级**（`roc_desk_sql` v0.3.8 → v0.3.10）：host 的 SQL 模块
+  直接复用这个 crate 的 `SqlAppState`/`cmd::*`，后端能力随依赖升级自动拿到；
+  前端 `ResultPanel.tsx`/`types/bindings.ts` 是各自独立维护的一份，手动把
+  同样的改动搬了过去（两边这两个文件在改动前逐行 diff 确认过是完全一致的，
+  直接整份覆盖过去，没有额外改动）。`ResultTableView.tsx`/`ResultTextView.tsx`
+  两边本来就没有改，不需要搬。
+- 验证：`cargo test -p roc_desk_sql`（3 个既有测试全过，包括专门验证"多语句
+  降级成 Confirm"这条路径的 `parse_failure_and_multi_statement_downgrade_to_
+  confirm`——这个测试测的是 `classify()` 这条没有改过的旧路径，和这次新加的
+  `parse_statements` 批量路径是两件事，没有冲突）、`npx tsc --noEmit`（两边
+  前端都过）、host `cargo check`/`cargo test`（57 个测试全过）、
+  `grep -c 'name = "roc_desk_sql"' Cargo.lock`（host 这边单一来源）。
+  **没有做真实数据库的端到端联调**——这个环境里没有现成的测试数据库连接，
+  多语句批量执行这条路径本身（顺序调用 `execute_sql`、收集结果、轮询/取消
+  在批量模式下的行为）建议用户拿到新版本后找一个真实数据源跑一遍选中多条
+  SELECT 的场景验证。
