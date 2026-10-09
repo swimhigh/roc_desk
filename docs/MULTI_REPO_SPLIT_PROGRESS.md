@@ -1409,3 +1409,56 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
   未做端到端真机联调——只是依赖版本追赶，没有改动 host 自己的业务逻辑
   （除了上面那一处签名适配），风险主要在"编译通过 + 既有测试通过"这个
   覆盖范围内。
+
+### SQL 导出格式补全 + 独立版 Windows 文件关联 + 编辑器界面对齐（2026-10-09）
+
+同一天内在依赖追赶之后又做的三件小事，记在一起：
+
+1. **host 的 SQL 导出面板补上"导出为 SQL（INSERT 语句）"格式**：
+   `roc_desk_sql` crate 自 v0.3.8 起后端（`sql::transfer`）早就支持这个
+   格式（断点续传），但 host 前端 `TransferDialog.tsx` 的格式下拉框一直
+   没加这个 `<option>`，`types/bindings.ts` 里 `TransferFormat` 类型也还
+   停在 `"csv" | "json"`——纯粹是跟 roc_desk-sql 这边前端分别维护一份导致
+   的遗漏，两处都只差一行。
+2. **roc_desk-editor（v0.2.13）/ roc_desk-sql（v0.3.9）两个独立版工具新增
+   Windows 文件关联支持**（双击 .txt 默认用编辑器打开、.sql 默认用 SQL
+   工作台打开）：各自的 `standalone/` 加 `tauri-plugin-single-instance`
+   依赖，冷启动 argv 和已运行实例收到的二次启动都走同一套
+   "`PendingOpenPaths`/`take_pending_open_paths` 命令 + `open-file-paths`
+   事件"机制——和 host `roc_desk.exe` 自己的 `extract_open_paths`/
+   `pending_open_paths` 机制是同一个模式，复用了这个思路而不是另起一套。
+   - `roc_desk-editor` 直接调用已有的 `editorStore.openStandaloneFile`。
+   - `roc_desk-sql` 的标签页模型是"内部实体+自己的草稿存储"，不是直接
+     绑定磁盘路径，所以额外加了一个 `sql_read_external_file_text` 命令
+     读盘，前端 `createTab`+`setTabContent` 灌内容；新建标签页需要已经
+     选中数据源，没连上时先把路径排进一个 `pendingSqlPathsRef`，等
+     `currentDataSourceId` 变化后的 `useEffect` 里再补开（弹一次 toast
+     提示用户先选数据源）。
+   - `roc_desk-releases/bundle/` 里的 `roc_desk-editor.exe`/`roc_desk-sql.exe`
+     已更新到这两个新 tag 对应的构建。
+   - 这一步目前只加了"工具侧接受文件路径并打开"这个能力，**没有**在
+     `roc_desk-releases` 仓库补 Windows 文件类型关联注册表脚本（扩展名
+     关联到具体 exe 那一步）——这是用户原始需求的后半部分，还没做。
+3. **roc_desk-editor 独立版的界面式样和 host 对齐**：用户反馈这个独立 exe
+   和 host 的 `roc_desk.exe`（`mode === "editor"` 独立编辑器模块窗口）
+   差距明显。把顶部工具条换成和 host 同一套 markup/CSS class
+   （`Code2` 图标 + "本地文件" 标题 + "打开文件 (Ctrl+O)" 按钮 + 主题
+   切换，`.tab-bar`/`.app-icon`/`.workspace-name-btn`/`.quick-tools` 几个
+   class 照抄host `components.css`），侧栏从固定 260px 改成可拖拽宽度+
+   `localStorage` 持久化。host 那个模式窗口还有的"返回首页"按钮和底部
+   可折叠本地终端面板没有带——前者在独立 exe 里没有意义（没有宿主那个
+   多模块首页/启动器概念），后者需要整套本地 PTY 终端支持（`portable-pty`
+   + 一堆 `pty_*` 命令），这个工具目前完全没有这部分后端，是比"界面
+   式样"大得多的另一个功能，没有一并加上。
+   - **调试过程中踩了一个值得记录的坑**：验证这版改动时用 Win32
+     `PrintWindow` 截图一直看不到右上角的"打开文件"/主题切换图标，一度
+     怀疑是 flex 布局里 `margin-left: auto` 在这个环境下有问题，改成
+     `justify-content: space-between` 后截图依然看不到。最后用
+     `getBoundingClientRect()`/`getComputedStyle()` 直接读 DOM 才确认
+     元素其实渲染正常（`display:flex`、`visibility:visible`、
+     `opacity:1`、尺寸非零）——是 `PrintWindow` 截这个特定窗口时，窗口
+     顶部靠右一小块区域（大致 y<30px 那一条，不管 x 坐标多少）截不出来，
+     和应用代码毫无关系，纯粹是这次用来验证效果的截图方法在这个环境下
+     对这一小块区域失效。下次再怀疑"界面元素看起来不渲染"但截图看不到
+     时，先用 `getBoundingClientRect`/`getComputedStyle` 读真实 DOM 状态
+     而不是只信截图。
