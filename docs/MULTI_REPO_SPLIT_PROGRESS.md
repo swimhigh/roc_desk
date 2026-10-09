@@ -1345,3 +1345,67 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
 `roc_desk-workspace.exe`/`roc_desk-sql.exe` 和 `roc_desk.exe` 对应模块的
 功能差距，到这里已经收敛到"宿主自己都没有的东西"（宿主自己没有的 `sql_ai_*`
 界面、`fs_search_stream`/`fs_replace` 这个搜索面板，见阶段二笔记）为止。
+
+### Host 依赖追赶（2026-10-09）
+
+三阶段计划完成后，用户在独立版工具的实测中又修了一批问题（AI 编程助手面板
+挪到右侧停靠栏、编辑器 Tab 样式、AI Provider 配置共享 `roc_desk.db`、远程
+工作区补终端标签页、`.rock_desk` 目录路径对齐、SQL 新增"导出为 SQL"格式、
+全局细滚动条 CSS），这些修复只落到了各工具仓库的新 tag，host 的
+`src-tauri/Cargo.toml` 还停在旧 tag，没跟上。本轮把 host 依赖追到各仓库
+当时的最新 tag：
+
+- `roc_desk-common`：`common-v0.10.0` → `common-v0.13.0`。
+- `roc_desk-explorer`：`v0.2.8` → `v0.2.12`。
+- `roc_desk-editor`：`v0.2.8` → `v0.2.12`。
+- `roc_desk-ssh`（+ `roc_desk_protocol`）：`v0.3.5` → `v0.3.9`。
+- `roc_desk-workspace`：`v0.2.7` → `v0.3.7`（见下，`v0.3.6` 还不够）。
+- `roc_desk-sql`：`v0.3.5` → `v0.3.8`。
+
+**升级过程中踩中两次版本漂移，两次都通过"在上游工具仓库里补发一个只改
+依赖版本号的小版本"解决，而不是在 host 这边硬凑**：
+
+1. `roc_desk-http` 的最新 tag `v0.2.5` 本身还钉在 `common-v0.10.0`——这个
+   仓库没被三阶段计划碰过，没跟着一起升级过。host 的 `roc_desk_core`/
+   `roc_desk_common` 升到 v0.13.0 后，`roc_desk_http::AppError` 和
+   host 代码里 `?` 转换目标的 `roc_desk_core::error::AppError` 变成两份不同
+   来源的类型，直接编译失败（42 个 E0277/E0308）。处理方式：在
+   `roc_desk-http` 仓库里**只改** `lib/Cargo.toml`/`standalone/Cargo.toml`
+   里 `common-v0.10.0` → `common-v0.13.0` 这两行，单独 commit（这个仓库当时
+   还有一堆和此事无关的、未提交的"迁移成独立工具"在途改动，没有一起带上），
+   打 tag `v0.2.6` 推送，host 再指向这个新 tag。
+2. 同理，`roc_desk-workspace` 的最新 tag `v0.3.6` 自己内部钉的
+   `roc_desk_ssh`/`roc_desk_protocol` 还是 `v0.3.8`，而 host 直接依赖的是
+   刚升到的 `v0.3.9`——`Cargo.lock` 里一度同时出现两份
+   `roc_desk_ssh`/`roc_desk_protocol`（`grep -c` 分别是 2 和 3，但没有触发
+   编译错误，运气好在于 host 代码没有跨这两份类型做 `?`
+   转换）。同样在 `roc_desk-workspace` 仓库里把 `lib/Cargo.toml`/
+   `standalone/Cargo.toml` 的 ssh 依赖改成 `v0.3.9`，验证 `cargo check
+   --workspace` 通过后单独 commit、打 tag `v0.3.7` 推送，host 再指向
+   `v0.3.7`。
+   验证收尾时 `grep -c 'name = "roc_desk_core"'`/`roc_desk_common`/
+   `roc_desk_ssh`/`roc_desk_protocol`/`roc_desk_explorer`/
+   `roc_desk_editor`/`roc_desk_http`/`roc_desk_sql`/`roc_desk_workspace`
+   全部回到 1（唯一例外是 host 自己 workspace 里本来就有的本地
+   `protocol` crate，和 roc_desk-ssh 的 `roc_desk_protocol` 恰好同名但
+   互不相干，这不是漂移）。
+
+- API 破坏性变更：`roc_desk_workspace::WorkspaceAppState::new` 从
+  `(db_path, cache_root)` 两个参数变成了
+  `(db_path, ai_providers_db_path, workspace_db_path, cache_root)` 四个
+  参数。host 这边调用的 `WorkspaceAppState`（见 `lib.rs`
+  注释——host 命令层完全不用它，纯粹为了满足某些内部 trait bound 而初始化）
+  三个 db 路径参数原样传同一个 `workspace_tool.db`，维持升级前的隔离行为
+  不变。
+- 验证：`cargo check`（host，逐步升级每步都跑了一次）、`cargo test`
+  （host，57 个既有测试全部通过）、`.\build-portable.ps1`（前端 `vite
+  build` + host release + `roc_desk_agent` nightly 三段全部成功，新
+  `roc_desk.exe` 已拷进 `bin\` 和
+  `F:\code\wuyou\roc_tools\roc_desk-releases\bundle\`）。
+  中途遇到 F 盘写满（196G 用满只剩 40KB，和这次升级无关的历史编译缓存
+  堆积），清理了 `roc_desk-common`/`explorer`/`editor`/`http`/`sql`/`ssh`/
+  `workspace` 七个工具仓库的 `target` 目录（`cargo clean`，共释放约 40GB）
+  后才能继续编译，记一笔供下次遇到同样情况时参考。
+  未做端到端真机联调——只是依赖版本追赶，没有改动 host 自己的业务逻辑
+  （除了上面那一处签名适配），风险主要在"编译通过 + 既有测试通过"这个
+  覆盖范围内。

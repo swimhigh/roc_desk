@@ -377,8 +377,11 @@ pub fn run() {
             // 任何命令会用到（Git 面板命令是纯函数，workspace_open/list 等命令仍然用
             // 宿主自己更完整的 `WorkspaceManager`），所以指向一个独立的新文件即可，
             // 不存在和主库 schema 冲突的风险。
+            let workspace_tool_db_path = app_data_dir.join("workspace_tool.db");
             let workspace_app_state = roc_desk_workspace::WorkspaceAppState::new(
-                &app_data_dir.join("workspace_tool.db"),
+                &workspace_tool_db_path,
+                &workspace_tool_db_path,
+                &workspace_tool_db_path,
                 app_data_dir.clone(),
             )
             .expect("初始化 workspace 工具状态失败");
