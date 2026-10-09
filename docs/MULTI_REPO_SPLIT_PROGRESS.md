@@ -1436,9 +1436,21 @@ into a new `roc_desk_common::change_store` module (`common-v0.13.0`).
      提示用户先选数据源）。
    - `roc_desk-releases/bundle/` 里的 `roc_desk-editor.exe`/`roc_desk-sql.exe`
      已更新到这两个新 tag 对应的构建。
-   - 这一步目前只加了"工具侧接受文件路径并打开"这个能力，**没有**在
-     `roc_desk-releases` 仓库补 Windows 文件类型关联注册表脚本（扩展名
-     关联到具体 exe 那一步）——这是用户原始需求的后半部分，还没做。
+   - `roc_desk-releases` 仓库新增 `register-file-associations.ps1`（随
+     release zip 一起打包，`bundle.yml`/`publish-local.ps1` 都会把它拷进
+     `bundle\`）：把 .txt/.log/.md/.json/.yaml/.yml/.ini/.conf/.cfg/.xml/
+     .csv 关联到 `roc_desk-editor.exe`、.sql 关联到 `roc_desk-sql.exe`，
+     只写 `HKCU\Software\Classes`（当前用户，不需要管理员权限），支持
+     `-Unregister` 撤销。**真机验证发现一个 Windows 自身的限制**：
+     Windows 8 开始，一个扩展名如果已经有"默认应用"（存在
+     `UserChoice` 注册表项，带哈希签名防篡改），脚本没法静默覆盖——
+     实测 `.sql`（这台机器上从没设置过默认应用）注册完立刻双击生效，
+     但 `.txt`（默认已经是记事本）注册完双击仍然用记事本打开，尽管
+     `HKCU\Software\Classes\.txt` 的默认值已经确实改成了
+     `RocDesk.txt`、右键"打开方式"列表里也正确出现了
+     roc_desk-editor.exe——这类已经有默认值的扩展名需要用户自己手动
+     右键"打开方式"选一次+勾选"始终使用此应用"，没有纯注册表脚本能绕过
+     这层保护。脚本运行完会打印这条提示，README 里也写了。
 3. **roc_desk-editor 独立版的界面式样和 host 对齐**：用户反馈这个独立 exe
    和 host 的 `roc_desk.exe`（`mode === "editor"` 独立编辑器模块窗口）
    差距明显。把顶部工具条换成和 host 同一套 markup/CSS class
