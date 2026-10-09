@@ -795,7 +795,7 @@ export type AlterOp =
   | { op: "drop_column"; name: string }
   | { op: "rename_column"; old_name: string; new_name: string };
 
-export type TransferFormat = "csv" | "json";
+export type TransferFormat = "csv" | "json" | "sql";
 
 export interface TransferProgress {
   rows_done: number;

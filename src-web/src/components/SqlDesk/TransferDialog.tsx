@@ -129,6 +129,7 @@ export const TransferDialog: React.FC<TransferDialogProps> = ({ dataSourceId, mo
                 <select className="form-select" value={format} onChange={(e) => { setFormat(e.target.value as TransferFormat); setFilePath(""); }} disabled={running}>
                   <option value="csv">CSV（支持断点续传）</option>
                   <option value="json">JSON</option>
+                  <option value="sql">SQL（INSERT 语句，支持断点续传）</option>
                 </select>
               </div>
             )}
