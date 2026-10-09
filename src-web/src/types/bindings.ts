@@ -727,6 +727,10 @@ export interface ExecuteResult {
   rows_affected: number | null;
   truncated: boolean;
   duration_ms: number;
+  /** 只有"一次运行多条只读语句"才非空，按语句顺序排列；顶层字段这时候
+   * 镜像最后一条语句的结果。见 roc_desk-sql `lib/src/sql/model.rs` 里
+   * 这个字段的注释。 */
+  statements: ExecuteResult[] | null;
 }
 
 export interface PendingWrite {

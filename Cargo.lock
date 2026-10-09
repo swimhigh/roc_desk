@@ -4944,7 +4944,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_sql"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.8#ecd6fb809dfd9d55eeeff08779c6b15edea064ff"
+source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.10#f4bac68eb669464d02bd3e3b19f708994477a8ee"
 dependencies = [
  "async-trait",
  "bb8",

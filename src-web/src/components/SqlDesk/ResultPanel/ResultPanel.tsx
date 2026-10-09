@@ -52,6 +52,9 @@ export const ResultPanel: React.FC<ResultPanelProps> = ({ maximized, onToggleMax
 
   const tab = tabs.find((t) => t.id === activeTabId);
   const run = activeTabId ? tabRuns[activeTabId] : undefined;
+  // 一次运行了多条只读语句时非空（`sql::policy::parse_statements`），按语句
+  // 顺序排列；否则就是单语句的正常结果，走下面的单结果格渲染。
+  const statementResults = run?.result?.statements && run.result.statements.length > 1 ? run.result.statements : null;
 
   if (!tab) {
     return <div className="empty-state" style={{ padding: 16, fontSize: 12 }}>新建或选择一个标签页开始查询</div>;
@@ -157,7 +160,23 @@ export const ResultPanel: React.FC<ResultPanelProps> = ({ maximized, onToggleMax
           </div>
         )}
         {run?.result &&
-          (tab.result_view_mode === "text" ? (
+          (statementResults ? (
+            // 每条语句各自一个结果格，纵向堆叠、各自独立滚动，和单语句时
+            // 共用同一个表格/文本切换（2026-10 用户反馈：跟 DBeaver/Navicat
+            // 一样，一次运行多条 SELECT 要分别展示结果，不是只看最后一条）。
+            <div style={{ height: "100%", overflow: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 }}>
+              {statementResults.map((stmtResult, i) => (
+                <div key={i} style={{ border: "1px solid var(--border-default)", borderRadius: 6, display: "flex", flexDirection: "column", minHeight: 200, flexShrink: 0 }}>
+                  <div style={{ padding: "4px 8px", fontSize: 11, color: "var(--text-secondary)", borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-surface)" }}>
+                    结果 {i + 1} / {statementResults.length}
+                  </div>
+                  <div style={{ height: 240 }}>
+                    {tab.result_view_mode === "text" ? <ResultTextView result={stmtResult} /> : <ResultTableView result={stmtResult} />}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : tab.result_view_mode === "text" ? (
             <ResultTextView result={run.result} />
           ) : (
             <ResultTableView result={run.result} />

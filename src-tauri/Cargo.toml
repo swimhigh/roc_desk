@@ -25,7 +25,7 @@ roc_desk_common = { git = "https://github.com/swimhigh/roc_desk-common", package
 roc_desk_explorer = { git = "https://github.com/swimhigh/roc_desk-explorer", package = "roc_desk_explorer", tag = "v0.2.12" }
 roc_desk_editor = { git = "https://github.com/swimhigh/roc_desk-editor", package = "roc_desk_editor", tag = "v0.2.12" }
 roc_desk_http = { git = "https://github.com/swimhigh/roc_desk-http", package = "roc_desk_http", tag = "v0.2.6" }
-roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.8" }
+roc_desk_sql = { git = "https://github.com/swimhigh/roc_desk-sql", package = "roc_desk_sql", tag = "v0.3.10" }
 roc_desk_ssh = { git = "https://github.com/swimhigh/roc_desk-ssh", package = "roc_desk_ssh", tag = "v0.3.9" }
 roc_desk_workspace = { git = "https://github.com/swimhigh/roc_desk-workspace", package = "roc_desk_workspace", tag = "v0.3.7" }
 # "unstable" 用于 browser 模块的内嵌子 WebView（`Window::add_child`/`Manager::get_webview`/
