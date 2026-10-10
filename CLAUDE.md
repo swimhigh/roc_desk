@@ -12,7 +12,9 @@
 - 这个脚本会依次：关掉正在跑的 `roc_desk.exe` 进程（否则文件被占用导致拷贝失败）→
   `npm run tauri:build`（含 `beforeBuildCommand` 编译前端）→ 用 nightly 工具链编译
   `roc_desk_agent`（win7 兼容目标）→ 把 `roc_desk.exe`、`wfreerdp.exe`、
-  `agent\roc_desk_agent.exe` 等一起拷进 `bin\`。详见 [scripts/build-portable.ps1](scripts/build-portable.ps1)。
+  `agent\roc_desk_agent.exe` 等一起拷进 `bin\`，然后再默认多拷一份到
+  `..\roc_tools\roc_desk-releases\bundle\`（这台机器没有 clone 那个仓库时跳过，
+  不算构建失败）。详见 [scripts/build-portable.ps1](scripts/build-portable.ps1)。
 - 只改了 `src-web/`（纯前端改动）也要走完整的 `build-portable.ps1`，因为它本来就包含
   `beforeBuildCommand` 触发的前端构建，不要为了图快单独只跑 `vite build` 就跳过这一步——
   `bin\roc_desk.exe` 必须是前后端都最新的产物。

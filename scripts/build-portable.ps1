@@ -136,3 +136,21 @@ Copy-Item -LiteralPath $readmeTemplate -Destination (Join-Path $portableDir 'REA
 
 Write-Host "[roc_desk] Portable files written to $portableDir" -ForegroundColor Green
 Get-ChildItem -LiteralPath $portableDir | Select-Object Name, Length
+
+# 2026-10 用户需求：构建完默认再把产物拷一份进 roc_desk-releases\bundle\，不用
+# 每次手动搬——这是多拷一份，不影响上面已经写好的 bin\（本地快速验证用）。
+# releases 仓库是约定中的同级目录（这个仓库和 roc_tools\ 一起 clone 在同一个
+# 上级目录下），这台机器上没 clone 这个仓库就跳过，不算构建失败。
+$releasesBundle = Join-Path $repoRoot '..\roc_tools\roc_desk-releases\bundle'
+if (Test-Path -LiteralPath $releasesBundle) {
+    Copy-Item -LiteralPath (Join-Path $portableDir 'roc_desk.exe') -Destination (Join-Path $releasesBundle 'roc_desk.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $portableDir 'wfreerdp.exe') -Destination (Join-Path $releasesBundle 'wfreerdp.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $portableDir 'wfreerdp.LICENSE.txt') -Destination (Join-Path $releasesBundle 'wfreerdp.LICENSE.txt') -Force
+    $releasesAgentDir = Join-Path $releasesBundle 'agent'
+    New-Item -ItemType Directory -Force -Path $releasesAgentDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $agentDir 'roc_desk_agent.exe') -Destination (Join-Path $releasesAgentDir 'roc_desk_agent.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $agentDir 'README.txt') -Destination (Join-Path $releasesAgentDir 'README.txt') -Force
+    Write-Host "[roc_desk] Also copied to $releasesBundle" -ForegroundColor Green
+} else {
+    Write-Warning "roc_desk-releases\bundle not found at $releasesBundle, skipped release copy"
+}
