@@ -16,7 +16,7 @@ use crate::coding::{
 };
 use crate::db::repo::coding_history_repo::{
     CodingHistoryDetail, CodingHistoryInput, CodingHistoryRepo, CodingHistorySummary,
-    WorkspaceHistorySnapshot,
+    CompactStorageStats, WorkspaceHistorySnapshot,
 };
 use crate::error::AppError;
 use crate::fsops::FileOps;
@@ -1529,4 +1529,19 @@ pub async fn coding_history_rename(
 #[tauri::command]
 pub async fn coding_history_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     state.coding_history.delete(id)
+}
+
+/// 用户在"查询历史"里手动触发的维护操作（2026-10 用户反馈 `roc_desk.db`
+/// 被 `coding_history` 里个别超大记录撑到几百 MB）——`CodingHistoryRepo::
+/// compact_storage` 把还没压缩的老记录统一压缩重写，再 `VACUUM` 回收空间。
+/// 扫全表 + 重写大记录 + VACUUM 整个文件在历史很大时可能要跑几秒到几十秒，
+/// 放进 `spawn_blocking` 避免占用 async 运行时的工作线程。
+#[tauri::command]
+pub async fn coding_history_compact_storage(
+    state: State<'_, AppState>,
+) -> Result<CompactStorageStats, AppError> {
+    let repo = state.coding_history.clone();
+    tokio::task::spawn_blocking(move || repo.compact_storage())
+        .await
+        .map_err(|e| AppError::Internal(format!("compact storage task panicked: {e}")))?
 }

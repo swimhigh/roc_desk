@@ -3,6 +3,7 @@ import { Send, Bot, User, GitCommitHorizontal, Brain, ChevronRight, Sparkles, Se
 import { useCodingStore, type TimelineEntry } from "../../stores/codingStore";
 import { useExternalFileDrop } from "../../hooks/useExternalFileDrop";
 import { formatTokenCount } from "../../utils/formatTokens";
+import { formatBytes } from "../../utils/format";
 import { useAiChatStore } from "../../stores/aiChatStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { detectLanguage } from "../../utils/language";
@@ -182,6 +183,7 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
     openHistory,
     deleteHistory,
     renameHistory,
+    compactHistoryStorage,
     newSession,
   } = useCodingStore();
   const providers = useAiChatStore((s) => s.providers);
@@ -1132,7 +1134,30 @@ export const CodingAgentPanel: React.FC<CodingAgentPanelProps> = ({ workspaceId,
         />
       )}
       {showProviders && <ProviderManagerDialog onClose={(hasDraft) => { setShowProviders(false); setProviderDraftPending(hasDraft); }} />}
-      {showHistory && <CodingHistoryDialog title="编程会话历史" emptyText="还没有已保存的编程会话" histories={histories} onOpen={(id) => { openHistory(id); setShowHistory(false); }} onDelete={deleteHistory} onRename={renameHistory} onClose={() => setShowHistory(false)} />}
+      {showHistory && (
+        <CodingHistoryDialog
+          title="编程会话历史"
+          emptyText="还没有已保存的编程会话"
+          histories={histories}
+          onOpen={(id) => { openHistory(id); setShowHistory(false); }}
+          onDelete={deleteHistory}
+          onRename={renameHistory}
+          onClose={() => setShowHistory(false)}
+          onCompactStorage={() =>
+            compactHistoryStorage()
+              .then((stats) => {
+                const saved = stats.before_bytes - stats.after_bytes;
+                push(
+                  "success",
+                  saved > 0
+                    ? `已压缩 ${stats.recompressed_rows} 条记录，释放 ${formatBytes(saved)}（${formatBytes(stats.before_bytes)} → ${formatBytes(stats.after_bytes)}）`
+                    : `已检查 ${stats.recompressed_rows} 条记录，暂无可释放的空间`,
+                );
+              })
+              .catch((e) => push("error", `压缩失败：${formatError(e)}`))
+          }
+        />
+      )}
       {showPermissionRules && <PermissionRulesDialog onClose={() => setShowPermissionRules(false)} />}
       {showMcpServers && <McpServerManagerDialog onClose={() => setShowMcpServers(false)} />}
       {showSkills && <SkillManagerDialog workspaceId={workspaceId} onClose={() => setShowSkills(false)} />}

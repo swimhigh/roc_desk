@@ -25,6 +25,7 @@ import type {
   CodingTokenUsageEvent,
   FileChange,
   CodingHistorySummary,
+  CompactStorageStats,
   McpServer,
   McpServerInput,
   PermissionRule,
@@ -138,6 +139,7 @@ interface CodingState {
   openHistory: (id: string) => Promise<void>;
   deleteHistory: (id: string) => Promise<void>;
   renameHistory: (id: string, title: string) => Promise<void>;
+  compactHistoryStorage: () => Promise<CompactStorageStats>;
   newSession: (providerId: string) => Promise<void>;
   /** 切换到某个工作区的编程助手会话：已保活（在 `byWorkspace` 里）直接原地
    * 恢复快照，不碰后端；否则按原有逻辑走后端会话 + 12 小时内历史恢复。
@@ -617,6 +619,8 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     await codingService.historyRename(id, trimmed);
     await get().loadHistories();
   },
+
+  compactHistoryStorage: () => codingService.historyCompactStorage(),
 
   newSession: async (providerId) => {
     await get().saveCurrentHistory();

@@ -601,6 +601,7 @@ pub fn run() {
             commands::coding::coding_history_save,
             commands::coding::coding_history_rename,
             commands::coding::coding_history_delete,
+            commands::coding::coding_history_compact_storage,
             commands::coding::coding_answer_question,
             commands::coding::permission_rule_list,
             commands::coding::permission_rule_create,

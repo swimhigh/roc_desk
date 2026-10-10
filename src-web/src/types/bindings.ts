@@ -503,6 +503,12 @@ export interface CodingHistoryDetail extends CodingHistorySummary {
   changes: unknown;
 }
 
+export interface CompactStorageStats {
+  before_bytes: number;
+  after_bytes: number;
+  recompressed_rows: number;
+}
+
 export interface CodingFileChangeEvent {
   sessionId: string;
   change: FileChange;
