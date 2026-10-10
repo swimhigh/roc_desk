@@ -75,6 +75,10 @@ const MAIN_MIGRATIONS: &[(&str, &str)] = &[
         "0025_ai_evidence_cache",
         include_str!("../../migrations/0025_ai_evidence_cache.sql"),
     ),
+    (
+        "0026_coding_history_drop_local_content",
+        include_str!("../../migrations/0026_coding_history_drop_local_content.sql"),
+    ),
 ];
 
 const SESSIONS_MIGRATIONS: &[(&str, &str)] = &[

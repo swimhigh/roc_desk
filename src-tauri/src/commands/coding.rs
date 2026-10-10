@@ -15,8 +15,7 @@ use crate::coding::{
     ChangeStatus, ChangeStore, CodingMode, CodingSession, CodingTarget, FileChange, FileSyncInfo,
 };
 use crate::db::repo::coding_history_repo::{
-    CodingHistoryDetail, CodingHistoryInput, CodingHistoryRepo, CodingHistorySummary,
-    CompactStorageStats, WorkspaceHistorySnapshot,
+    CodingHistoryInput, CodingHistoryRepo, CodingHistorySummary, WorkspaceHistorySnapshot,
 };
 use crate::error::AppError;
 use crate::fsops::FileOps;
@@ -34,6 +33,27 @@ use crate::workspace::WorkspaceKind;
 /// 的工作区镜像写入等），之前只给 `build_new_session` 内部三个探测加了超时，
 /// 漏了这几处——这里统一收成一个常量，新增调用点直接复用，不要再各写各的。
 const WORKSPACE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// 给前端展示用的一条历史记录详情——不再由 `CodingHistoryRepo` 返回：真正的
+/// `timeline`/`changes`/`messages` 只存在工作区目录的镜像文件里，这个结构体
+/// 在 `coding_history_get`/`coding_history_resume` 里现读现拼，见
+/// `load_history_snapshot` 的文档。
+#[derive(Debug, Clone, Serialize)]
+pub struct CodingHistoryDetail {
+    #[serde(flatten)]
+    pub summary: CodingHistorySummary,
+    pub workspace_id: Uuid,
+    pub timeline: serde_json::Value,
+    pub changes: serde_json::Value,
+    /// 不通过 IPC 序列化给前端（前端没有必要、也不应该直接看到原始 LLM 消息
+    /// 上下文）——只在后端内部 `coding_history_resume` 里读取用来重建会话。
+    #[serde(skip)]
+    pub messages: serde_json::Value,
+    /// 内容是否成功从工作区目录读到——远程工作区断连、文件被手动删除等情况下
+    /// 会是 `false`，这时 `timeline`/`changes`/`messages` 都是空值。前端据此
+    /// 提示"暂时无法读取该历史记录"而不是误以为这条会话本来就是空的。
+    pub content_available: bool,
+}
 
 /// 一次"列历史"最多**同步等**多少份工作区快照（`.rock_desk/sessions/{id}.json`）
 /// 落库；按 mtime 倒序取，也就是优先保证最近的会话是最新的。超出的部分交给
@@ -358,9 +378,11 @@ async fn build_new_session(
                     })
                     .unwrap_or(false);
                 if recent {
-                    if let Ok(Some(detail)) = state.coding_history.get(latest.id) {
+                    if let Some(snapshot) =
+                        load_history_snapshot(state, workspace_id, latest.id).await
+                    {
                         if let Ok(changes) =
-                            serde_json::from_value::<Vec<FileChange>>(detail.changes)
+                            serde_json::from_value::<Vec<FileChange>>(snapshot.input.changes)
                         {
                             change_store.lock().await.restore(changes);
                         }
@@ -1256,11 +1278,11 @@ pub async fn coding_history_save(
         input.messages = serde_json::to_value(&messages).unwrap_or_default();
     }
     state.coding_history.save(&input)?;
-    if let Some(detail) = state.coding_history.get(input.id)? {
+    if let Some(location) = state.coding_history.get_location(input.id)? {
         let snapshot = WorkspaceHistorySnapshot {
             input: input.clone(),
-            created_at: detail.summary.created_at,
-            updated_at: detail.summary.updated_at,
+            created_at: location.summary.created_at,
+            updated_at: location.summary.updated_at,
         };
         if let Some(handle) = state
             .workspaces
@@ -1389,48 +1411,48 @@ pub async fn coding_history_list(
     history_list_with_import(&state, workspace_id).await
 }
 
-/// 单条历史记录的"以工作区目录为准"刷新——`history_list_with_import` 是列表场景
-/// 用的批量对账（列一次目录、跳过没变化的文件），这里是打开/查看具体某一条
-/// 历史时用的精确单文件对账：工作区数据要"存哪儿就以哪儿为准"（2026-09 用户
-/// 明确要求"工作区本身的会话历史和数据全存工作区目录，不是本地目录"）——如果
-/// 换了一台机器/换了另一个 roc_desk.exe 副本（便携版，全局状态是按 exe 所在
-/// 目录分开存的，见 `resolve_app_data_dir`），本地 SQLite 缓存里这条记录可能
-/// 是旧的甚至压根没有，只有工作区目录下的 `.rock_desk/sessions/{id}.json`
-/// 才是所有副本共享的真相来源。读取失败（网络问题/文件不存在）不当错误处理，
-/// 静默回退到本地缓存已有的内容——这是"尽量拿到最新"，不是"必须拿到最新"。
-async fn refresh_history_from_workspace(
+/// 单条历史记录的真正内容读取——`history_list_with_import` 是列表场景用的批量
+/// 对账（列一次目录、跳过没变化的文件，只落摘要），这里是打开/查看/续聊具体
+/// 某一条历史时用的精确单文件读取：`timeline`/`changes`/`messages` 只存在
+/// 工作区目录这一份（2026-10 用户明确要求"消息记录只存工作区自己的子目录"，
+/// 本地全局库不再镜像这几列内容），读到后顺手对账一次本地摘要缓存（标题等），
+/// 但内容本身不落库，用完即弃。
+///
+/// 远程工作区读取失败（断连/超时）时尝试 `fallback_cache_dir` 里上一次成功
+/// 写出的本地副本（`coding_history_save` 镜像失败时的兜底落盘，见那里的
+/// 注释）；两者都失败返回 `None`——调用方必须把这当成"这次真的读不到"，不能
+/// 假装有内容（没有"本地另存一份权威缓存"可以退回去了）。
+async fn load_history_snapshot(
     state: &State<'_, AppState>,
     workspace_id: Uuid,
     history_id: Uuid,
-) {
-    let Some(handle) = state.workspaces.read().await.get(&workspace_id).cloned() else {
-        return;
-    };
+) -> Option<WorkspaceHistorySnapshot> {
+    let handle = state.workspaces.read().await.get(&workspace_id).cloned()?;
     let path = format!(
         "{}/.rock_desk/sessions/{history_id}.json",
         handle.profile.root_path.trim_end_matches(['/', '\\'])
     );
-    if let Ok(Ok(file)) =
-        tokio::time::timeout(WORKSPACE_PROBE_TIMEOUT, handle.file_ops.read_file(&path)).await
-    {
-        if let Ok(snapshot) = serde_json::from_str::<WorkspaceHistorySnapshot>(&file.text) {
-            if snapshot.input.workspace_id == workspace_id {
-                let _ = state.coding_history.import_snapshot(&snapshot);
-                return;
-            }
+    let remote = tokio::time::timeout(WORKSPACE_PROBE_TIMEOUT, handle.file_ops.read_file(&path))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|file| serde_json::from_str::<WorkspaceHistorySnapshot>(&file.text).ok())
+        .filter(|snapshot| snapshot.input.workspace_id == workspace_id);
+    let snapshot = match remote {
+        Some(snapshot) => Some(snapshot),
+        None => {
+            let fallback = handle
+                .fallback_cache_dir
+                .join("sessions")
+                .join(format!("{history_id}.json"));
+            std::fs::read(fallback)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<WorkspaceHistorySnapshot>(&bytes).ok())
+                .filter(|snapshot| snapshot.input.workspace_id == workspace_id)
         }
-    }
-    let fallback = handle
-        .fallback_cache_dir
-        .join("sessions")
-        .join(format!("{history_id}.json"));
-    if let Ok(bytes) = std::fs::read(fallback) {
-        if let Ok(snapshot) = serde_json::from_slice::<WorkspaceHistorySnapshot>(&bytes) {
-            if snapshot.input.workspace_id == workspace_id {
-                let _ = state.coding_history.import_snapshot(&snapshot);
-            }
-        }
-    }
+    }?;
+    let _ = state.coding_history.import_snapshot(&snapshot);
+    Some(snapshot)
 }
 
 #[tauri::command]
@@ -1438,10 +1460,27 @@ pub async fn coding_history_get(
     state: State<'_, AppState>,
     id: Uuid,
 ) -> Result<Option<CodingHistoryDetail>, AppError> {
-    if let Some(existing) = state.coding_history.get(id)? {
-        refresh_history_from_workspace(&state, existing.workspace_id, id).await;
+    let Some(location) = state.coding_history.get_location(id)? else {
+        return Ok(None);
+    };
+    match load_history_snapshot(&state, location.workspace_id, id).await {
+        Some(snapshot) => Ok(Some(CodingHistoryDetail {
+            summary: location.summary,
+            workspace_id: location.workspace_id,
+            timeline: snapshot.input.timeline,
+            changes: snapshot.input.changes,
+            messages: snapshot.input.messages,
+            content_available: true,
+        })),
+        None => Ok(Some(CodingHistoryDetail {
+            summary: location.summary,
+            workspace_id: location.workspace_id,
+            timeline: serde_json::Value::Null,
+            changes: serde_json::Value::Null,
+            messages: serde_json::Value::Null,
+            content_available: false,
+        })),
     }
-    state.coding_history.get(id)
 }
 
 /// 打开一条历史记录并真正接续对话（不是只读回放）——用户 2026-09 反馈"历史会话
@@ -1460,24 +1499,34 @@ pub async fn coding_history_resume(
     // 打开历史会话续聊时，`workspace_id`/`history_id` 都是调用方直接给的，不
     // 依赖本地 SQLite 是否已经见过这条记录——即使换了一台机器/换了另一个
     // roc_desk.exe 便携版副本、本地缓存里压根没有这条历史，也能直接从工作区
-    // 目录把它找回来（见 `refresh_history_from_workspace` 的文档）。
-    refresh_history_from_workspace(&state, workspace_id, history_id).await;
-    let detail = state
+    // 目录把它找回来（见 `load_history_snapshot` 的文档）。
+    let location = state
         .coding_history
-        .get(history_id)?
+        .get_location(history_id)?
         .ok_or_else(|| AppError::NotFound(format!("history not found: {history_id}")))?;
-    if detail.workspace_id != workspace_id {
+    if location.workspace_id != workspace_id {
         return Err(AppError::Internal("这条历史记录不属于当前工作区".into()));
     }
     if state
         .ai_provider_manager
-        .get(detail.summary.provider_id)?
+        .get(location.summary.provider_id)?
         .is_none()
     {
         return Err(AppError::NotFound(
             "这条历史记录关联的 AI 供应商已被删除，请先在模型管理里重新配置后再试".into(),
         ));
     }
+    // 这几份内容现在只存工作区目录一份（见模块级文档），续聊必须真的读到它们
+    // 才有意义——读不到（工作区断连/文件被删）不能悄悄当成"空对话"续上，那会
+    // 让用户以为历史记录本来就是空的，必须明确报错让用户知道要先恢复连接。
+    let snapshot = load_history_snapshot(&state, workspace_id, history_id)
+        .await
+        .ok_or_else(|| {
+            AppError::Internal(
+                "无法连接到该历史记录所在的工作区，暂时读取不到完整的对话内容，请检查连接后重试"
+                    .into(),
+            )
+        })?;
 
     // `override_id: Some(history_id)` ——之前是构造完会话再 `session.id =
     // history_id` 事后覆盖，会导致审计日志/事件广播用的还是构造时随手生成的
@@ -1486,21 +1535,21 @@ pub async fn coding_history_resume(
         &state,
         &ssh_state,
         workspace_id,
-        detail.summary.provider_id,
+        location.summary.provider_id,
         false,
         Some(history_id),
     )
     .await?;
-    session.mode = if detail.summary.mode == "build" {
+    session.mode = if location.summary.mode == "build" {
         CodingMode::Build
     } else {
         CodingMode::Plan
     };
     let messages: Vec<serde_json::Value> =
-        serde_json::from_value(detail.messages.clone()).unwrap_or_default();
+        serde_json::from_value(snapshot.input.messages).unwrap_or_default();
     session.restore_messages(messages);
     let changes: Vec<FileChange> =
-        serde_json::from_value(detail.changes.clone()).unwrap_or_default();
+        serde_json::from_value(snapshot.input.changes).unwrap_or_default();
     change_store.lock().await.restore(changes);
 
     let info = session_info(&session).await;
@@ -1529,19 +1578,4 @@ pub async fn coding_history_rename(
 #[tauri::command]
 pub async fn coding_history_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     state.coding_history.delete(id)
-}
-
-/// 用户在"查询历史"里手动触发的维护操作（2026-10 用户反馈 `roc_desk.db`
-/// 被 `coding_history` 里个别超大记录撑到几百 MB）——`CodingHistoryRepo::
-/// compact_storage` 把还没压缩的老记录统一压缩重写，再 `VACUUM` 回收空间。
-/// 扫全表 + 重写大记录 + VACUUM 整个文件在历史很大时可能要跑几秒到几十秒，
-/// 放进 `spawn_blocking` 避免占用 async 运行时的工作线程。
-#[tauri::command]
-pub async fn coding_history_compact_storage(
-    state: State<'_, AppState>,
-) -> Result<CompactStorageStats, AppError> {
-    let repo = state.coding_history.clone();
-    tokio::task::spawn_blocking(move || repo.compact_storage())
-        .await
-        .map_err(|e| AppError::Internal(format!("compact storage task panicked: {e}")))?
 }

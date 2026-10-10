@@ -1358,6 +1358,8 @@
 .coding-history-open:hover strong { color: var(--accent); }
 .coding-history-open strong, .coding-history-open span, .coding-history-open time { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .coding-history-open span, .coding-history-open time { color: var(--text-secondary); font-size: 11px; }
+.coding-history-opening { display: flex; align-items: center; gap: 4px; color: var(--accent) !important; }
+.coding-history-opening svg { width: 11px; height: 11px; }
 .coding-history-empty { padding: 28px 14px; color: var(--text-secondary); font-size: 12px; text-align: center; }
 .coding-history-rename { min-width: 0; flex: 1; height: 30px; }
 .coding-history-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-default); background: var(--accent-dim); color: var(--text-primary); font-size: 12px; }

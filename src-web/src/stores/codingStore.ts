@@ -25,7 +25,6 @@ import type {
   CodingTokenUsageEvent,
   FileChange,
   CodingHistorySummary,
-  CompactStorageStats,
   McpServer,
   McpServerInput,
   PermissionRule,
@@ -130,16 +129,21 @@ interface CodingState {
   skills: SkillMeta[];
   histories: CodingHistorySummary[];
   viewingHistoryId: string | null;
+  /** 正在打开（`historyGet`+`historyResume`）的历史记录 id——2026-10 起这两步
+   * 每次都要去工作区目录现读一遍内容（不再有本地全量缓存），远程工作区可能
+   * 要等一下，弹窗据此显示"正在打开"而不是看起来没反应。 */
+  openingHistoryId: string | null;
   /** 最近使用的工作区 id，最前面的最新；只用来判断 LRU 淘汰顺序。 */
   residentOrder: string[];
   /** 当前没有显示、但仍保活（未被淘汰）的工作区快照。 */
   byWorkspace: Record<string, WorkspaceSnapshot>;
   loadHistories: (workspaceId?: string) => Promise<void>;
   saveCurrentHistory: () => Promise<void>;
-  openHistory: (id: string) => Promise<void>;
+  /** 返回是否成功接续——调用方据此决定是否关闭历史弹窗（失败时留在弹窗里，
+   * 让用户看到 `error` 里的具体原因，还能选别的记录重试）。 */
+  openHistory: (id: string) => Promise<boolean>;
   deleteHistory: (id: string) => Promise<void>;
   renameHistory: (id: string, title: string) => Promise<void>;
-  compactHistoryStorage: () => Promise<CompactStorageStats>;
   newSession: (providerId: string) => Promise<void>;
   /** 切换到某个工作区的编程助手会话：已保活（在 `byWorkspace` 里）直接原地
    * 恢复快照，不碰后端；否则按原有逻辑走后端会话 + 12 小时内历史恢复。
@@ -223,6 +227,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
   skills: [],
   histories: [],
   viewingHistoryId: null,
+  openingHistoryId: null,
   residentOrder: [],
   byWorkspace: {},
 
@@ -583,26 +588,40 @@ export const useCodingStore = create<CodingState>((set, get) => ({
    * LLM 消息上下文重建这个工作区的活跃会话，`timeline`/`changesById` 仍然从
    * `historyGet` 拿（纯展示用，后端的 `CodingSessionInfo` 不携带时间线）。
    * `viewingHistoryId` 保持 `null`——这个会话现在是"活的"，输入框/操作按钮
-   * 不应该再被当成只读禁用。 */
+   * 不应该再被当成只读禁用。
+   *
+   * 2026-10 起 `timeline`/`changes`/`messages` 不再有本地全量缓存，这两次调用
+   * 每次都要去工作区目录现读一遍（本地工作区是磁盘读，远程工作区走 SSH，
+   * 可能有明显延迟）——`openingHistoryId` 让弹窗能显示"正在打开"而不是卡住没
+   * 反应；读取失败（工作区断连等）时 `historyResume` 会带着具体原因报错，
+   * 走 `error` 展示，不悄悄当成"这条历史是空的"。 */
   openHistory: async (id) => {
     await get().saveCurrentHistory();
     const workspaceId = get().workspaceId;
-    if (!workspaceId) return;
-    const detail = await codingService.historyGet(id);
-    if (!detail) return;
+    if (!workspaceId) return false;
+    set({ openingHistoryId: id });
     try {
+      const detail = await codingService.historyGet(id);
+      if (!detail) {
+        set({ error: "这条历史记录已经不存在了" });
+        return false;
+      }
       const info = await codingService.historyResume(workspaceId, id);
       const changes = detail.changes as FileChange[];
       set({
         workspaceId,
         viewingHistoryId: null,
         sessionInfo: info,
-        timeline: detail.timeline as TimelineEntry[],
-        changesById: Object.fromEntries(changes.map((c) => [c.id, c])),
+        timeline: (detail.timeline as TimelineEntry[]) ?? [],
+        changesById: Object.fromEntries((changes ?? []).map((c) => [c.id, c])),
         error: null,
       });
+      return true;
     } catch (e) {
       set({ error: formatError(e) });
+      return false;
+    } finally {
+      set({ openingHistoryId: null });
     }
   },
 
@@ -619,8 +638,6 @@ export const useCodingStore = create<CodingState>((set, get) => ({
     await codingService.historyRename(id, trimmed);
     await get().loadHistories();
   },
-
-  compactHistoryStorage: () => codingService.historyCompactStorage(),
 
   newSession: async (providerId) => {
     await get().saveCurrentHistory();
@@ -760,6 +777,7 @@ export const useCodingStore = create<CodingState>((set, get) => ({
       confirmRequest: null,
       confirmQueue: [],
       questionRequest: null,
+      openingHistoryId: null,
       residentOrder: [],
       byWorkspace: {},
     }),

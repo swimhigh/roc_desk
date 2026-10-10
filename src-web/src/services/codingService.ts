@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatAttachment, CodingHistoryDetail, CodingHistorySummary, CodingMode, CodingSessionInfo, CompactStorageStats, FileSyncInfo } from "../types/bindings";
+import type { ChatAttachment, CodingHistoryDetail, CodingHistorySummary, CodingMode, CodingSessionInfo, FileSyncInfo } from "../types/bindings";
 
 /** IPC 边界（CODE_DESIGN.md §一分层原则）：AI 编程助手会话（DESIGN.md §3.8）。*/
 export const codingService = {
@@ -94,12 +94,5 @@ export const codingService = {
   },
   historyDelete(id: string): Promise<void> {
     return invoke("coding_history_delete", { id });
-  },
-  /** 压缩历史记录存储占用（2026-10 用户反馈：个别超大对话能把 `roc_desk.db`
-   * 撑到几百 MB）——把还没压缩的老记录统一 gzip 压缩重写，再 `VACUUM` 回收
-   * 空间。手动触发的维护操作，不会自动跑，耗时取决于历史记录总量，可能要
-   * 几秒到几十秒。 */
-  historyCompactStorage(): Promise<CompactStorageStats> {
-    return invoke("coding_history_compact_storage");
   },
 };
