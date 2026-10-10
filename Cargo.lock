@@ -4754,7 +4754,7 @@ dependencies = [
  "roc_desk_editor",
  "roc_desk_explorer",
  "roc_desk_http",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.9)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
  "roc_desk_sql",
  "roc_desk_ssh",
  "roc_desk_workspace",
@@ -4933,7 +4933,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_protocol"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.9#b12f6aed369222f26222a2476c6e51cd6fe00676"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11#a6e700fdd708400fa7c9d0f9d915b9383a6db9cc"
 dependencies = [
  "serde",
  "serde_json",
@@ -4975,7 +4975,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_ssh"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.9#b12f6aed369222f26222a2476c6e51cd6fe00676"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11#a6e700fdd708400fa7c9d0f9d915b9383a6db9cc"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4983,7 +4983,7 @@ dependencies = [
  "r2d2",
  "roc_desk_common",
  "roc_desk_core",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.9)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
  "rusqlite",
  "russh",
  "russh-keys",
@@ -5005,7 +5005,7 @@ dependencies = [
 [[package]]
 name = "roc_desk_workspace"
 version = "0.1.0"
-source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.3.7#e3e433825798cab27211ad5e1e7cb6d493e58676"
+source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.3.8#666de24dfef74172374e8f0ebb13ddfa375c2f1e"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5019,7 +5019,7 @@ dependencies = [
  "roc_desk_core",
  "roc_desk_editor",
  "roc_desk_explorer",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.9)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
  "roc_desk_ssh",
  "rusqlite",
  "serde",

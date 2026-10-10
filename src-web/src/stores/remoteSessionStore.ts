@@ -143,6 +143,11 @@ export const useRemoteSessionStore = create<RemoteSessionState>((set, get) => ({
   reconnectSshTerminal: async (id) => {
     const tab = get().tabs.find((t) => t.id === id);
     if (!tab || tab.kind !== "ssh-terminal") return;
+    // 显式先 `connect` 一次，和 `openSshTerminal` 同一个套路——后端
+    // `ssh_open_shell` 本身已经换成 `get_or_connect` 会自愈（断线后这里
+    // 单独调 `openShell` 也能连上），这里只是双保险，让"重新连接"这个
+    // 名字名副其实（真的尝试重新建立连接），不是单纯指望后端兜底。
+    await sshService.connect(tab.profileId);
     const newChannelId = await sshService.openShell(tab.profileId, 24, 80);
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, id: newChannelId, disconnected: false } : t)),
