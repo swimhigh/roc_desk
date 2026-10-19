@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: src-web/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,8 +54,10 @@ jobs:
         with:
           workspaces: "src-tauri -> ../build"
 
+      # 根目录 package.json 声明了 npm workspaces（src-web + packages/*），
+      # lockfile 和 node_modules 的权威位置都在仓库根目录，不再是 src-web 独立一份。
       - name: Install frontend dependencies
-        run: npm ci --prefix src-web
+        run: npm ci
 
       # 和本地开发者机器上完全一样的构建命令（scripts/build-portable.ps1 已经在
       # 本机反复验证过跑得通）——不单独调 `npm run tauri:build` 再手动拼一份
