@@ -1,0 +1,9 @@
+{
+  "name": "@roc_desk/common-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@roc_desk/ui-core": "file:../ui-core" },
+  "peerDependencies": { "react": ">=18" }
+}

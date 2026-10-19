@@ -1,0 +1,8 @@
+{
+  "name": "@roc_desk/ui-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./bindings": "./src/bindings.ts" },
+  "peerDependencies": { "react": ">=18", "react-dom": ">=18" }
+}

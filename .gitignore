@@ -22,6 +22,9 @@ dist-ssr
 # Claude Code 个人本地设置（不随项目共享）
 .claude/settings.local.json
 
+# roc_desk 自身作为工作区打开本仓库时生成的本地运行数据（exe 所在目录/.rock_desk）
+/.rock_desk
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
