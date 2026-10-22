@@ -4754,9 +4754,9 @@ dependencies = [
  "roc_desk_editor",
  "roc_desk_explorer",
  "roc_desk_http",
- "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.12)",
  "roc_desk_sql",
- "roc_desk_ssh",
+ "roc_desk_ssh 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.12)",
  "roc_desk_workspace",
  "rusqlite",
  "russh",
@@ -4942,6 +4942,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "roc_desk_protocol"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.12#1039ae1e8ee1e16ffd1d7f3692c14a7e63982d92"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "roc_desk_sql"
 version = "0.1.0"
 source = "git+https://github.com/swimhigh/roc_desk-sql?tag=v0.3.10#f4bac68eb669464d02bd3e3b19f708994477a8ee"
@@ -5003,6 +5014,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "roc_desk_ssh"
+version = "0.1.0"
+source = "git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.12#1039ae1e8ee1e16ffd1d7f3692c14a7e63982d92"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "r2d2",
+ "roc_desk_common",
+ "roc_desk_core",
+ "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.12)",
+ "rusqlite",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "rustls 0.23.43",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tracing",
+ "trash",
+ "uuid",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "roc_desk_workspace"
 version = "0.1.0"
 source = "git+https://github.com/swimhigh/roc_desk-workspace?tag=v0.3.8#666de24dfef74172374e8f0ebb13ddfa375c2f1e"
@@ -5020,7 +5061,7 @@ dependencies = [
  "roc_desk_editor",
  "roc_desk_explorer",
  "roc_desk_protocol 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
- "roc_desk_ssh",
+ "roc_desk_ssh 0.1.0 (git+https://github.com/swimhigh/roc_desk-ssh?tag=v0.3.11)",
  "rusqlite",
  "serde",
  "serde_json",
